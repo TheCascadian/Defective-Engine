@@ -1,0 +1,16 @@
+{
+  "sea_level": 74,
+  "deep_level": 0,
+  "blocks": {
+    "stone": "base:stone",
+    "deep_stone": "base:deep_stone",
+    "dirt": "base:dirt",
+    "grass": "base:grass_block",
+    "sand": "base:sand",
+    "sandstone": "base:sandstone",
+    "gravel": "base:gravel",
+    "snow": "base:snow",
+    "mud": "base:mud",
+    "water": "base:water"
+  }
+}

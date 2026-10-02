@@ -1,3 +1,4 @@
 build/
 *.o
 saves/
+examples/mods/*/plugins/

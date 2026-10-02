@@ -1,0 +1,7 @@
+{
+  "textures": { "all": "gems:block/ruby_block" },
+  "light": { "emit": [12, 2, 3] },
+  "hardness": 2.0,
+  "tool": "pick",
+  "sound": "stone"
+}

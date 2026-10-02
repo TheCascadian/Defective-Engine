@@ -17,6 +17,7 @@ out vec4 v_light;                  // sky, r, g, b in 0..1
 out float v_shade;                 // directional shade times ambient occlusion
 out vec3 v_tint;
 out float v_dist;
+out float v_water_depth;           // 0 for everything but water, else the depth bucket in 0..1
 
 const float FACE_SHADE[8] = float[8](0.80, 0.80, 1.00, 0.55, 0.70, 0.70, 0.90, 0.90);
 const float AO_CURVE[4] = float[4](0.50, 0.68, 0.84, 1.00);
@@ -58,8 +59,10 @@ void main() {
     }
     v_layer = float(a_b & 1023u);
     v_light = vec4(float((a_b >> 13) & 15u), float((a_b >> 17) & 15u), float((a_b >> 21) & 15u), float((a_b >> 25) & 15u)) * (1.0 / 15.0);
-    float ao = face >= 6u ? 1.0 : AO_CURVE[extra];
+    // Water carries its depth bucket in the extra bits instead of ambient occlusion, so it takes no AO shade.
+    float ao = (face >= 6u || tint == 3u) ? 1.0 : AO_CURVE[extra];
     v_shade = FACE_SHADE[face] * ao;
     v_tint = tint == 3u ? mix(u_tint[3], u_water_deep, float(extra) / 3.0) : u_tint[tint];
+    v_water_depth = tint == 3u ? float(extra) / 3.0 : -1.0;
     v_dist = length(world_rel);
 }

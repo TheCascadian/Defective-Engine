@@ -715,5 +715,7 @@ typedef struct Options {
     int overlay_page;
     int workers;             /* 0 = automatic */
     bool wireframe;
+    bool camera_set;         /* --camera pins the start pose and freezes the benchmark path, for screenshots */
+    float camera[5];         /* x y z yaw pitch (degrees) */
 } Options;
 extern Options g_opt;

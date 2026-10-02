@@ -19,6 +19,7 @@ static void print_usage(void) {
          "  --width W --height H window size\n"
          "  --workers N          worker thread count (default: cores minus one, at most 6)\n"
          "  --wireframe          draw chunk geometry as lines (also F4)\n"
+         "  --camera X,Y,Z,YAW,PITCH  pin the start pose in degrees and freeze the benchmark path\n"
          "  --no-vsync           disable vertical sync\n"
          "  --hidden             create the window hidden\n"
          "  --screenshot FILE    save the frame given by --screenshot-frame as PPM and exit\n"
@@ -51,6 +52,11 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--screenshot-frame") && has_val) g_opt.screenshot_frame = atoi(argv[++i]);
         else if (!strcmp(a, "--wireframe")) g_opt.wireframe = true;
         else if (!strcmp(a, "--workers") && has_val) g_opt.workers = atoi(argv[++i]);
+        else if (!strcmp(a, "--camera") && has_val) {
+            float *c = g_opt.camera;
+            g_opt.camera_set = sscanf(argv[++i], "%f,%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3], &c[4]) == 5;
+            if (!g_opt.camera_set) { fprintf(stderr, "--camera expects x,y,z,yaw,pitch in degrees, for example 0,90,0,0,-10\n"); return false; }
+        }
         else if (!strcmp(a, "--overlay") && has_val) g_opt.overlay_page = atoi(argv[++i]);
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { print_usage(); return false; }
         else {
@@ -286,7 +292,11 @@ static int run_viewer(void) {
     g_scene_cfg.far_chunks = gl ? far_chunks_for_preset() : 0;
 
     Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2 + (gl ? far_chunks_for_preset() : 0)) * 32.0f};
-    if (g_opt.benchmark) benchmark_camera(&cam, 0);
+    if (g_opt.camera_set) {
+        cam.pos = v3(g_opt.camera[0], g_opt.camera[1], g_opt.camera[2]);
+        cam.yaw = g_opt.camera[3] * (float)M_PI / 180.0f;
+        cam.pitch = g_opt.camera[4] * (float)M_PI / 180.0f;
+    } else if (g_opt.benchmark) benchmark_camera(&cam, 0);
     else if (persist && save_meta()->has_player) {
         const SaveMeta *m = save_meta();
         cam.pos = v3((float)m->x, (float)m->y, (float)m->z);
@@ -316,7 +326,7 @@ static int run_viewer(void) {
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
         }
-        if (g_opt.benchmark) {
+        if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);
             if (gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
         } else if (gl) {

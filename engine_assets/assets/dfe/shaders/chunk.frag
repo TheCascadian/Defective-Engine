@@ -5,6 +5,7 @@ in vec4 v_light;
 in float v_shade;
 in vec3 v_tint;
 in float v_dist;
+in float v_water_depth;
 
 uniform sampler2DArray u_tex;
 uniform sampler2D u_anim;         // per layer: frame count, frames per 4 seconds
@@ -28,11 +29,21 @@ void main() {
     vec3 light = v_light.r * u_sky_color + v_light.gba;
     light = max(light, vec3(u_ambient));
     light = min(light, vec3(1.0));
-    vec3 rgb = tex.rgb * v_tint * light * v_shade;
+    vec3 albedo = tex.rgb * v_tint;
+    if (v_water_depth >= 0.0) {
+        // Water colour comes from the tint alone, which holds the final colour and matches the far terrain
+        // constants; the texture only adds a little ripple so the surface is not a flat sheet.
+        float ripple = dot(tex.rgb, vec3(0.3333)) - 0.55;
+        albedo = v_tint * (0.9 + 0.5 * ripple);
+    }
+    vec3 rgb = albedo * light * v_shade;
     float fog = smoothstep(u_fog_start, u_fog_end, v_dist);
     rgb = mix(rgb, u_fog_color, fog);
 #ifdef PASS_TRANSLUCENT
-    o_color = vec4(rgb, tex.a * 0.72);
+    // Shallow water shows the bed through it; deep water must not, or an unlit sea floor turns the ocean black
+    // and the far-terrain water, which is opaque, no longer matches the near water at the seam.
+    float alpha = v_water_depth < 0.0 ? 0.72 : mix(0.55, 0.96, v_water_depth);
+    o_color = vec4(rgb, tex.a * alpha);
 #else
     o_color = vec4(rgb, 1.0);
 #endif

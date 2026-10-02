@@ -18,6 +18,9 @@
 #define SUBSURFACE_DEPTH 3
 #define MOUNTAIN_HEIGHT_START 110.0f
 #define SNOWLINE 150.0f
+#define TREELINE 128.0f
+#define LINE_WOBBLE 10.0f   /* tree and snow lines move by up to this many blocks so they never read as a ruled stripe */
+#define STEEP_SLOPE 2       /* height step to a neighbouring column that exposes bare rock */
 
 typedef enum { BIOME_OCEAN, BIOME_BEACH, BIOME_DESERT, BIOME_TUNDRA, BIOME_SWAMP, BIOME_FOREST, BIOME_PLAINS, BIOME_MOUNTAIN, BIOME_COUNT } Biome;
 
@@ -186,8 +189,6 @@ static Biome biome_at(float x, float z, float h) {
     return m > 0.0f ? BIOME_FOREST : BIOME_PLAINS;
 }
 
-u32 gen_far_color_at(float x, float z, float height) { return C.far_color[biome_at(x, z, height)]; }
-
 /* ---------------------------------------------------------------- columns */
 
 static void fill_heightmap(GenScratch *s, int cx, int cz, int *max_h) {
@@ -239,13 +240,32 @@ static float cave_at(const GenScratch *s, int x, int ly, int z) {
     return b0 + (b1 - b0) * fy;
 }
 
-static u16 surface_block(Biome b, int y, float detail) {
+/* Altitude lines follow the low-frequency hill noise, so they undulate with the terrain instead of being level. */
+static float treeline_at(float x, float z) { return TREELINE + fnlGetNoise2D(&N.hills, x, z) * LINE_WOBBLE; }
+static float snowline_at(float x, float z) { return SNOWLINE + fnlGetNoise2D(&N.hills, x + 4096.0f, z - 4096.0f) * LINE_WOBBLE; }
+
+u32 gen_far_color_at(float x, float z, float height) {
+    Biome b = biome_at(x, z, height);
+    if (b != BIOME_MOUNTAIN) return C.far_color[b];
+    if (height > snowline_at(x, z)) return C.far_color[BIOME_TUNDRA];
+    if (height > treeline_at(x, z)) return C.far_color[BIOME_MOUNTAIN];
+    return C.far_color[BIOME_PLAINS];
+}
+
+/* Mountains are meadow below the tree line, rock above it and snow on the upper slopes; any biome shows bare
+ * rock where the ground is steep, which is what makes cliffs and ridges read as mountain rather than as a
+ * green heap. The same rules drive the far-terrain colour, apart from slope, so the two layers agree. */
+static u16 surface_block(Biome b, int y, float detail, bool steep, float treeline, float snowline) {
+    if (steep && b != BIOME_OCEAN && b != BIOME_BEACH && b != BIOME_DESERT) return C.stone;
     switch (b) {
     case BIOME_OCEAN: return detail > 0.15f ? C.gravel : C.sand;
     case BIOME_BEACH: case BIOME_DESERT: return C.sand;
     case BIOME_TUNDRA: return C.snow;
     case BIOME_SWAMP: return y <= C.sea_level + 3 ? C.mud : C.grass;
-    case BIOME_MOUNTAIN: return y > SNOWLINE ? C.snow : C.stone;
+    case BIOME_MOUNTAIN:
+        if ((float)y > snowline) return C.snow;
+        if ((float)y > treeline) return detail > 0.35f ? C.gravel : C.stone;
+        return C.grass;
     default: return C.grass;
     }
 }
@@ -254,7 +274,7 @@ static u16 subsurface_block(Biome b) {
     switch (b) {
     case BIOME_OCEAN: case BIOME_BEACH: return C.sand;
     case BIOME_DESERT: return C.sandstone;
-    case BIOME_MOUNTAIN: return C.stone;
+    case BIOME_MOUNTAIN: return C.dirt;
     case BIOME_SWAMP: return C.mud;
     default: return C.dirt;
     }
@@ -271,6 +291,14 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
             int h = s->height[col];
             Biome bi = (Biome)s->biome[col];
             float detail = fnlGetNoise2D(&N.detail, (float)(cx * CHUNK_SIZE + x) * 3.1f, (float)(cz * CHUNK_SIZE + z) * 3.1f);
+            int step = 0;
+            for (int k = 0; k < 4; k++) {
+                int nx = CLAMP(x + (k == 0) - (k == 1), 0, CHUNK_SIZE - 1), nz = CLAMP(z + (k == 2) - (k == 3), 0, CHUNK_SIZE - 1);
+                step = MAX(step, abs(s->height[(nz << 5) | nx] - h));
+            }
+            bool steep = step >= STEEP_SLOPE;
+            float treeline = treeline_at((float)(cx * CHUNK_SIZE + x), (float)(cz * CHUNK_SIZE + z));
+            float snowline = snowline_at((float)(cx * CHUNK_SIZE + x), (float)(cz * CHUNK_SIZE + z));
             for (int ly = 0; ly < H; ly++) {
                 int y = y0 + ly;
                 u16 st;
@@ -278,7 +306,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                     st = y <= C.sea_level ? C.water : STATE_AIR;
                 } else {
                     int depth = h - y;
-                    if (depth == 0) st = surface_block(bi, y, detail);
+                    if (depth == 0) st = surface_block(bi, y, detail, steep, treeline, snowline);
                     else if (depth <= SUBSURFACE_DEPTH) st = subsurface_block(bi);
                     else st = y < C.deep_level ? C.deep : C.stone;
                     /* No carving near the surface or on the band floor keeps caves sealed from the sky and from the filler below. */

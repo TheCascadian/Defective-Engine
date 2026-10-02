@@ -370,9 +370,9 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     M4 vp = m4_mul(cam->proj, rot_view);
     glUniformMatrix4fv(shader_uniform(sh, "u_viewproj"), 1, GL_FALSE, vp.m);
     glUniform1f(shader_uniform(sh, "u_time"), (float)time_s);
-    static const float tints[12] = {1, 1, 1, 0.55f, 0.78f, 0.35f, 0.42f, 0.66f, 0.30f, 0.30f, 0.52f, 0.80f};
+    static const float tints[12] = {1, 1, 1, 0.55f, 0.78f, 0.35f, 0.42f, 0.66f, 0.30f, 0.16f, 0.38f, 0.58f};
     glUniform3fv(shader_uniform(sh, "u_tint"), 4, tints);
-    glUniform3f(shader_uniform(sh, "u_water_deep"), 0.08f, 0.22f, 0.45f);
+    glUniform3f(shader_uniform(sh, "u_water_deep"), 0.07f, 0.20f, 0.40f);
     glUniform1i(shader_uniform(sh, "u_origins"), 1);
     glUniform1i(shader_uniform(sh, "u_tex"), 0);
     glUniform1i(shader_uniform(sh, "u_anim"), 2);

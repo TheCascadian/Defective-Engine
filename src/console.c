@@ -72,6 +72,25 @@ static void cmd_setblock(const char *args, void *user) {
     if (!game_edit_block(x, y, z, state)) console_print("the edit was cancelled by a mod");
 }
 
+static void cmd_gamemode(const char *args, void *user) {
+    (void)user;
+    if (!strcmp(args, "creative")) g_creative = true;
+    else if (!strcmp(args, "survival")) { g_creative = false; g_player.flying = false; }
+    else { console_print("usage: gamemode <creative|survival>"); return; }
+    console_print("game mode is now %s", g_creative ? "creative" : "survival");
+}
+
+static void cmd_give(const char *args, void *user) {
+    (void)user;
+    char name[80];
+    int count = 1;
+    if (sscanf(args, "%79s %d", name, &count) < 1) { console_print("usage: give <namespace:block> [count]"); return; }
+    u16 state = block_parse_state(name);
+    if (state == STATE_UNLOADED) { console_print("unknown block \"%s\". Use a registered name such as base:stone", name); return; }
+    int left = inventory_add(&g_inv, state, CLAMP(count, 1, INV_SLOTS * INV_MAX_STACK));
+    console_print("gave %d x %s%s", count - left, name, left ? " (inventory full)" : "");
+}
+
 void console_init(void) {
     const dfe_api_t *api = api_get();
     api->register_command("help", "list every command", cmd_help, NULL, "engine");
@@ -81,6 +100,8 @@ void console_init(void) {
     api->register_command("lua", "run Lua in the console sandbox", cmd_lua, NULL, "engine");
     api->register_command("getblock", "getblock x y z", cmd_getblock, NULL, "engine");
     api->register_command("setblock", "setblock x y z name", cmd_setblock, NULL, "engine");
+    api->register_command("gamemode", "gamemode creative|survival", cmd_gamemode, NULL, "engine");
+    api->register_command("give", "give name [count]", cmd_give, NULL, "engine");
 }
 
 /* ---------------------------------------------------------------- input */

@@ -167,6 +167,47 @@ static void fly_camera(Camera *cam, double dt) {
     }
 }
 
+#define SELECTION_PAD 0.003f /* the outline floats just outside the block so it does not z-fight */
+
+static void draw_selection_box(void) {
+    const RayHit *h = &g_interact.target;
+    if (!h->hit) return;
+    float x0 = (float)h->x - SELECTION_PAD, y0 = (float)h->y - SELECTION_PAD, z0 = (float)h->z - SELECTION_PAD;
+    float x1 = (float)h->x + 1 + SELECTION_PAD, y1 = (float)h->y + 1 + SELECTION_PAD, z1 = (float)h->z + 1 + SELECTION_PAD;
+    u32 c = rgba(0, 0, 0, 255);
+    V3 v[8] = {v3(x0, y0, z0), v3(x1, y0, z0), v3(x1, y0, z1), v3(x0, y0, z1), v3(x0, y1, z0), v3(x1, y1, z0), v3(x1, y1, z1), v3(x0, y1, z1)};
+    for (int i = 0; i < 4; i++) {
+        debug_line(v[i], v[(i + 1) % 4], c);
+        debug_line(v[4 + i], v[4 + (i + 1) % 4], c);
+        debug_line(v[i], v[4 + i], c);
+    }
+}
+
+/* Reads the keyboard and mouse into the player and mirrors the result into the camera. While a menu has the
+ * input, the player still simulates (gravity, water) but receives no commands. */
+static void drive_player(Camera *cam, double dt) {
+    bool menu = console_open() || hud_inventory_open();
+    PlayerInput in = {0};
+    if (!menu) {
+        in.forward = (key_down(GLFW_KEY_W) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_S) ? 1.0f : 0.0f);
+        in.strafe = (key_down(GLFW_KEY_D) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_A) ? 1.0f : 0.0f);
+        in.jump = key_down(GLFW_KEY_SPACE);
+        in.descend = key_down(GLFW_KEY_LEFT_SHIFT);
+        in.sprint = key_down(GLFW_KEY_LEFT_CONTROL);
+        in.toggle_fly = g_creative && key_pressed(GLFW_KEY_F);
+        if (g_in.cursor_captured) {
+            g_player.yaw -= (float)g_in.mouse_dx * 0.0022f;
+            g_player.pitch = CLAMP(g_player.pitch - (float)g_in.mouse_dy * 0.0022f, -1.55f, 1.55f);
+        }
+    }
+    player_step(&g_player, &in, (float)dt);
+    cam->pos = player_eye(&g_player);
+    cam->yaw = g_player.yaw;
+    cam->pitch = g_player.pitch;
+    interact_update(&g_player, (float)dt, !menu && g_in.cursor_captured);
+    server_set_focus(g_player.pos);
+}
+
 static void print_benchmark_report(double wall_s) {
     int n = g_stats.count;
     double *sorted = xmalloc((size_t)n * sizeof(double));
@@ -298,6 +339,13 @@ static int run_viewer(void) {
     world_init(seed);
     if (persist) game_time_set(save_meta()->day_time);
     { dfe_event_t ev = {.name = "world_load"}; event_fire(&ev); }
+    /* The benchmark and --camera runs keep the scripted or free camera so their results stay comparable. */
+    bool play = gl && !g_opt.benchmark && !g_opt.camera_set;
+    server_init();
+    hud_init();
+    if (persist && save_meta()->has_inventory) inventory_restore(&g_inv, &g_creative, save_meta());
+    else { inventory_clear(&g_inv); inventory_starter(&g_inv); }
+    if (gl) hud_build_icons();
     if (gl) {
         overlay_add_page("world", overlay_world_page);
         overlay_add_page("jobs", overlay_jobs_page);
@@ -319,6 +367,21 @@ static int run_viewer(void) {
         cam.yaw = m->yaw;
         cam.pitch = m->pitch;
     } else cam.pos.y = MAX(gen_height_at(0, 0), (float)gen_sea_level()) + 4.0f;
+    if (play) {
+        const SaveMeta *m = save_meta();
+        if (persist && m->has_player) {
+            player_init(&g_player, v3((float)m->x, (float)m->y, (float)m->z));
+            g_player.yaw = m->yaw;
+            g_player.pitch = m->pitch;
+            g_player.flying = m->flying && g_creative;
+        } else {
+            player_init(&g_player, player_find_spawn());
+            g_player.yaw = cam.yaw;
+        }
+        cam.pos = player_eye(&g_player);
+        cam.yaw = g_player.yaw;
+        cam.pitch = g_player.pitch;
+    }
     camera_update(&cam, 16.0f / 9.0f);
     double cold = load_world_around(&cam, rd);
     jobs_stats_reset();
@@ -335,17 +398,23 @@ static int run_viewer(void) {
         if (gl) {
             window_poll();
             console_update();
+            if (play && !console_open() && key_pressed(GLFW_KEY_E)) hud_set_inventory_open(!hud_inventory_open());
             if (!console_open() && key_pressed(GLFW_KEY_ESCAPE)) {
-                if (g_in.cursor_captured) window_set_cursor_captured(false);
+                if (hud_inventory_open()) hud_set_inventory_open(false);
+                else if (g_in.cursor_captured) window_set_cursor_captured(false);
                 else g_win.should_close = true;
             }
-            if (!console_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
+            if (!console_open() && !hud_inventory_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);
             if (gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
+        } else if (play) {
+            drive_player(&cam, dt);
+            server_pump();
+            hud_update();
         } else if (gl && !console_open()) {
             fly_camera(&cam, dt);
         }
@@ -367,7 +436,9 @@ static int run_viewer(void) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             scene_render(&cam, time_now_s() - bench_start);
             g_stats.draw_calls_last = g_scene_stats.draw_calls;
+            if (play) { draw_selection_box(); debug_lines_flush(&cam); }
             ui_begin(g_win.width, g_win.height);
+            if (play) hud_draw(g_win.width, g_win.height);
             overlay_draw();
             console_draw(g_win.width, g_win.height);
             ui_end();
@@ -391,11 +462,20 @@ static int run_viewer(void) {
     if (persist) {
         SaveMeta *m = save_meta();
         m->has_player = true;
-        m->x = cam.pos.x; m->y = cam.pos.y; m->z = cam.pos.z;
-        m->yaw = cam.yaw; m->pitch = cam.pitch;
+        if (play) {
+            m->x = g_player.pos.x; m->y = g_player.pos.y; m->z = g_player.pos.z;
+            m->yaw = g_player.yaw; m->pitch = g_player.pitch;
+            m->flying = g_player.flying;
+            hud_set_inventory_open(false);
+            inventory_store(&g_inv, g_creative, m);
+        } else {
+            m->x = cam.pos.x; m->y = cam.pos.y; m->z = cam.pos.z;
+            m->yaw = cam.yaw; m->pitch = cam.pitch;
+        }
         m->day_time = game_time_get();
     }
     { dfe_event_t ev = {.name = "world_unload"}; event_fire(&ev); }
+    server_shutdown();
     world_shutdown();
     save_close();
     mods_unload_plugins();
@@ -404,6 +484,7 @@ static int run_viewer(void) {
     jobs_shutdown();
     if (gl) {
         scene_shutdown();
+        hud_shutdown();
         textures_destroy();
         ui_shutdown();
         window_destroy();

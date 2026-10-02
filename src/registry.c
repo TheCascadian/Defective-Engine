@@ -314,6 +314,8 @@ static bool parse_block_file(const char *ns, const char *stem, const char *rel, 
         d.flags |= BF_FLUID;
         d.fluid_viscosity = MAX(json_int(fluid, "viscosity", 5), 1);
         d.fluid_group = (int)(hash_str(json_str(fluid, "group", d.name)) & 0x7FFFFFFF);
+        d.fluid_reach = CLAMP(json_int(fluid, "reach", FLUID_DEFAULT_REACH), 1, MAX_PROP_VALUES - 2);
+        d.fluid_infinite = json_bool(fluid, "infinite", false);
     }
     const Json *props = json_get(root, "properties");
     if (props && props->type == JSON_OBJECT) {
@@ -333,6 +335,14 @@ static bool parse_block_file(const char *ns, const char *stem, const char *rel, 
             for (int k = 0; k < vals->count; k++) snprintf(p->values[k], sizeof p->values[k], "%s", json_as_str(vals->items[k], "?"));
             d.nprops++;
         }
+    }
+    d.fluid_level_prop = -1;
+    if (fluid) { /* the simulation reads and writes the "level" property: 0 source, 1..reach flowing, reach + 1 falling */
+        int pi = prop_find(&d, "level");
+        if (pi < 0 || d.props[pi].count != d.fluid_reach + 2)
+            data_error(mod, rel, fluid->line, "fluid block '%s' needs a \"level\" property with %d values (0 is a source, 1 to %d are flowing, %d is falling). Add \"properties\": {\"level\": [\"0\", ..., \"%d\"]} or change \"reach\" under \"fluid\"",
+                       d.name, d.fluid_reach + 2, d.fluid_reach, d.fluid_reach + 1, d.fluid_reach + 1);
+        else d.fluid_level_prop = pi;
     }
     if (d.emit_prop_name[0]) {
         int pi = prop_find(&d, d.emit_prop_name), vi = -1;
@@ -626,7 +636,7 @@ bool textures_build(void) {
     g_tex.tile_size = tile;
     g_tex.layer_count = layers;
     LOGI("Texture array: %d layers of %dx%d, %d mip levels, %.1f MB", layers, tile, tile, levels, layers * tile_bytes * 1.34 / 1048576.0);
-    free(base);
+    g_tex.pixels = base; /* kept for the item icons, a few kilobytes per layer */
     free(cutout);
     free(anim);
     for (int i = 0; i < sources.n; i++) (void)0;
@@ -643,6 +653,7 @@ u16 texture_layer_lookup(const char *res_id) {
 void textures_destroy(void) {
     if (g_tex.gl_array) glDeleteTextures(1, &g_tex.gl_array);
     if (g_tex.gl_anim) glDeleteTextures(1, &g_tex.gl_anim);
+    free(g_tex.pixels);
     strmap_free(&g_tex.name_to_layer);
     memset(&g_tex, 0, sizeof g_tex);
 }

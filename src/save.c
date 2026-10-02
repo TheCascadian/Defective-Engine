@@ -142,6 +142,18 @@ static bool meta_read(void) {
         S.meta.yaw = (float)json_num(p, "yaw", 0); S.meta.pitch = (float)json_num(p, "pitch", 0);
         S.meta.flying = json_bool(p, "flying", false);
     }
+    const Json *inv = json_get(j, "inventory");
+    if (inv) {
+        S.meta.has_inventory = true;
+        S.meta.creative = json_bool(inv, "creative", true);
+        S.meta.selected = (int)json_num(inv, "selected", 0);
+        const Json *slots = json_get(inv, "slots");
+        for (int i = 0; slots && i < json_len(slots) && i < SAVE_INV_SLOTS; i++) {
+            const Json *e = json_at(slots, i);
+            snprintf(S.meta.inv_name[i], SAVE_BLOCK_NAME_LEN, "%s", json_as_str(json_get(e, "block"), ""));
+            S.meta.inv_count[i] = (u8)CLAMP((int)json_num(e, "count", 0), 0, 255);
+        }
+    }
     S.meta.day_time = json_num(j, "time", 0.3);
     const Json *names = json_get(j, "blocks");
     for (int i = 0; names && i < json_len(names); i++) vec_push(S.names.names, xstrdup(json_as_str(json_at(names, i), "dfe:missing")));
@@ -165,6 +177,22 @@ static bool meta_write(void) {
         jw_key(&w, "yaw"); jw_num(&w, S.meta.yaw);
         jw_key(&w, "pitch"); jw_num(&w, S.meta.pitch);
         jw_key(&w, "flying"); jw_bool(&w, S.meta.flying);
+        jw_end_obj(&w);
+    }
+    if (S.meta.has_inventory) {
+        jw_key(&w, "inventory");
+        jw_begin_obj(&w);
+        jw_key(&w, "creative"); jw_bool(&w, S.meta.creative);
+        jw_key(&w, "selected"); jw_num(&w, S.meta.selected);
+        jw_key(&w, "slots");
+        jw_begin_arr(&w);
+        for (int i = 0; i < SAVE_INV_SLOTS; i++) {
+            jw_begin_obj(&w);
+            jw_key(&w, "block"); jw_str(&w, S.meta.inv_name[i]);
+            jw_key(&w, "count"); jw_num(&w, S.meta.inv_count[i]);
+            jw_end_obj(&w);
+        }
+        jw_end_arr(&w);
         jw_end_obj(&w);
     }
     jw_key(&w, "blocks");

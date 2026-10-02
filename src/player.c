@@ -1,0 +1,210 @@
+/* Player controller: an axis-aligned box moved one axis at a time against the voxel grid.
+ *
+ * Decisions:
+ *  - Axis-separated resolution with a snap to the blocking face is exact for a box and cheap. A step never exceeds
+ *    one block (terminal speed times the physics step is below one), so the box cannot tunnel through a wall.
+ *  - Unloaded columns count as solid, so a player who outruns streaming stops at the edge instead of falling
+ *    through the world.
+ *  - Time is split into fixed physics steps so the result does not depend on the frame rate. */
+#include "dfe.h"
+
+#define PHYSICS_STEP (1.0f / 60.0f)
+#define MAX_STEPS_PER_CALL 12
+#define HALF_WIDTH (PLAYER_WIDTH * 0.5f)
+#define SKIN 0.001f            /* the box is shrunk by this much so resting contact is not an overlap */
+#define GRAVITY 30.0f
+#define JUMP_SPEED 9.2f
+#define TERMINAL_SPEED 50.0f
+#define WALK_SPEED 4.3f
+#define SPRINT_SPEED 5.8f
+#define FLY_SPEED 11.0f
+#define FLY_SPRINT_SPEED 32.0f
+#define SWIM_SPEED 2.6f
+#define SWIM_UP_SPEED 3.6f
+#define WATER_SINK_SPEED 2.2f
+#define LAVA_SPEED_SCALE 0.4f
+#define GROUND_RESPONSE 14.0f   /* per second, how fast horizontal velocity follows the wish */
+#define AIR_RESPONSE 3.0f
+#define FLY_RESPONSE 8.0f
+#define STEP_HEIGHT 0.6f
+#define CLIMB_SPEED 3.0f
+#define SPAWN_SEARCH_RADIUS 640
+#define SPAWN_SEARCH_STEP 16
+#define SPAWN_MIN_HEIGHT_ABOVE_SEA 2
+
+Player g_player;
+
+void player_init(Player *p, V3 feet) {
+    memset(p, 0, sizeof *p);
+    p->pos = feet;
+}
+
+V3 player_eye(const Player *p) { return v3(p->pos.x, p->pos.y + PLAYER_EYE, p->pos.z); }
+
+static bool cell_blocks(int x, int y, int z) {
+    u16 s = world_get_state(x, y, z);
+    return s == STATE_UNLOADED || state_solid(s);
+}
+
+bool player_box_blocked(V3 f) {
+    int x0 = ifloor(f.x - HALF_WIDTH + SKIN), x1 = ifloor(f.x + HALF_WIDTH - SKIN);
+    int y0 = ifloor(f.y + SKIN), y1 = ifloor(f.y + PLAYER_HEIGHT - SKIN);
+    int z0 = ifloor(f.z - HALF_WIDTH + SKIN), z1 = ifloor(f.z + HALF_WIDTH - SKIN);
+    for (int y = y0; y <= y1; y++)
+        for (int z = z0; z <= z1; z++)
+            for (int x = x0; x <= x1; x++)
+                if (cell_blocks(x, y, z)) return true;
+    return false;
+}
+
+/* Moves along one axis and snaps to the face that stops the box. Returns true when something was hit. */
+static bool move_axis(Player *p, int axis, float delta) {
+    if (delta == 0.0f) return false;
+    float *c = axis == 0 ? &p->pos.x : axis == 1 ? &p->pos.y : &p->pos.z;
+    float old = *c;
+    *c = old + delta;
+    if (!player_box_blocked(p->pos)) return false;
+    float lo_extent = axis == 1 ? 0.0f : HALF_WIDTH, hi_extent = axis == 1 ? PLAYER_HEIGHT : HALF_WIDTH;
+    if (delta > 0) *c = (float)ifloor(old + hi_extent + delta) - hi_extent - SKIN * 2.0f;
+    else *c = (float)(ifloor(old - lo_extent + delta) + 1) + lo_extent + SKIN * 2.0f;
+    /* The snap can still overlap when the box starts inside a block, such as after a block is placed on it. */
+    if (player_box_blocked(p->pos)) *c = old;
+    return true;
+}
+
+static void sample_medium(Player *p) {
+    int x = ifloor(p->pos.x), z = ifloor(p->pos.z);
+    u16 feet = world_get_state(x, ifloor(p->pos.y + 0.2f), z), body = world_get_state(x, ifloor(p->pos.y + 1.0f), z);
+    u16 head = world_get_state(x, ifloor(p->pos.y + PLAYER_EYE), z);
+    bool feet_f = feet != STATE_UNLOADED && (g_state_flags[feet] & BF_FLUID);
+    bool body_f = body != STATE_UNLOADED && (g_state_flags[body] & BF_FLUID);
+    p->in_water = feet_f || body_f;
+    p->head_in_water = head != STATE_UNLOADED && (g_state_flags[head] & BF_FLUID);
+    p->in_lava = false;
+    if (p->in_water) {
+        const BlockDef *b = block_of_state(feet_f ? feet : body);
+        p->in_lava = b && b->emit[0] > 0; /* lava glows; the only fluid that does today */
+    }
+}
+
+static bool on_climbable(const Player *p) {
+    int x = ifloor(p->pos.x), z = ifloor(p->pos.z);
+    for (int dy = 0; dy < 2; dy++) {
+        u16 s = world_get_state(x, ifloor(p->pos.y) + dy, z);
+        if (s != STATE_UNLOADED && (g_state_flags[s] & BF_CLIMBABLE)) return true;
+    }
+    return false;
+}
+
+static void approach(float *v, float target, float rate, float dt) {
+    float k = 1.0f - expf(-rate * dt);
+    *v += (target - *v) * k;
+}
+
+static void horizontal_wish(const Player *p, const PlayerInput *in, float speed, float *wx, float *wz) {
+    float fx = -sinf(p->yaw), fz = -cosf(p->yaw); /* yaw 0 looks down -Z, see Camera */
+    float rx = cosf(p->yaw), rz = -sinf(p->yaw);
+    float x = fx * in->forward + rx * in->strafe, z = fz * in->forward + rz * in->strafe;
+    float len = sqrtf(x * x + z * z);
+    if (len > 1.0f) { x /= len; z /= len; }
+    *wx = x * speed;
+    *wz = z * speed;
+}
+
+/* Tries to climb a low ledge: lift the box, repeat the blocked horizontal move, and settle back down. */
+static bool try_step_up(Player *p, int axis, float delta) {
+    Player t = *p;
+    if (move_axis(&t, 1, STEP_HEIGHT)) return false;
+    if (move_axis(&t, axis, delta)) return false;
+    move_axis(&t, 1, -STEP_HEIGHT);
+    float gained = axis == 0 ? fabsf(t.pos.x - p->pos.x) : fabsf(t.pos.z - p->pos.z);
+    if (gained < fabsf(delta) * 0.5f) return false;
+    *p = t;
+    return true;
+}
+
+static void collide_and_move(Player *p, float dt) {
+    bool was_ground = p->on_ground;
+    float dx = p->vel.x * dt, dy = p->vel.y * dt, dz = p->vel.z * dt;
+    if (move_axis(p, 0, dx)) {
+        if (!(was_ground && !p->flying && try_step_up(p, 0, dx))) p->vel.x = 0;
+    }
+    if (move_axis(p, 2, dz)) {
+        if (!(was_ground && !p->flying && try_step_up(p, 2, dz))) p->vel.z = 0;
+    }
+    bool hit = move_axis(p, 1, dy);
+    p->on_ground = hit && dy < 0;
+    if (hit) p->vel.y = 0;
+}
+
+static void step_fly(Player *p, const PlayerInput *in, float dt) {
+    float wx, wz, speed = in->sprint ? FLY_SPRINT_SPEED : FLY_SPEED;
+    horizontal_wish(p, in, speed, &wx, &wz);
+    float wy = ((in->jump ? 1.0f : 0.0f) - (in->descend ? 1.0f : 0.0f)) * speed;
+    approach(&p->vel.x, wx, FLY_RESPONSE, dt);
+    approach(&p->vel.y, wy, FLY_RESPONSE, dt);
+    approach(&p->vel.z, wz, FLY_RESPONSE, dt);
+}
+
+static void step_swim(Player *p, const PlayerInput *in, float dt) {
+    float wx, wz, scale = p->in_lava ? LAVA_SPEED_SCALE : 1.0f;
+    horizontal_wish(p, in, SWIM_SPEED * scale, &wx, &wz);
+    approach(&p->vel.x, wx, GROUND_RESPONSE * 0.5f, dt);
+    approach(&p->vel.z, wz, GROUND_RESPONSE * 0.5f, dt);
+    float wy = in->jump ? SWIM_UP_SPEED * scale : (in->descend ? -SWIM_UP_SPEED * scale : -WATER_SINK_SPEED * scale);
+    approach(&p->vel.y, wy, 5.0f, dt);
+}
+
+static void step_climb(Player *p, const PlayerInput *in, float dt) {
+    float wx, wz;
+    horizontal_wish(p, in, WALK_SPEED * 0.5f, &wx, &wz);
+    approach(&p->vel.x, wx, GROUND_RESPONSE, dt);
+    approach(&p->vel.z, wz, GROUND_RESPONSE, dt);
+    p->vel.y = in->jump || in->forward > 0 ? CLIMB_SPEED : (in->descend ? -CLIMB_SPEED : 0.0f);
+}
+
+static void step_walk(Player *p, const PlayerInput *in, float dt) {
+    float wx, wz, speed = in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED;
+    horizontal_wish(p, in, speed, &wx, &wz);
+    float rate = p->on_ground ? GROUND_RESPONSE : AIR_RESPONSE;
+    approach(&p->vel.x, wx, rate, dt);
+    approach(&p->vel.z, wz, rate, dt);
+    if (in->jump && p->on_ground) { p->vel.y = JUMP_SPEED; p->on_ground = false; }
+    p->vel.y = MAX(p->vel.y - GRAVITY * dt, -TERMINAL_SPEED);
+}
+
+static void physics_step(Player *p, const PlayerInput *in, float dt) {
+    sample_medium(p);
+    if (p->flying) step_fly(p, in, dt);
+    else if (p->in_water) step_swim(p, in, dt);
+    else if (on_climbable(p)) step_climb(p, in, dt);
+    else step_walk(p, in, dt);
+    collide_and_move(p, dt);
+    if (p->flying && p->on_ground) p->flying = false; /* landing ends flight, as the player expects */
+}
+
+void player_step(Player *p, const PlayerInput *in, float dt) {
+    if (in->toggle_fly) {
+        p->flying = !p->flying;
+        p->vel.y = 0;
+    }
+    int steps = 0;
+    while (dt > 1e-6f && steps++ < MAX_STEPS_PER_CALL) {
+        float h = MIN(dt, PHYSICS_STEP);
+        physics_step(p, in, h);
+        dt -= h;
+    }
+}
+
+V3 player_find_spawn(void) {
+    int sea = gen_sea_level();
+    for (int r = 0; r <= SPAWN_SEARCH_RADIUS; r += SPAWN_SEARCH_STEP) {
+        for (int k = 0; k < (r == 0 ? 1 : 8); k++) {
+            float a = (float)k * (TAU_F / 8.0f);
+            float x = cosf(a) * (float)r, z = sinf(a) * (float)r;
+            float h = gen_height_at(x, z);
+            if (h >= (float)(sea + SPAWN_MIN_HEIGHT_ABOVE_SEA)) return v3(floorf(x) + 0.5f, floorf(h) + 1.0f + 0.01f, floorf(z) + 0.5f);
+        }
+    }
+    return v3(0.5f, (float)sea + 3.0f, 0.5f); /* an archipelago-free world: stand on the sea's surface level */
+}

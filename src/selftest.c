@@ -687,6 +687,156 @@ static void test_example_mods(void) {
     data_error_reset();
 }
 
+/* ---------------------------------------------------------------- gameplay */
+
+#define SLAB_Y 200
+#define SLAB_MAX 16
+#define FLUID_SETTLE_TICKS 120
+#define FLUID_EBB_TICKS 400
+
+static int water_level_at(const BlockDef *water, int x, int y, int z) {
+    u16 s = world_get_state(x, y, z);
+    if (block_of_state(s) != water) return -1;
+    return block_state_prop_index(water, s, water->fluid_level_prop);
+}
+
+static void test_player_physics(u16 stone) {
+    Player p;
+    player_init(&p, v3(8.5f, 210.0f, 8.5f));
+    PlayerInput none = {0};
+    for (int i = 0; i < 300; i++) player_step(&p, &none, 1.0f / 60.0f);
+    CHECK(p.on_ground && fabsf(p.pos.y - (float)(SLAB_Y + 1)) < 0.01f);
+    /* Result must not depend on the frame rate. */
+    Player q;
+    player_init(&q, v3(8.5f, 210.0f, 8.5f));
+    for (int i = 0; i < 75; i++) player_step(&q, &none, 1.0f / 15.0f);
+    CHECK(fabsf(q.pos.y - p.pos.y) < 0.01f);
+    /* A wall stops a walking player and a one block ledge is stepped over only when 0.6 or lower. */
+    for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, stone);
+    PlayerInput fwd = {.strafe = 1.0f};
+    p.yaw = 0;
+    for (int i = 0; i < 240; i++) player_step(&p, &fwd, 1.0f / 60.0f);
+    CHECK(p.pos.x < 12.0f - PLAYER_WIDTH * 0.5f + 0.01f && p.pos.x > 10.0f);
+    for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, STATE_AIR);
+    CHECK(!player_box_blocked(v3(8.5f, (float)(SLAB_Y + 1) + 0.01f, 8.5f)));
+    CHECK(player_box_blocked(v3(8.5f, (float)SLAB_Y + 0.5f, 8.5f)));
+}
+
+static void test_raycast_and_inventory(u16 stone) {
+    RayHit h;
+    CHECK(raycast_blocks(v3(8.5f, 205.5f, 8.5f), v3(0, -1, 0), 10.0f, false, &h));
+    CHECK(h.x == 8 && h.y == SLAB_Y && h.z == 8 && h.face == DIR_PY && h.py == SLAB_Y + 1 && h.state == stone);
+    CHECK(!raycast_blocks(v3(8.5f, 205.5f, 8.5f), v3(0, 1, 0), 10.0f, false, &h));
+    CHECK(!raycast_blocks(v3(8.5f, 205.5f, 8.5f), v3(0, -1, 0), 3.0f, false, &h));
+    CHECK(raycast_blocks(v3(0.5f, SLAB_Y + 0.5f, 8.5f), v3(1, 0, 0), 3.0f, false, &h) == false || h.x >= 0);
+
+    Inventory inv;
+    inventory_clear(&inv);
+    CHECK(inventory_add(&inv, stone, 100) == 0);
+    CHECK(inv.slot[0].count == INV_MAX_STACK && inv.slot[1].count == 36 && inventory_count(&inv, stone) == 100);
+    CHECK(inventory_add(&inv, stone, INV_SLOTS * INV_MAX_STACK) == 100); /* only the free space is used */
+    inventory_clear(&inv);
+    inventory_add(&inv, stone, 10);
+    inventory_click(&inv, 0, 1); /* right click picks up half, rounded up */
+    CHECK(inv.cursor.count == 5 && inv.slot[0].count == 5);
+    inventory_click(&inv, 3, 1); /* right click on an empty slot drops one */
+    CHECK(inv.cursor.count == 4 && inv.slot[3].count == 1);
+    inventory_click(&inv, 0, 0); /* left click merges the same item */
+    CHECK(inv.cursor.count == 0 && inv.slot[0].count == 9);
+    inventory_click(&inv, 0, 0); /* left click on a stack picks it up whole */
+    CHECK(inv.cursor.count == 9 && inv.slot[0].count == 0 && inv.cursor.state == stone);
+    CHECK(!inventory_take_one(&inv, 0));
+}
+
+static void test_server_and_fluids(u16 stone, const BlockDef *water) {
+    player_init(&g_player, v3(8.5f, (float)(SLAB_Y + 1), 8.5f));
+    inventory_clear(&g_inv);
+    g_inv.slot[0].state = stone;
+    g_inv.slot[0].count = 5;
+    g_inv.selected = 0;
+    g_creative = false;
+    ServerMsg place = {.type = MSG_PLACE, .x = 10, .y = SLAB_Y + 1, .z = 8, .state = stone};
+    server_post(&place);
+    CHECK(server_pump() == 1 && world_get_state(10, SLAB_Y + 1, 8) == stone && g_inv.slot[0].count == 4);
+    ServerMsg far_place = {.type = MSG_PLACE, .x = 30, .y = SLAB_Y + 1, .z = 8, .state = stone};
+    server_post(&far_place);
+    CHECK(server_pump() == 0 && world_get_state(30, SLAB_Y + 1, 8) == STATE_AIR);
+    ServerMsg inside = {.type = MSG_PLACE, .x = 8, .y = SLAB_Y + 1, .z = 8, .state = stone};
+    server_post(&inside); /* the player stands here */
+    CHECK(server_pump() == 0);
+    ServerMsg brk = {.type = MSG_BREAK, .x = 10, .y = SLAB_Y + 1, .z = 8};
+    server_post(&brk);
+    CHECK(server_pump() == 1 && world_get_state(10, SLAB_Y + 1, 8) == STATE_AIR);
+    CHECK(inventory_count(&g_inv, item_for_block(block_of_state(stone))) >= 1); /* survival gives the drop */
+    g_creative = true;
+
+    CHECK(water->fluid_level_prop >= 0 && water->fluid_reach == FLUID_DEFAULT_REACH);
+    u16 source = water->default_state;
+    world_set_state(8, SLAB_Y + 1, 8, source);
+    for (int i = 0; i < FLUID_SETTLE_TICKS; i++) server_tick();
+    CHECK(water_level_at(water, 8, SLAB_Y + 1, 8) == 0);
+    CHECK(water_level_at(water, 8 + 3, SLAB_Y + 1, 8) == 3);
+    CHECK(water_level_at(water, 8, SLAB_Y + 1, 8 - FLUID_DEFAULT_REACH) == FLUID_DEFAULT_REACH);
+    CHECK(water_level_at(water, 8 + FLUID_DEFAULT_REACH + 1, SLAB_Y + 1, 8) == -1);
+    world_set_state(8, SLAB_Y + 1, 8, STATE_AIR);
+    for (int i = 0; i < FLUID_EBB_TICKS; i++) server_tick();
+    CHECK(water_level_at(water, 8 + 3, SLAB_Y + 1, 8) == -1 && water_level_at(water, 8 + 1, SLAB_Y + 1, 8) == -1);
+    CHECK(server_scheduled_count() == 0); /* a settled world has no pending work */
+}
+
+static void test_inventory_save(u16 stone, u16 dirt) {
+    Inventory a, b;
+    inventory_clear(&a);
+    a.slot[2].state = stone; a.slot[2].count = 33;
+    a.slot[20].state = dirt; a.slot[20].count = 64;
+    a.selected = 4;
+    static SaveMeta m;
+    memset(&m, 0, sizeof m);
+    inventory_store(&a, false, &m);
+    bool creative = true;
+    inventory_restore(&b, &creative, &m);
+    CHECK(!creative && b.selected == 4 && b.slot[2].state == stone && b.slot[2].count == 33 && b.slot[20].state == dirt && b.slot[20].count == 64);
+    snprintf(m.inv_name[2], SAVE_BLOCK_NAME_LEN, "gone:missing_block"); /* a removed mod's item is dropped, not crashed on */
+    inventory_restore(&b, &creative, &m);
+    CHECK(b.slot[2].count == 0 && b.slot[20].count == 64);
+}
+
+static void test_gameplay(void) {
+    if (!path_is_dir("mods")) { printf("selftest gameplay skipped: run from the repository root\n"); return; }
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    data_error_reset();
+    mods_reset();
+    events_clear_all();
+    mods_discover("mods");
+    mods_resolve();
+    mods_mount();
+    registry_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    CHECK(data_error_count() == 0);
+    const BlockDef *water = block_find("base:water");
+    BlockDef *stone_def = block_find("base:stone");
+    if (data_error_count() || !water || !stone_def) { mods_reset(); return; }
+    u16 stone = stone_def->default_state, dirt = block_find("base:dirt")->default_state;
+    jobs_init(2);
+    world_init(4242);
+    world_flush_generation(0, 0, 2);
+    server_init();
+    for (int z = 0; z <= SLAB_MAX; z++)
+        for (int x = 0; x <= SLAB_MAX; x++) world_set_state(x, SLAB_Y, z, stone);
+    test_player_physics(stone);
+    test_raycast_and_inventory(stone);
+    test_server_and_fluids(stone, water);
+    test_inventory_save(stone, dirt);
+    server_shutdown();
+    world_shutdown();
+    jobs_shutdown();
+    events_clear_all();
+    mods_reset();
+    data_error_reset();
+}
+
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
@@ -698,6 +848,7 @@ int selftest_run(void) {
         {"vfs", test_vfs},
         {"mods-scripts", test_mods_and_scripts},
         {"examples", test_example_mods},
+        {"gameplay", test_gameplay},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {
         int before = g_failures;

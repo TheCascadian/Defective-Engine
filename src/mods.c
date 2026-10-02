@@ -334,7 +334,7 @@ typedef struct Cmd {
     void *user;
 } Cmd;
 
-static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command"};
+static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command", "random_tick"};
 static Sub g_subs[SUB_MAX];
 static int g_sub_count, g_next_handle = 1;
 static Cmd g_cmds[CMD_MAX];
@@ -349,7 +349,7 @@ static int event_index(const char *name) {
 static int api_subscribe(const char *event, dfe_event_fn fn, void *user, const char *mod_id) {
     int idx = event_index(event);
     if (idx < 0) {
-        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command.", mod_id, event);
+        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick.", mod_id, event);
         return 0;
     }
     if (g_sub_count >= SUB_MAX) { LOGE("[mod %s] too many event subscriptions (limit %d).", mod_id, SUB_MAX); return 0; }
@@ -493,6 +493,7 @@ void game_time_set(double seconds) { g_game_time = seconds; }
 
 void game_tick(void) {
     g_game_time += GAME_TICK_DT;
+    server_tick();
     dfe_event_t ev = {.name = "tick", .dt = GAME_TICK_DT};
     event_fire(&ev);
 }

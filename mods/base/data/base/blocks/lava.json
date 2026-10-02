@@ -16,8 +16,18 @@
   },
   "fluid": {
     "viscosity": 30,
-    "group": "lava"
+    "group": "lava",
+    "reach": 3
   },
   "item": false,
-  "sound": "lava"
+  "sound": "lava",
+  "properties": {
+    "level": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ]
+  }
 }

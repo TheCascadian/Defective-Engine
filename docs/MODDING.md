@@ -6,8 +6,8 @@ Three tiers are available. Use the lowest tier that does the job.
 
 | Tier | What you write | Sandbox | Use it for |
 |------|----------------|---------|------------|
-| 1. Data and assets | JSON and PNG files | Not applicable, no code runs | New blocks, textures, world settings, replacing base content |
-| 2. Lua scripts | `.lua` files | Yes, bounded memory and instructions | Commands, reacting to events, editing the world |
+| 1. Data and assets | JSON, PNG and GLSL files | Not applicable, no code runs | New blocks, textures, entity types, quality presets, world settings, shader packs, replacing base content |
+| 2. Lua scripts | `.lua` files | Yes, bounded memory and instructions | Commands, reacting to events, editing the world, spawning entities |
 | 3. Native plugins | A C shared library | No, full privileges | Work that needs native speed or an external library |
 
 Contents
@@ -22,7 +22,9 @@ Contents
 8. [The console](#the-console)
 9. [Tier 3: native plugins and the C API](#tier-3-native-plugins-and-the-c-api)
 10. [The example mods](#the-example-mods)
-11. [Limits and what is not available yet](#limits-and-what-is-not-available-yet)
+11. [Developing with hot reload](#developing-with-hot-reload)
+12. [Performance and budgets for mod authors](#performance-and-budgets-for-mod-authors)
+13. [Limits and what is not available yet](#limits-and-what-is-not-available-yet)
 
 ---
 
@@ -78,6 +80,9 @@ mods/
     data/<namespace>/blocks/<name>.json       block definitions
     data/<namespace>/worldgen/default.json    world generation settings
     data/<namespace>/atmosphere/default.json  sky colours, day length, clouds and weather
+    data/<namespace>/presets/<id>.json        quality presets
+    data/<namespace>/entities/<id>.json       entity types
+    assets/dfe/shaders/<name>.vert|.frag      shader pack: replaces an engine shader
     assets/<namespace>/textures/block/<name>.png
     assets/<namespace>/textures/block/<name>.json   optional animation settings
     scripts/main.lua         entry script named by "script"
@@ -296,6 +301,87 @@ The roles from `stone` to `water` are required. The decoration roles from `log` 
 
 Weather darkens and greys these colours and pulls the fog in; a mod does not need to describe it. The console commands `time set` and `weather` change the state, and the options `--time` and `--weather` set it at start.
 
+### Presets
+
+`data/<namespace>/presets/<id>.json` defines a quality preset. The file name without `.json` is the id, and a later mod that provides the same file name replaces it. At most 16 presets are supported. The base game ships `low`, `medium` and `high`; a mod can add more, and they appear in the settings screen and in `--preset NAME`.
+
+```json
+{
+  "name": "Low",
+  "render_distance": 8,
+  "far_chunks": 14,
+  "clouds": true,
+  "stars": true,
+  "light_shafts": false,
+  "dynamic_resolution": true,
+  "min_scale": 0.6,
+  "target_fps": 60
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `name` | Text shown in the settings screen. Defaults to the id. |
+| `render_distance` | Chunks of full detail, 2 to 32. |
+| `far_chunks` | Extra chunks of coarse distant terrain beyond the render distance, 0 (off) to 64. |
+| `clouds`, `stars` | Draw the cloud layer and the night stars. |
+| `light_shafts` | A screen-space shaft effect toward the sun. It costs a full-screen pass, so the base game enables it only on High. |
+| `dynamic_resolution` | Let the controller change the render scale to hold `target_fps`. |
+| `min_scale` | The lowest render scale the controller may choose, 0.4 to 1. Below 0.4 the picture is too soft to play. |
+| `target_fps` | The frame rate the controller tries to hold, 15 to 240. |
+
+A preset with a mistake is reported on the error screen and ignored. The player's own choices in `settings.json` (render distance, dynamic resolution, render scale, field of view, vertical sync) take precedence over the preset, and a value left at "preset" follows it.
+
+### Entities
+
+`data/<namespace>/entities/<id>.json` defines an entity type. The type id is `<namespace>:<file name>`, so `data/mymod/entities/slime.json` is `mymod:slime`. The base game ships `base:hopper`.
+
+```json
+{
+  "name": "Hopper",
+  "size": [0.5, 0.6],
+  "color": [0.82, 0.74, 0.62],
+  "accent": [0.93, 0.88, 0.80],
+  "speed": 0.45,
+  "wander": true,
+  "lifetime": 0
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `name` | Display name, shown by the `entities` command. |
+| `size` | Collision box `[width, height]` in blocks, each 0.1 to 4. Default `[0.6, 0.9]`. |
+| `color` | Body colour, red, green, blue in 0 to 1. Default grey. |
+| `accent` | Head colour. Defaults to `color`. |
+| `speed` | A multiplier of the player's walking speed, 0 to 4. Default 0.4. |
+| `wander` | When true the entity walks in random directions, rests, hops over one-block steps, swims up out of water and turns away from walls. When false it stands still. Default true. |
+| `lifetime` | Seconds until the entity removes itself, 0 for unlimited. |
+
+An entity is drawn as a body box and a head box, lit by the world light at its position and fogged like terrain. Its physics is the player's: gravity, water, step-up and collision with blocks. Terrain that is not loaded counts as solid, so an entity beyond the streamed area waits rather than falling out of the world. There are at most 256 entities at once. Entities are spawned from Lua (`dfe.entity_spawn`), from a native plugin, or with the console command `spawn`. They are not saved with the world.
+
+A type with a mistake is reported and the previous definition, if any, stays in use, which makes live editing with `--dev` safe.
+
+### Shader packs
+
+Every shader the engine draws with is an ordinary asset, so a mod replaces one by providing a file at the same path. No manifest key is needed.
+
+| File under `assets/dfe/shaders/` | What it draws |
+|----------------------------------|---------------|
+| `chunk.vert`, `chunk.frag` | All terrain, near and far. The fragment shader is also compiled with `PASS_CUTOUT`, `PASS_TRANSLUCENT` and `LOD` defined. |
+| `post.vert`, `post.frag` | The resolve pass that scales the scene to the window. The engine skips it at full scale without shafts to save a full-screen copy, but it always runs while a mod replaces `post.frag`, so a grading shader is applied at every setting. The cost of that pass is paid by every player of the pack. |
+| `entity.vert`, `entity.frag` | Entities. |
+| `sky.vert`, `sky.frag` | The sky, stars, sun, moon, clouds and the rain layer, selected by `PASS_SKY` and `PASS_RAIN`. Shaders can `#include` other files through the same virtual filesystem. |
+| `ui.vert`, `ui.frag`, `debug_line.vert`, `debug_line.frag` | Menus, the HUD and debug lines. |
+
+Read the engine's file first and keep its `in`, `out` and `uniform` names: the engine sets uniforms by name, and a uniform a shader does not declare is simply skipped. A shader that fails to compile is reported with the compiler's message. At launch the game stops with that message; during a reload the previous program keeps running.
+
+The `warmgrade` example replaces `post.frag` to add a warm tint, a saturation lift and a vignette. It is about 25 lines and is the recommended starting point. Only one mod can replace a given shader; the later one in load order wins. Shader packs run on the GPU of every player, so keep them cheap: the post pass runs for every pixel, and one extra texture fetch per pixel is already a measurable cost on integrated graphics.
+
+### Dynamic resolution
+
+The engine can draw the world at a fraction of the window size and stretch it. The controller is driven by measured GPU time, not frame time, because with vertical sync a fast GPU still reports 16.7 ms frames and fewer pixels cannot help a frame that is limited by the CPU. It changes the scale in steps of 0.05, drops quickly when the frame is over budget and rises slowly when there is headroom, and never goes below the preset's `min_scale`. Where timer queries are unavailable it uses the share of the frame spent waiting on the swap. A mod does not control this, but a preset sets its range and target.
+
 ### Replacing content
 
 Because later mods win, replacing base content needs no special syntax: provide a file at the same path.
@@ -306,8 +392,11 @@ Because later mods win, replacing base content needs no special syntax: provide 
 | The stone block definition | `data/base/blocks/stone.json` |
 | World generation settings | `data/base/worldgen/default.json` |
 | The day cycle and weather | `data/base/atmosphere/default.json` |
+| A quality preset | `data/base/presets/low.json` |
+| The hopper | `data/base/entities/hopper.json` |
+| The final image grade | `assets/dfe/shaders/post.frag` |
 
-The `retexture` and `highsea` example mods do exactly this.
+The `retexture`, `highsea` and `warmgrade` example mods do exactly this.
 
 ---
 
@@ -382,6 +471,31 @@ A state is an integer that identifies one block with one set of property values.
 | `dfe.seed()` | The low 32 bits of the world seed as a number. |
 | `dfe.time()` | Simulated seconds since the world was created. It advances 0.05 seconds per game tick and is saved with the world. |
 
+#### Entities
+
+| Function | Description |
+|----------|-------------|
+| `dfe.entity_spawn(type, x, y, z)` | Spawn an entity of a type such as `"base:hopper"` with its feet at the position. Returns an integer handle, or `nil` when the type is unknown or the limit of 256 is reached; the reason is written to the log. |
+| `dfe.entity_remove(handle)` | Remove an entity. Returns true if it existed. |
+| `dfe.entity_position(handle)` | Returns `x, y, z` of the feet, or `nil` when the handle no longer exists (it was removed, its lifetime ended, or it fell out of the world). |
+| `dfe.entity_count()` | Number of entities alive. |
+
+Handles are never reused within a session. Spawning needs loaded terrain to stand on; call it from a `tick` handler or later rather than from `world_load`, because the world is still empty then. This example spawns three hoppers on the surface near the origin once the world exists:
+
+```lua
+local done = false
+dfe.on("tick", function()
+  if done then return end
+  done = true
+  for i = 0, 2 do
+    local x, z = 4 + i * 2, 4
+    local y = 150
+    while y > 0 and dfe.get_block(x, y, z) == "base:air" do y = y - 1 end
+    dfe.entity_spawn("base:hopper", x + 0.5, y + 1, z + 0.5)
+  end
+end)
+```
+
 #### Events and commands
 
 | Function | Description |
@@ -433,6 +547,9 @@ Built-in commands:
 | `gamemode creative\|survival` | Switch mode. Creative has instant breaking, a block palette and flight (F). Survival uses hardness, drops and consumes placed blocks. |
 | `give block [count]` | Add items to the inventory. |
 | `lua code` | Run a Lua statement or expression in the sandbox and print the result. |
+| `spawn type [x y z]` | Spawn an entity three blocks in front of the player, or at the given position. |
+| `entities` | List entity types and how many entities are alive. |
+| `reload` | Reload shaders, the atmosphere file, presets and entity types now. |
 
 A line that matches no command fires the `command` event before the game prints "unknown command".
 
@@ -487,6 +604,10 @@ The example plugin builds with CMake: configure with `-DDFE_BUILD_EXAMPLES=ON` a
 | `register_command(name, help, fn, user, mod_id)` | Register a console command. Returns 0 on failure. |
 | `console_print(message)` | Write a line to the console. |
 | `state_string(state, out, size)` | Text of a state such as `"mymod:lamp[lit=on]"`. Added in API 1.1; check `struct_size` before use. Returns false for an invalid state. |
+| `entity_spawn(type, x, y, z)` | Spawn an entity. Returns a handle greater than 0, or 0 when the type is unknown or the limit is reached. Added in API 1.2; check `struct_size` before use. |
+| `entity_remove(handle)` | Remove an entity. Returns false for an unknown handle. API 1.2. |
+| `entity_position(handle, out)` | Write the feet position to `out[3]`. Returns false for an unknown handle. API 1.2. |
+| `entity_count()` | Number of entities alive. API 1.2. |
 
 Event handlers have the signature `int fn(const dfe_event_t *ev, void *user)` and return nonzero to cancel a cancellable event. Command handlers have the signature `void fn(const char *args, void *user)`. The `dfe_event_t` fields are `name`, `x`, `y`, `z`, `state`, `dt` and `text`, filled as described in [Events](#events).
 
@@ -496,7 +617,7 @@ All API calls must be made from the game thread, from within `dfe_plugin_init`, 
 
 ## The example mods
 
-Six example mods are included in `examples/mods`. They are meant to be copied and changed. Copy any of them into `mods/` to install it. The `base` mod in `mods/base` is a seventh, larger example of tier 1 content.
+Seven example mods are included in `examples/mods`. They are meant to be copied and changed. Copy any of them into `mods/` to install it. The `base` mod in `mods/base` is an eighth, larger example of tier 1 content.
 
 | Mod | Tier | Demonstrates |
 |-----|------|--------------|
@@ -505,6 +626,7 @@ Six example mods are included in `examples/mods`. They are meant to be copied an
 | `highsea` | 1 | Replacing a data file, here the world generation settings, to raise the sea level. |
 | `builder` | 2 | Commands (`fill`, `sphere`, `builds`, `cancelbuild`), splitting a large job over many ticks to respect the instruction limits, `require` for a shared module, and an optional dependency (`?gems`). |
 | `guard` | 2 | Cancelling `block_place` and `block_break` to protect regions, and sub-commands in one command. |
+| `warmgrade` | 1 | A shader pack: one replaced engine shader (`post.frag`) that grades the final image. Shows how shader overrides need no manifest keys. |
 | `tally` | 3 | A native C plugin with a command and event subscriptions, built through the C API only. |
 
 Trying them in the game:
@@ -523,14 +645,48 @@ The last two need `guard` and `tally`. `tally` also needs the engine started wit
 
 ---
 
+## Developing with hot reload
+
+Start the game with `--dev` and the engine checks the modification time and size of every file it has read, twice a second. When one changes it reloads what can safely be reloaded. The `reload` console command and F5 do the same on demand, without `--dev`.
+
+| Reloaded live | Not reloaded, restart the game |
+|---------------|--------------------------------|
+| Shaders, including shader packs and `#include` files | Block definitions |
+| The atmosphere file | Textures |
+| Quality presets | Lua scripts and native plugins |
+| Entity types (existing entities keep their type) | World generation settings |
+
+The split has a reason. Block ids are stored in every loaded chunk and the texture array is built once, so changing either live would corrupt what is on screen. Scripts hold state that cannot be rebuilt from their files.
+
+A reload that has an error does not break the running game: the previous shader program, atmosphere, presets or entity type stays in use, and the compiler message or the file and line of the mistake is written to the log. Fix the file and save again. A good workflow for a shader pack is to run `dfe --dev --world test`, edit `post.frag` in the mod folder and watch the result change on save.
+
+---
+
+## Performance and budgets for mod authors
+
+The engine targets a 2015 dual-core laptop with an Intel HD 520. A mod is judged by what it costs there.
+
+* Run `dfe --benchmark` with and without your mod (`--mods DIR` selects a mods folder) and compare. The report splits GPU time by pass (`opaque`, `cutout`, `sky`, `water`, `rain`, `ui`, `post`, `entity`), so a shader pack's cost shows in `post` or in the pass it replaced.
+* `tools/perf_matrix.py` runs presets and window sizes and compares against a saved baseline: `tools/perf_matrix.py --baseline perf_results/<earlier>.json -- --mods path/to/mods`.
+* Budgets on the reference machine at the Low preset, 720p, render distance 8: 60 fps average, 1% low above 40, no frame above 25 ms, memory below 1.5 GB, cold start under 10 seconds.
+* Blocks cost vertices. A block with many model elements or a transparent texture costs more than a cube; prefer cubes and cutouts where the look allows it.
+* Entities cost two draw calls each. A few dozen are free; the limit of 256 exists so a runaway script cannot stall the frame.
+* Do the minimum in `tick`, which runs 20 times per second, and in `random_tick`. The instruction limit exists to stop a loop, not to make a heavy handler acceptable.
+
+The README explains how to read the report and decide whether a frame is CPU or GPU bound.
+
+---
+
 ## Limits and what is not available yet
 
 Stated plainly so that mod authors can plan.
 
 * Mods cannot read or change the player or inventory from Lua yet. `block_place` and `block_break` fire for the player's own edits and for the `setblock` command.
-* Lua world generators, data-driven biomes, ores and structures, custom screens, entities and shader packs are planned and are not part of mod API 1. Block, texture and world setting data are available now.
+* Lua world generators, data-driven biomes, ores and structures, and custom screens are planned and are not part of mod API 1. Block, texture, entity type, preset, atmosphere, shader and world setting data are available now.
+* Entities have no scripted behaviour, no health, no models beyond the two-box shape and no collision with the player or each other, and they are not saved with the world. Their movement is a wander; a mod that wants other behaviour can move them by removing and respawning, or wait for the behaviour API.
 * Mods have no persistent storage. State kept in Lua variables is lost when the game closes. Block edits persist because the world is saved.
 * `dfe.seed()` returns only the low 32 bits of the seed. Use the C API for all 64 bits.
 * The `string`, `table` and `math` libraries are shared between mods.
-* Hot reload is not implemented. Restart the game after changing a mod.
+* Hot reload covers shaders, the atmosphere file, presets and entity types only; see [Developing with hot reload](#developing-with-hot-reload).
+* Only one mod can replace a given shader; the last in load order wins. There is no merging of shader changes.
 * Native plugins and the Windows build have not been tested on Windows yet.

@@ -21,6 +21,8 @@ static void print_usage(void) {
          "  --wireframe          draw chunk geometry as lines (also F4)\n"
          "  --allow-native       load native plugins declared by mods (they run unsandboxed)\n"
          "  --camera X,Y,Z,YAW,PITCH  pin the start pose in degrees and freeze the benchmark path\n"
+         "  --time PHASE         start at a day phase: midnight dawn morning noon afternoon dusk night, or 0..1\n"
+         "  --weather NAME       start with clear, overcast or rain\n"
          "  --no-vsync           disable vertical sync\n"
          "  --hidden             create the window hidden\n"
          "  --screenshot FILE    save the frame given by --screenshot-frame as PPM and exit\n"
@@ -58,6 +60,16 @@ static bool parse_args(int argc, char **argv) {
             float *c = g_opt.camera;
             g_opt.camera_set = sscanf(argv[++i], "%f,%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3], &c[4]) == 5;
             if (!g_opt.camera_set) { fprintf(stderr, "--camera expects x,y,z,yaw,pitch in degrees, for example 0,90,0,0,-10\n"); return false; }
+        }
+        else if (!strcmp(a, "--time") && has_val) {
+            g_opt.start_phase_set = atmosphere_parse_phase(argv[++i], &g_opt.start_phase);
+            if (!g_opt.start_phase_set) { fprintf(stderr, "--time expects midnight, dawn, morning, noon, afternoon, dusk, night or a number from 0 to 1\n"); return false; }
+        }
+        else if (!strcmp(a, "--weather") && has_val) {
+            Weather w;
+            g_opt.start_weather_set = atmosphere_parse_weather(argv[++i], &w);
+            g_opt.start_weather = (int)w;
+            if (!g_opt.start_weather_set) { fprintf(stderr, "--weather expects clear, overcast or rain\n"); return false; }
         }
         else if (!strcmp(a, "--overlay") && has_val) g_opt.overlay_page = atoi(argv[++i]);
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { print_usage(); return false; }
@@ -246,6 +258,7 @@ static bool boot_content(bool with_gl) {
     int known_errors = data_error_count();
     registry_load_blocks();
     registry_load_worldgen_config();
+    registry_load_atmosphere();
     if (data_error_count() > known_errors) {
         LOGE("%d content error(s) found; the first is: %s", data_error_count() - known_errors, data_error_text(known_errors));
         errors_screen("Game content has errors", false);
@@ -338,6 +351,11 @@ static int run_viewer(void) {
     }
     world_init(seed);
     if (persist) game_time_set(save_meta()->day_time);
+    atmosphere_init_state();
+    if (g_opt.start_phase_set) atmosphere_set_phase(g_opt.start_phase);
+    if (g_opt.start_weather_set) atmosphere_set_weather((Weather)g_opt.start_weather, true);
+    /* A benchmark must not change weather mid-run, or two runs would not be comparable. */
+    if (g_opt.benchmark) g_atmo.auto_weather = false;
     { dfe_event_t ev = {.name = "world_load"}; event_fire(&ev); }
     /* The benchmark and --camera runs keep the scripted or free camera so their results stay comparable. */
     bool play = gl && !g_opt.benchmark && !g_opt.camera_set;
@@ -432,7 +450,8 @@ static int run_viewer(void) {
         if (gl) {
             g_stats.draw_calls_last = 0;
             glViewport(0, 0, g_win.fb_width, g_win.fb_height);
-            glClearColor(0.62f, 0.76f, 0.95f, 1.0f);
+            atmosphere_update(dt, cam.pos);
+            glClearColor(g_atmo.fog_color.x, g_atmo.fog_color.y, g_atmo.fog_color.z, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             scene_render(&cam, time_now_s() - bench_start);
             g_stats.draw_calls_last = g_scene_stats.draw_calls;

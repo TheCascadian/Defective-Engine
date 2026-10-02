@@ -813,6 +813,86 @@ static void test_inventory_save(u16 stone, u16 dirt) {
     CHECK(b.slot[2].count == 0 && b.slot[20].count == 64);
 }
 
+/* ------------------------------------------------------------- atmosphere */
+
+static float color_distance(V3 a, V3 b) { return fabsf(a.x - b.x) + fabsf(a.y - b.y) + fabsf(a.z - b.z); }
+
+static double seconds_at_phase(const Atmosphere *a, float phase) {
+    double into = (double)phase - a->start_phase;
+    return (into - floor(into)) * a->day_length_s;
+}
+
+static void test_atmosphere(void) {
+    data_error_reset();
+    registry_load_atmosphere();
+    CHECK(data_error_count() == 0);
+    CHECK(g_atmo.loaded && g_atmo.key_count >= 2);
+    if (!g_atmo.loaded) return;
+    Atmosphere a = g_atmo;
+    a.stars = true;
+
+    /* The cycle is continuous (no colour jumps, including across midnight) and repeats every day. */
+    float worst = 0.0f;
+    V3 prev_sky = {0}, prev_fog = {0};
+    for (int i = 0; i <= 1000; i++) {
+        atmosphere_evaluate(&a, seconds_at_phase(&a, (float)(i % 1000) / 1000.0f));
+        if (i > 0) worst = MAX(worst, MAX(color_distance(a.sky_light, prev_sky), color_distance(a.fog_color, prev_fog)));
+        prev_sky = a.sky_light;
+        prev_fog = a.fog_color;
+    }
+    CHECK(worst < 0.06f);
+    atmosphere_evaluate(&a, 123.0);
+    V3 first = a.horizon;
+    atmosphere_evaluate(&a, 123.0 + a.day_length_s);
+    CHECK(color_distance(first, a.horizon) < 1e-3f);
+
+    /* Noon has the sun high and no stars; midnight has the moon up and stars out. */
+    atmosphere_evaluate(&a, seconds_at_phase(&a, 0.5f));
+    CHECK(a.sun_dir.y > 0.9f && a.sun_vis > 0.9f && a.star_alpha < 0.01f);
+    float noon_light = a.sky_light.y;
+    atmosphere_evaluate(&a, seconds_at_phase(&a, 0.0f));
+    CHECK(a.sun_dir.y < -0.9f && a.sun_vis < 0.01f && a.moon_vis > 0.9f && a.star_alpha > 0.9f);
+    CHECK(a.sky_light.y < noon_light * 0.4f);
+
+    /* Weather dims and greys the day and pulls the fog in. */
+    atmosphere_evaluate(&a, seconds_at_phase(&a, 0.5f));
+    V3 clear_horizon = a.horizon;
+    float clear_start = 100.0f, clear_end = 400.0f, wet_start = 100.0f, wet_end = 400.0f;
+    Atmosphere saved = g_atmo;
+    g_atmo = a;
+    atmosphere_adjust_fog(&clear_start, &clear_end);
+    CHECK(clear_end == 400.0f);
+    a.cloud_amt = 1.0f;
+    a.rain_amt = 1.0f;
+    atmosphere_evaluate(&a, seconds_at_phase(&a, 0.5f));
+    CHECK(a.sky_light.y < noon_light && a.sun_vis < 0.1f && a.star_alpha == 0.0f);
+    CHECK(fabsf(a.horizon.x - a.horizon.z) < fabsf(clear_horizon.x - clear_horizon.z));
+    g_atmo = a;
+    atmosphere_adjust_fog(&wet_start, &wet_end);
+    CHECK(wet_end < clear_end && wet_start < clear_start);
+    g_atmo.underwater = 1.0f;
+    float u_start = 100.0f, u_end = 400.0f;
+    atmosphere_adjust_fog(&u_start, &u_end);
+    CHECK(u_end < 40.0f);
+    g_atmo = saved;
+
+    /* Names and the console parsers. */
+    float phase = -1.0f;
+    Weather w = WEATHER_CLEAR;
+    CHECK(atmosphere_parse_phase("noon", &phase) && fabsf(phase - 0.5f) < 1e-6f);
+    CHECK(atmosphere_parse_phase("0.25", &phase) && fabsf(phase - 0.25f) < 1e-6f);
+    CHECK(!atmosphere_parse_phase("1.5", &phase) && !atmosphere_parse_phase("lunch", &phase));
+    CHECK(atmosphere_parse_weather("rain", &w) && w == WEATHER_RAIN);
+    CHECK(!atmosphere_parse_weather("hail", &w));
+
+    /* Setting the phase lands on it and keeps the day count. */
+    game_time_set(0.0);
+    atmosphere_set_phase(0.75f);
+    atmosphere_evaluate(&a, game_time_get());
+    CHECK(fabsf(a.phase - 0.75f) < 1e-3f);
+    game_time_set(0.0);
+}
+
 static void test_gameplay(void) {
     if (!path_is_dir("mods")) { printf("selftest gameplay skipped: run from the repository root\n"); return; }
     vfs_reset();
@@ -861,6 +941,7 @@ int selftest_run(void) {
         {"mods-scripts", test_mods_and_scripts},
         {"examples", test_example_mods},
         {"gameplay", test_gameplay},
+        {"atmosphere", test_atmosphere},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {
         int before = g_failures;

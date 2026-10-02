@@ -208,6 +208,7 @@ bool scene_init(void) {
     if (!load_shaders(S.shader, false) || !load_shaders(S.lod_shader, true)) return false;
     page_init(&S.pages[S.page_count++]);
     if (!lod_init()) return false;
+    if (!atmosphere_gl_init()) return false;
     S.ready = true;
     return true;
 }
@@ -232,6 +233,7 @@ void scene_shutdown(void) {
     for (int i = 0; i < S.page_count; i++) page_destroy(&S.pages[i]);
     for (int l = 0; l < LAYER_COUNT; l++) { shader_destroy(&S.shader[l]); shader_destroy(&S.lod_shader[l]); }
     lod_shutdown();
+    atmosphere_gl_shutdown();
     glDeleteBuffers(1, &S.ibo);
     free(S.visible); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
     free(S.slot_list); free(S.draw_count); free(S.draw_index); free(S.draw_base);
@@ -415,11 +417,10 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     glUniform1i(shader_uniform(sh, "u_origins"), 1);
     glUniform1i(shader_uniform(sh, "u_tex"), 0);
     glUniform1i(shader_uniform(sh, "u_anim"), 2);
-    glUniform3f(shader_uniform(sh, "u_sky_color"), 1.0f, 1.0f, 1.0f);
-    glUniform1f(shader_uniform(sh, "u_ambient"), 0.04f);
-    glUniform3f(shader_uniform(sh, "u_fog_color"), 0.62f, 0.76f, 0.95f);
+    atmosphere_set_uniforms(sh);
     float fog_start, fog_end;
     fog_range(rd, &fog_start, &fog_end);
+    atmosphere_adjust_fog(&fog_start, &fog_end);
     glUniform1f(shader_uniform(sh, "u_fog_start"), fog_start);
     glUniform1f(shader_uniform(sh, "u_fog_end"), fog_end);
 }
@@ -445,6 +446,9 @@ void scene_render(const Camera *cam, double time_s) {
     for (int l = 0; l < LAYER_COUNT; l++) {
         bool translucent = l == LAYER_TRANSLUCENT;
         if (translucent) {
+            /* The sky goes in before blended surfaces so water over the horizon blends with it, and after the
+             * opaque ones so the depth test skips every pixel the terrain covers. */
+            atmosphere_draw_sky(cam, time_s);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(GL_FALSE);
@@ -461,6 +465,7 @@ void scene_render(const Camera *cam, double time_s) {
         }
     }
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    atmosphere_draw_rain(cam, time_s);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
     g_scene_stats.arena_pages = S.page_count;

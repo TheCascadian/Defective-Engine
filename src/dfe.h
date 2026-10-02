@@ -232,8 +232,8 @@ const char *gl_info_string(void);
 typedef struct Shader {
     GLuint program;
     char name[48];
-    GLint loc_cache[24];
-    const char *loc_names[24];
+    GLint loc_cache[32];
+    const char *loc_names[32];
     int loc_count;
 } Shader;
 
@@ -707,6 +707,63 @@ void scene_render(const Camera *cam, double time_s);
 bool scene_reload_shaders(void);
 void scene_mesh_job_complete_hook(void);
 
+/* ------------------------------------------------------------ atmosphere.c */
+
+#define ATMO_MAX_KEYS 16
+
+/* One point of the day cycle. Phase 0 is midnight, 0.25 sunrise, 0.5 noon and 0.75 sunset. */
+typedef struct SkyKey {
+    float time;
+    V3 zenith, horizon, sky_light;
+    float ambient;
+} SkyKey;
+
+typedef enum Weather { WEATHER_CLEAR, WEATHER_OVERCAST, WEATHER_RAIN, WEATHER_COUNT } Weather;
+
+typedef struct Atmosphere {
+    /* From data/<namespace>/atmosphere/default.json. */
+    double day_length_s;
+    float start_phase;
+    float cloud_altitude, cloud_scale, cloud_speed;
+    float weather_min_s, weather_max_s, rain_share;
+    SkyKey keys[ATMO_MAX_KEYS];
+    int key_count;
+    bool loaded;
+    /* Derived every frame by atmosphere_evaluate. */
+    float phase;
+    V3 sun_dir, moon_dir;
+    V3 zenith, horizon, fog_color, sky_light, sun_color, rain_color;
+    V3 shade_dir;
+    float shade_strength, ambient, star_alpha, sun_vis, moon_vis;
+    /* Smoothed state. cloud_amt and rain_amt chase the weather target, underwater chases the head. */
+    Weather weather;
+    float cloud_amt, rain_amt, rain_exposure, underwater;
+    V3 under_color;          /* fog colour while the eye is inside a fluid */
+    bool under_daylit;       /* water dims with the sky, lava does not */
+    float weather_timer;
+    bool auto_weather;
+    bool clouds, stars;      /* quality switches, set by presets */
+} Atmosphere;
+extern Atmosphere g_atmo;
+
+int registry_load_atmosphere(void);
+void atmosphere_init_state(void);
+void atmosphere_evaluate(Atmosphere *a, double game_seconds);
+void atmosphere_update(double dt, V3 eye);
+void atmosphere_set_phase(float phase);
+void atmosphere_set_weather(Weather w, bool instant);
+const char *atmosphere_phase_name(float phase);
+const char *atmosphere_weather_name(Weather w);
+bool atmosphere_parse_phase(const char *text, float *phase);
+bool atmosphere_parse_weather(const char *text, Weather *w);
+bool atmosphere_gl_init(void);
+void atmosphere_gl_shutdown(void);
+void atmosphere_set_uniforms(Shader *sh);
+void atmosphere_adjust_fog(float *start, float *end);
+void atmosphere_draw_sky(const Camera *cam, double time_s);
+void atmosphere_draw_rain(const Camera *cam, double time_s);
+
+
 /* ------------------------------------------------------------------ lod.c */
 
 bool lod_init(void);
@@ -967,5 +1024,9 @@ typedef struct Options {
     bool allow_native;       /* load native plugins from mods */
     bool camera_set;         /* --camera pins the start pose and freezes the benchmark path, for screenshots */
     float camera[5];         /* x y z yaw pitch (degrees) */
+    float start_phase;       /* --time: day phase 0..1 forced at start, valid when start_phase_set */
+    bool start_phase_set;
+    int start_weather;       /* --weather: Weather value forced at start, valid when start_weather_set */
+    bool start_weather_set;
 } Options;
 extern Options g_opt;

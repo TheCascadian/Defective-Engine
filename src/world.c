@@ -448,6 +448,7 @@ bool world_set_state(int x, int y, int z, u16 state) {
     c->flags &= ~CF_VIRTUAL;
     mark_voxel_dirty(x, y, z);
     light_on_block_changed(x, y, z, old, state);
+    server_block_changed(x, y, z, old, state);
     return true;
 }
 

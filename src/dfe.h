@@ -355,6 +355,7 @@ void jw_free(JsonWriter *w);
 #define STATE_MISSING 1
 #define STATE_UNLOADED 0xFFFF
 #define MAX_TEXTURE_LAYERS 1024
+#define FLUID_DEFAULT_REACH 7
 
 enum { DIR_PX, DIR_NX, DIR_PY, DIR_NY, DIR_PZ, DIR_NZ };
 extern const int DIR_VEC[6][3];
@@ -407,6 +408,9 @@ typedef struct BlockDef {
     int light_filter; /* reserved for per-state opacity variants */
     int emit_prop;    /* index of the property that gates emission, or -1 when the block always emits */
     char emit_prop_name[24], emit_value[16];
+    int fluid_reach;      /* horizontal steps a flow travels from its source */
+    bool fluid_infinite;  /* two adjacent sources over solid ground make a third, as in a pond */
+    int fluid_level_prop; /* index of the "level" property, -1 for non-fluids */
 } BlockDef;
 
 extern BlockDef *g_blocks[];
@@ -439,6 +443,7 @@ typedef struct TextureSet {
     int layer_count;
     GLuint gl_array;
     GLuint gl_anim; /* RG8 per layer: frame count, frames per 4 seconds */
+    u8 *pixels;     /* RGBA of every layer at full size, tile_size squared each */
     StrMap name_to_layer;
 } TextureSet;
 extern TextureSet g_tex;
@@ -557,10 +562,17 @@ void chunk_set_light(Chunk *c, int idx, u16 light);
 
 /* ----------------------------------------------------------------- save.c */
 
+#define SAVE_INV_SLOTS 36 /* matches INV_SLOTS; inventory.c asserts it */
+#define SAVE_BLOCK_NAME_LEN 64
 typedef struct SaveMeta {
     bool has_player, flying;
     double x, y, z, day_time;
     float yaw, pitch;
+    bool has_inventory, creative;
+    int selected;
+    /* Items are stored by block name so ids and states never leak into save data. */
+    char inv_name[SAVE_INV_SLOTS][SAVE_BLOCK_NAME_LEN];
+    u8 inv_count[SAVE_INV_SLOTS];
 } SaveMeta;
 typedef struct SavedColumn {
     int lo, hi;
@@ -800,6 +812,135 @@ int script_load_mods(void);
 /* Evaluates console input. Returns true if it was handled. */
 void script_eval(const char *code);
 int script_error_count(void);
+
+/* ------------------------------------------------------------- player.c */
+
+#define PLAYER_WIDTH 0.6f
+#define PLAYER_HEIGHT 1.8f
+#define PLAYER_EYE 1.62f
+
+typedef struct PlayerInput {
+    float forward, strafe; /* -1..1 along the view direction and across it */
+    bool jump, descend, sprint, toggle_fly;
+} PlayerInput;
+
+typedef struct Player {
+    V3 pos; /* centre of the feet */
+    V3 vel;
+    float yaw, pitch;
+    bool on_ground, in_water, head_in_water, flying, in_lava;
+} Player;
+
+void player_init(Player *p, V3 feet);
+V3 player_eye(const Player *p);
+/* Advances the player by dt seconds (at most one physics step of 1/60 s per call is exact; larger dt is split). */
+void player_step(Player *p, const PlayerInput *in, float dt);
+/* True when a player box with its feet at `feet` overlaps a solid block or an unloaded column. */
+bool player_box_blocked(V3 feet);
+/* Dry land close to the origin, found from the height function so it works before any chunk exists. */
+V3 player_find_spawn(void);
+extern Player g_player;
+
+/* ----------------------------------------------------------- inventory.c */
+
+#define INV_HOTBAR 9
+#define INV_SLOTS 36
+#define INV_MAX_STACK 64
+
+typedef struct ItemStack {
+    u16 state; /* the default state of the block this item places, STATE_AIR when the slot is empty */
+    u8 count;
+} ItemStack;
+
+typedef struct Inventory {
+    ItemStack slot[INV_SLOTS]; /* the first INV_HOTBAR slots are the hotbar */
+    ItemStack cursor;          /* the stack held by the mouse while the inventory screen is open */
+    int selected;
+} Inventory;
+extern Inventory g_inv;
+extern bool g_creative;
+
+void inventory_clear(Inventory *inv);
+/* Copies the bag to or from the save record. Unknown block names (a removed mod) are dropped on load. */
+void inventory_store(const Inventory *inv, bool creative, SaveMeta *m);
+void inventory_restore(Inventory *inv, bool *creative, const SaveMeta *m);
+/* Fills the hotbar of a new world with a small set of building blocks. */
+void inventory_starter(Inventory *inv);
+/* Adds as many as fit, stacking first. Returns how many did not fit. */
+int inventory_add(Inventory *inv, u16 state, int count);
+int inventory_count(const Inventory *inv, u16 state);
+/* Takes one item out of a slot. Returns false when it was empty. */
+bool inventory_take_one(Inventory *inv, int slot);
+/* Mouse semantics of an inventory slot: button 0 picks up, drops or swaps a whole stack, button 1 half or one. */
+void inventory_click(Inventory *inv, int slot, int button);
+/* Number of block items the registry offers, and the n-th one's state. Skips air and blocks marked "item": false. */
+int item_count(void);
+u16 item_state_at(int index);
+const char *item_name(u16 state);
+/* Resolves the block named by a "drops" entry to its default state, STATE_AIR for none. */
+u16 item_for_block(const BlockDef *b);
+
+/* ---------------------------------------------------------- interact.c */
+
+typedef struct RayHit {
+    bool hit;
+    int x, y, z;       /* the block that was hit */
+    int face;          /* DIR_* of the face that was hit */
+    int px, py, pz;    /* the empty cell in front of that face, where a block would be placed */
+    u16 state;
+    float dist;
+} RayHit;
+/* Walks the voxel grid from origin along dir. Fluids are skipped unless hit_fluids. */
+bool raycast_blocks(V3 origin, V3 dir, float max_dist, bool hit_fluids, RayHit *out);
+
+#define REACH_DISTANCE 5.5f
+#define INTERACT_REPEAT_S 0.20f
+
+typedef struct Interact {
+    RayHit target;
+    float break_progress; /* 0..1 of the block under the cursor */
+    int break_x, break_y, break_z;
+    bool breaking;
+    float place_cooldown, break_cooldown;
+} Interact;
+extern Interact g_interact;
+/* Reads the mouse and the number keys, posts server messages for edits, and updates the target block. */
+void interact_update(const Player *p, float dt, bool active);
+
+/* -------------------------------------------------------------- server.c */
+
+/* The server owns the world rules. The client posts requests; the server validates them against the player's
+ * reach and the block rules, runs the cancellable events, and applies them. Requests are applied the same frame
+ * they are posted, while simulation (fluids, random ticks) advances in fixed ticks. */
+typedef enum { MSG_BREAK, MSG_PLACE } ServerMsgType;
+typedef struct ServerMsg {
+    ServerMsgType type;
+    int x, y, z;
+    u16 state; /* MSG_PLACE: the block to place, taken from the player's selected slot */
+} ServerMsg;
+void server_init(void);
+void server_shutdown(void);
+void server_post(const ServerMsg *m);
+/* Applies every queued message. Returns how many changed the world. */
+int server_pump(void);
+void server_tick(void);
+/* Called by world_set_state after every edit so fluids and other neighbours can react. */
+void server_block_changed(int x, int y, int z, u16 old_state, u16 new_state);
+void server_schedule(int x, int y, int z, int delay_ticks);
+int server_scheduled_count(void);
+long server_ticks_run(void);
+void server_set_focus(V3 pos); /* random ticks run around this point */
+
+/* ---------------------------------------------------------------- hud.c */
+
+bool hud_init(void);
+void hud_shutdown(void);
+/* Builds the item icons from the block textures. Needs the texture array and a GL context. */
+void hud_build_icons(void);
+void hud_draw(int width, int height);
+bool hud_inventory_open(void);
+void hud_set_inventory_open(bool open);
+void hud_update(void);
 
 /* ---------------------------------------------------------------- main.c */
 

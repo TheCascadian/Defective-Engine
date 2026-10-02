@@ -249,7 +249,7 @@ static int l_on(lua_State *state) {
     snprintf(what, sizeof what, "handler for %s", event);
     LuaCallback *cb = make_callback(state, 2, mod_of(state), what);
     int h = api_get()->subscribe(event, event_trampoline, cb, mod_of(state));
-    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command", event); }
+    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick", event); }
     lua_pushinteger(state, h);
     return 1;
 }

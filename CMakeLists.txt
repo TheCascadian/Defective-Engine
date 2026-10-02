@@ -70,6 +70,11 @@ add_library(dfe_engine STATIC
   src/mods.c
   src/script.c
   src/console.c
+  src/player.c
+  src/inventory.c
+  src/interact.c
+  src/server.c
+  src/hud.c
   src/selftest.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)
 target_compile_options(dfe_engine PRIVATE ${DFE_WARN})

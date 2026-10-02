@@ -299,6 +299,350 @@ extern FrameStats g_stats;
 void stats_record_frame(double dt_ms, double cpu_ms);
 bool screenshot_save_ppm(const char *path);
 
+/* ----------------------------------------------------------------- json.c */
+
+typedef enum { JSON_NULL, JSON_BOOL, JSON_NUMBER, JSON_STRING, JSON_ARRAY, JSON_OBJECT } JsonType;
+typedef struct Json Json;
+struct Json {
+    JsonType type;
+    int line;
+    double num;
+    bool boolean;
+    char *str;
+    int count;
+    Json **items;
+    char **keys; /* objects only, parallel to items */
+};
+Json *json_parse(const char *text, size_t len, char *err, size_t errcap, int *err_line);
+void json_free(Json *j);
+const Json *json_get(const Json *obj, const char *key);
+int json_len(const Json *j);
+const Json *json_at(const Json *j, int i);
+double json_num(const Json *obj, const char *key, double def);
+int json_int(const Json *obj, const char *key, int def);
+bool json_bool(const Json *obj, const char *key, bool def);
+const char *json_str(const Json *obj, const char *key, const char *def);
+double json_as_num(const Json *v, double def);
+const char *json_as_str(const Json *v, const char *def);
+
+typedef struct JsonWriter {
+    char *buf;
+    size_t len, cap;
+    bool needs_comma[32];
+    int depth;
+    bool after_key;
+} JsonWriter;
+void jw_begin_obj(JsonWriter *w);
+void jw_end_obj(JsonWriter *w);
+void jw_begin_arr(JsonWriter *w);
+void jw_end_arr(JsonWriter *w);
+void jw_key(JsonWriter *w, const char *key);
+void jw_str(JsonWriter *w, const char *s);
+void jw_num(JsonWriter *w, double v);
+void jw_bool(JsonWriter *w, bool v);
+void jw_free(JsonWriter *w);
+
+/* ------------------------------------------------------------ registry.c */
+
+#define CHUNK_SIZE 32
+#define CHUNK_SHIFT 5
+#define CHUNK_AREA 1024
+#define CHUNK_VOL 32768
+#define MAX_BLOCK_PROPS 4
+#define MAX_PROP_VALUES 16
+#define MAX_STATES 65535
+#define STATE_AIR 0
+#define STATE_MISSING 1
+#define STATE_UNLOADED 0xFFFF
+#define MAX_TEXTURE_LAYERS 1024
+
+enum { DIR_PX, DIR_NX, DIR_PY, DIR_NY, DIR_PZ, DIR_NZ };
+extern const int DIR_VEC[6][3];
+
+typedef enum { SHAPE_NONE, SHAPE_CUBE, SHAPE_CROSS, SHAPE_FLUID, SHAPE_MODEL } BlockShape;
+typedef enum { LAYER_OPAQUE, LAYER_CUTOUT, LAYER_TRANSLUCENT, LAYER_COUNT } RenderLayer;
+typedef enum { TINT_NONE, TINT_GRASS, TINT_FOLIAGE, TINT_WATER } TintKind;
+
+enum {
+    BF_SOLID = 1,       /* collides with entities */
+    BF_REPLACEABLE = 2, /* placing a block over it replaces it (air, plants, fluids) */
+    BF_WIND = 4,        /* vertex-shader sway */
+    BF_FLUID = 8,
+    BF_RANDOM_TICK = 16,
+    BF_NO_ITEM = 32,    /* do not auto-register a block item */
+    BF_OPAQUE = 64,     /* derived: full cube that hides neighbouring faces and blocks light */
+    BF_CLIMBABLE = 128
+};
+
+typedef struct PropDef {
+    char name[24];
+    int count;
+    char values[MAX_PROP_VALUES][16];
+} PropDef;
+
+typedef struct BlockDef {
+    char name[64];
+    char mod[32];
+    char file[160]; /* data file for error messages */
+    u16 id;
+    u16 first_state, state_count, default_state;
+    u8 shape, layer, tint;
+    u8 tint_mask;   /* faces (bit per DIR_*) that receive the tint */
+    u8 opacity;     /* light attenuation 0..15 */
+    u8 emit[3];     /* block light colour 0..15 per channel */
+    u8 flags;
+    float hardness; /* seconds to break by hand, negative means unbreakable */
+    char tool[16];
+    char drop[64];
+    char sound[24];
+    int fluid_viscosity; /* ticks per spread step, 0 for non-fluids */
+    int fluid_group;
+    char tex_name[6][64];
+    u16 tex[6]; /* array-texture layers after stitching, order DIR_* */
+    int nprops;
+    PropDef props[MAX_BLOCK_PROPS];
+    char model[64];
+    char item_name[64];
+    float friction;
+    int light_filter; /* reserved for per-state opacity variants */
+} BlockDef;
+
+extern BlockDef *g_blocks[];
+extern int g_block_count;
+extern u16 g_state_block[];
+extern u8 g_state_flags[];
+extern u8 g_state_opacity[];
+extern u16 g_state_emit[];
+
+void registry_reset(void);
+/* Registers a block. Fails (returns NULL) with a logged message when the name is invalid or the id space is full. */
+BlockDef *block_register(const BlockDef *def);
+BlockDef *block_find(const char *name);
+BlockDef *block_of_state(u16 state);
+u16 block_state_with(const BlockDef *b, u16 state, const char *prop, const char *value);
+int block_state_prop_index(const BlockDef *b, u16 state, int prop);
+void registry_freeze_blocks(void);
+/* Parses data/NS/blocks/ JSON files from every mounted mod. Returns the number of errors reported. */
+int registry_load_blocks(void);
+int registry_load_worldgen_config(void);
+
+static inline bool state_opaque(u16 s) { return (g_state_flags[s] & BF_OPAQUE) != 0; }
+static inline bool state_solid(u16 s) { return (g_state_flags[s] & BF_SOLID) != 0; }
+
+/* Texture array assembled from every mod's block textures. */
+typedef struct TextureSet {
+    int tile_size;
+    int layer_count;
+    GLuint gl_array;
+    GLuint gl_anim; /* RG8 per layer: frame count, frames per 4 seconds */
+    StrMap name_to_layer;
+} TextureSet;
+extern TextureSet g_tex;
+/* Loads and stitches every texture the registry references. Needs a GL context for the upload. */
+bool textures_build(void);
+u16 texture_layer_lookup(const char *res_id);
+void textures_destroy(void);
+
+/* Data errors name the mod, file and line, and say how to fix the problem. They are also kept for the load screen. */
+void data_error(const char *mod, const char *file, int line, const char *fmt, ...);
+int data_error_count(void);
+const char *data_error_text(int i);
+void data_error_reset(void);
+
+/* World save identity of block names, written with each world so ids never leak into save data. */
+typedef struct BlockNameTable {
+    VEC(char *) names;
+} BlockNameTable;
+void block_table_save_names(BlockNameTable *t);
+u16 block_table_remap_state(const BlockNameTable *saved, u32 saved_block_index, u32 state_index);
+void block_table_free(BlockNameTable *t);
+
+/* --------------------------------------------------------------- world.c */
+
+#define CF_GENERATED 1u
+#define CF_MESH_DIRTY 2u
+#define CF_SAVE_DIRTY 4u
+#define CF_MESH_PENDING 8u
+#define CF_HAS_MESH 16u
+#define CF_VIRTUAL 32u   /* no stored data, behaves as uniform air or filler */
+#define CF_MESHED_ONCE 64u
+
+typedef struct MeshSlot {
+    i32 page;       /* arena page, -1 when empty */
+    u32 first;      /* first vertex, multiple of the granule size */
+    u32 count;      /* vertex count */
+    u32 granules;
+} MeshSlot;
+
+typedef struct Chunk {
+    i32 cx, cy, cz;
+    u16 uniform;   /* the state when palette is NULL */
+    u16 pal_n;
+    u8 bits;       /* bits per palette index: 1, 2, 4, 8 or 16 (direct) */
+    u16 *pal;
+    u32 *data;
+    u16 light_uniform;
+    u16 *light;    /* NULL when every block has light_uniform */
+    u32 flags;
+    u16 conn;      /* face connectivity, bit per face pair, see mesher.c */
+    u32 mesh_version;
+    u32 vis_frame;
+    u8 vis_entry;  /* faces the visibility walk entered through */
+    MeshSlot mesh[LAYER_COUNT];
+} Chunk;
+
+typedef struct Column {
+    i32 cx, cz;
+    i32 lo_cy, hi_cy;   /* generated band, inclusive */
+    u16 deep_state;     /* what lies below the band */
+    u32 flags;          /* generation serial while pending */
+    u8 state;           /* COLUMN_* */
+} Column;
+enum { COLUMN_PENDING = 1, COLUMN_READY = 2 };
+
+typedef struct WorldStats {
+    int columns_loaded, columns_pending, chunks_loaded, chunks_meshed;
+    int mesh_pending, light_queue;
+    int columns_missing, chunks_unmeshed;
+    u64 columns_generated, chunks_meshed_total;
+    u64 vertices_resident;
+} WorldStats;
+
+void world_init(u64 seed);
+void world_shutdown(void);
+u64 world_seed(void);
+Chunk *world_chunk(int cx, int cy, int cz);
+Column *world_column(int cx, int cz);
+/* Returns STATE_UNLOADED when the column is not loaded. Bands above and below read as air and filler. */
+u16 world_get_state(int x, int y, int z);
+u16 world_get_light(int x, int y, int z);
+/* Low-level edit: updates storage, light and dirty flags. Gameplay events are the server's job. */
+bool world_set_state(int x, int y, int z, u16 state);
+void world_set_light_raw(int x, int y, int z, u16 light);
+/* Streaming: schedules generation, meshing and unloading around the focus point. */
+void world_stream(V3 focus, V3 forward, int render_distance, bool first_load);
+void world_mark_mesh_dirty(Chunk *c);
+void world_mark_neighbours_dirty(int cx, int cy, int cz);
+void world_stats(WorldStats *out);
+/* True once every column and mesh inside the render distance is built and lighting has settled. */
+bool world_ready(void);
+/* Materialises a chunk that currently only exists virtually so it can be edited. */
+Chunk *world_chunk_materialize(int cx, int cy, int cz);
+void world_each_chunk(void (*fn)(Chunk *c, void *user), void *user);
+void world_flush_generation(int cx, int cz, int radius);
+/* Called by light.c after it rewrites a voxel so affected meshes are rebuilt. */
+void world_light_touched(int x, int y, int z);
+
+/* Palette storage. Index layout is (y << 10) | (z << 5) | x. */
+Chunk *chunk_create(int cx, int cy, int cz);
+void chunk_destroy(Chunk *c);
+u16 chunk_get(const Chunk *c, int idx);
+void chunk_set(Chunk *c, int idx, u16 state);
+void chunk_pack_from(Chunk *c, const u16 *flat);
+void chunk_unpack(const Chunk *c, u16 *flat);
+void chunk_compact(Chunk *c);
+size_t chunk_memory_bytes(const Chunk *c);
+u16 chunk_get_light(const Chunk *c, int idx);
+void chunk_set_light_from(Chunk *c, const u16 *flat);
+void chunk_set_light(Chunk *c, int idx, u16 light);
+
+/* ---------------------------------------------------------------- light.c */
+
+#define LIGHT_SKY(l) (((l) >> 12) & 15)
+#define LIGHT_R(l) (((l) >> 8) & 15)
+#define LIGHT_G(l) (((l) >> 4) & 15)
+#define LIGHT_B(l) ((l) & 15)
+#define LIGHT_PACK(s, r, g, b) ((u16)(((s) << 12) | ((r) << 8) | ((g) << 4) | (b)))
+#define LIGHT_FULL_SKY LIGHT_PACK(15, 0, 0, 0)
+
+/* Column-local lighting used by generation workers. `states` is the whole column, H = chunks * 32 layers. */
+void light_init_column(const u16 *states, int chunk_layers, u16 *light_out);
+/* Main-thread incremental propagation across chunks. */
+void light_on_block_changed(int x, int y, int z, u16 old_state, u16 new_state);
+void light_seed_column_borders(int cx, int cz);
+/* Processes queued propagation; returns remaining queue length. */
+int light_process(int max_steps);
+int light_queue_size(void);
+
+/* ----------------------------------------------------------------- gen.c */
+
+typedef struct GenScratch GenScratch;
+void gen_init(u64 seed);
+void gen_shutdown(void);
+GenScratch *gen_scratch_create(void);
+void gen_scratch_destroy(GenScratch *s);
+void gen_band(int *lo_cy, int *hi_cy);
+u16 gen_deep_state(void);
+/* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
+void gen_column(GenScratch *s, int cx, int cz, u16 *states);
+int gen_sea_level(void);
+/* Cheap analytic queries used by the far terrain layer. */
+float gen_height_at(float x, float z);
+u32 gen_far_color_at(float x, float z, float height);
+
+/* -------------------------------------------------------------- mesher.c */
+
+#define MESH_PAD 34
+#define MESH_PAD_VOL (MESH_PAD * MESH_PAD * MESH_PAD)
+#define MESH_GRANULE 256
+#define MESH_MAX_QUADS_PER_DRAW 16384
+
+typedef struct MeshVertex { u32 a, b; } MeshVertex;
+
+typedef struct MeshInput {
+    i32 cx, cy, cz;
+    u32 version;
+    u16 *states; /* MESH_PAD_VOL entries, index ((y+1)*34 + (z+1))*34 + (x+1) */
+    u16 *light;
+} MeshInput;
+
+typedef struct MeshOutput {
+    i32 cx, cy, cz;
+    u32 version;
+    MeshVertex *verts[LAYER_COUNT];
+    u32 count[LAYER_COUNT];
+    u16 conn;
+    double build_ms;
+} MeshOutput;
+
+void mesh_build(const MeshInput *in, MeshOutput *out);
+void mesh_output_free(MeshOutput *out);
+void mesh_snapshot(MeshInput *in, int cx, int cy, int cz);
+void mesh_input_free(MeshInput *in);
+#define CONN_BIT(a, b) (1u << conn_pair_index(a, b))
+int conn_pair_index(int a, int b);
+static inline bool chunk_faces_connected(u16 conn, int a, int b) { return a == b || (conn & CONN_BIT(a, b)) != 0; }
+
+/* ---------------------------------------------------------------- scene.c */
+
+typedef struct SceneConfig {
+    int render_distance;     /* chunks */
+    float fov_deg;
+    bool occlusion_culling;
+} SceneConfig;
+extern SceneConfig g_scene_cfg;
+
+typedef struct SceneStats {
+    int chunks_visible, chunks_drawn[LAYER_COUNT], draw_calls;
+    u64 vertices_drawn;
+    int uploads_this_frame;
+    u64 upload_bytes_total;
+    int arena_pages;
+    double arena_used_mb;
+    int chunks_in_range, chunks_culled_frustum, chunks_culled_occlusion;
+} SceneStats;
+extern SceneStats g_scene_stats;
+
+bool scene_init(void);
+void scene_shutdown(void);
+void scene_resize(int w, int h);
+/* Uploads a finished mesh into the arena and swaps it with the previous one. */
+void scene_upload_mesh(Chunk *c, MeshOutput *out);
+void scene_free_chunk(Chunk *c);
+void scene_render(const Camera *cam, double time_s);
+bool scene_reload_shaders(void);
+void scene_mesh_job_complete_hook(void);
+
 /* ------------------------------------------------------------ selftest.c */
 
 void selftest_check(bool ok, const char *expr, const char *file, int line);

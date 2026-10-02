@@ -1,9 +1,12 @@
 /* Far terrain: a coarse heightmap mesh that continues the world past the chunk render distance.
  *
  * The surface comes straight from the generator's analytic height and biome functions, so no chunk data is
- * needed and a tile costs a few milliseconds on a worker and about 9 KB of GPU memory. Tiles are 256 blocks
- * square sampled every 8 blocks. Vertices are 8 bytes (height, colour, two normal components); the x and z
- * grid position comes from gl_VertexID, so the mesh needs no per-vertex position at all.
+ * needed and a tile costs a few milliseconds on a worker. Tiles are 256 blocks square and are built from 8 by 8
+ * block columns: each is a flat-topped box face at a whole-block height, with a vertical wall wherever a
+ * neighbour is lower, and one flat colour and one face shade per quad. That keeps the far layer in the same
+ * blocky idiom as the chunks. Rejected: a smooth interpolated heightmap (it read as a different, low-poly
+ * game beyond the chunk ring) and faceted normals on a smooth mesh (still rounded silhouettes).
+ * Vertices are 8 bytes (grid x and z, height, colour, face and water flags).
  *
  * Where real chunks exist the far layer must not draw. A small coverage texture marks columns that are
  * fully meshed (eroded by one column so the two layers overlap by a ring), and the fragment shader discards
@@ -23,8 +26,6 @@
 
 #define TILE_BLOCKS 256
 #define TILE_CELLS 32
-#define TILE_VERTS_SIDE (TILE_CELLS + 1)
-#define TILE_VERTS (TILE_VERTS_SIDE * TILE_VERTS_SIDE)
 #define CELL_BLOCKS (TILE_BLOCKS / TILE_CELLS)
 #define HEIGHT_UNITS_PER_BLOCK 4.0f
 #define MAX_TILES 400
@@ -33,23 +34,27 @@
 #define FAR_DROP_BLOCKS 3.0f
 #define FAR_WATER_DROP_BLOCKS 0.6f
 #define WATER_RAMP_BLOCKS 192.0f /* distance over which the sea bed rises to the surface beyond the chunk ring */
+#define OCEAN_STEP_BLOCKS 4.0f
 #define COLOR_JITTER 0.05f
 #define DEEP_WATER_DEPTH 40.0f
 static const float SHALLOW_WATER[3] = {0.16f, 0.38f, 0.58f};
 static const float DEEP_WATER[3] = {0.07f, 0.20f, 0.40f};
 
 typedef struct FarVertex {
+    u8 x, z;      /* corner of the 8-block grid inside the tile, 0..TILE_CELLS */
     i16 height;   /* blocks * HEIGHT_UNITS_PER_BLOCK */
     u8 r, g, b;
-    i8 nx, nz;
-    u8 water; /* 255 for ocean vertices: height is then the sea bed and the shader lifts it towards the surface */
+    u8 flags;     /* bits 0..2 face (DIR_*), bit 3 ocean: height is then the sea bed and the shader lifts it towards the surface */
 } FarVertex;
+#define FLAG_WATER 8
+#define MAX_TILE_QUADS (TILE_CELLS * TILE_CELLS * 5) /* a top and up to four walls per column */
 
 typedef struct FarTile {
     int tx, tz;
     u32 serial;
     bool ready;
     GLuint vbo, vao;
+    int index_count;
     float ymin, ymax;
 } FarTile;
 
@@ -57,6 +62,7 @@ typedef struct FarJob {
     int tx, tz;
     u32 serial;
     FarVertex *verts;
+    int vert_count;
     float ymin, ymax;
 } FarJob;
 
@@ -80,18 +86,14 @@ static bool load_far_shader(Shader *s) {
 bool far_init(void) {
     memset(&F, 0, sizeof F);
     if (!load_far_shader(&F.shader)) return false;
-    u16 *idx = xmalloc((size_t)TILE_CELLS * TILE_CELLS * 6 * sizeof(u16));
-    u16 *p = idx;
-    for (int j = 0; j < TILE_CELLS; j++)
-        for (int i = 0; i < TILE_CELLS; i++) {
-            u16 a = (u16)(j * TILE_VERTS_SIDE + i), b = (u16)(a + 1), c = (u16)(a + TILE_VERTS_SIDE), d = (u16)(c + 1);
-            /* Alternating the diagonal removes the directional bias a fixed split gives to ridges. */
-            if ((i + j) & 1) { *p++ = a; *p++ = c; *p++ = b; *p++ = b; *p++ = c; *p++ = d; }
-            else { *p++ = a; *p++ = c; *p++ = d; *p++ = a; *p++ = d; *p++ = b; }
-        }
+    u16 *idx = xmalloc((size_t)MAX_TILE_QUADS * 6 * sizeof(u16));
+    for (int q = 0; q < MAX_TILE_QUADS; q++) {
+        u16 *p = idx + q * 6, v = (u16)(q * 4);
+        p[0] = v; p[1] = (u16)(v + 1); p[2] = (u16)(v + 2); p[3] = v; p[4] = (u16)(v + 2); p[5] = (u16)(v + 3);
+    }
     glGenBuffers(1, &F.ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, F.ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)TILE_CELLS * TILE_CELLS * 6 * sizeof(u16)), idx, GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)MAX_TILE_QUADS * 6 * sizeof(u16)), idx, GL_STATIC_DRAW);
     free(idx);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     glGenTextures(1, &F.cover_tex);
@@ -128,53 +130,103 @@ bool far_reload_shader(void) {
 
 static float water_depth_mix(float depth) { return CLAMP(depth / DEEP_WATER_DEPTH, 0.0f, 1.0f); }
 
+typedef struct TileBuild {
+    FarVertex *v;
+    int n;
+    float ymin, ymax;
+} TileBuild;
+
+static FarVertex far_vertex(int gx, int gz, int top_block, const u8 rgb[3], int face, bool water) {
+    FarVertex v;
+    v.x = (u8)gx; v.z = (u8)gz;
+    v.height = (i16)CLAMP(top_block * (int)HEIGHT_UNITS_PER_BLOCK, -32768, 32767);
+    v.r = rgb[0]; v.g = rgb[1]; v.b = rgb[2];
+    v.flags = (u8)(face | (water ? FLAG_WATER : 0));
+    return v;
+}
+
+static void emit_quad(TileBuild *tb, const FarVertex q[4]) {
+    memcpy(tb->v + tb->n, q, 4 * sizeof(FarVertex));
+    tb->n += 4;
+    for (int k = 0; k < 4; k++) {
+        float y = (float)q[k].height / HEIGHT_UNITS_PER_BLOCK;
+        if (y < tb->ymin) tb->ymin = y;
+        if (y > tb->ymax) tb->ymax = y;
+    }
+}
+
+/* Wall on the side `d` of column (i, j), from the lower neighbour's top up to this column's top. Corners are
+ * ordered counter-clockwise seen from outside. */
+static void emit_wall(TileBuild *tb, int i, int j, int d, int top, bool top_water, int bottom, bool bottom_water, const u8 rgb[3]) {
+    /* Per side: x offset, z offset, high or low, for the four corners. */
+    static const int CORNER[6][4][3] = {
+        [DIR_PX] = {{1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 1, 0}},
+        [DIR_NX] = {{0, 1, 0}, {0, 1, 1}, {0, 0, 1}, {0, 0, 0}},
+        [DIR_PZ] = {{0, 1, 0}, {1, 1, 0}, {1, 1, 1}, {0, 1, 1}},
+        [DIR_NZ] = {{1, 0, 0}, {0, 0, 0}, {0, 0, 1}, {1, 0, 1}},
+    };
+    FarVertex q[4];
+    for (int k = 0; k < 4; k++) {
+        bool high = CORNER[d][k][2];
+        q[k] = far_vertex(i + CORNER[d][k][0], j + CORNER[d][k][1], high ? top : bottom, rgb, d, high ? top_water : bottom_water);
+    }
+    emit_quad(tb, q);
+}
+
 static void far_job_run(void *data, int worker) {
     FarJob *j = data;
-    enum { SIDE = TILE_VERTS_SIDE + 2 };
-    float *h = xmalloc((size_t)SIDE * SIDE * sizeof(float));
+    enum { SIDE = TILE_CELLS + 2 };
     int sea = gen_sea_level();
-    /* One extra ring of samples so normals at tile borders match the neighbouring tile exactly. */
+    /* Column tops sampled at the column centre, with one extra ring so border walls agree with the neighbouring tile. */
+    int *top = xmalloc((size_t)SIDE * SIDE * sizeof(int));
+    float *hf = xmalloc((size_t)SIDE * SIDE * sizeof(float));
     for (int z = 0; z < SIDE; z++)
-        for (int x = 0; x < SIDE; x++)
-            h[z * SIDE + x] = gen_height_at((float)(j->tx * TILE_BLOCKS + (x - 1) * CELL_BLOCKS), (float)(j->tz * TILE_BLOCKS + (z - 1) * CELL_BLOCKS));
-    j->verts = xmalloc(TILE_VERTS * sizeof(FarVertex));
-    j->ymin = 1e9f; j->ymax = -1e9f;
-    for (int z = 0; z < TILE_VERTS_SIDE; z++)
-        for (int x = 0; x < TILE_VERTS_SIDE; x++) {
-            int wx = j->tx * TILE_BLOCKS + x * CELL_BLOCKS, wz = j->tz * TILE_BLOCKS + z * CELL_BLOCKS;
-            float hc = h[(z + 1) * SIDE + x + 1];
-            float dx = (h[(z + 1) * SIDE + x + 2] - h[(z + 1) * SIDE + x]) / (2.0f * CELL_BLOCKS);
-            float dz = (h[(z + 2) * SIDE + x + 1] - h[z * SIDE + x + 1]) / (2.0f * CELL_BLOCKS);
-            float inv = 1.0f / sqrtf(dx * dx + 1.0f + dz * dz);
-            FarVertex *v = &j->verts[z * TILE_VERTS_SIDE + x];
-            v->water = 0;
-            float top = hc, r, g, b;
-            bool flat_normal = false; /* water is level, whatever the sea bed does */
-            if (hc < (float)sea) {
+        for (int x = 0; x < SIDE; x++) {
+            float wx = (float)(j->tx * TILE_BLOCKS + (x - 1) * CELL_BLOCKS) + CELL_BLOCKS * 0.5f;
+            float wz = (float)(j->tz * TILE_BLOCKS + (z - 1) * CELL_BLOCKS) + CELL_BLOCKS * 0.5f;
+            float h = gen_height_at(wx, wz);
+            hf[z * SIDE + x] = h;
+            top[z * SIDE + x] = (int)floorf(h) - (int)FAR_DROP_BLOCKS;
+            /* Sea beds are quantised coarsely: their steps are lifted into one level surface by the vertex shader,
+             * and fewer distinct heights mean fewer walls to lift. */
+            if (h < (float)sea) top[z * SIDE + x] = (int)floorf(h / OCEAN_STEP_BLOCKS) * (int)OCEAN_STEP_BLOCKS;
+        }
+    TileBuild tb = {.v = xmalloc((size_t)MAX_TILE_QUADS * 4 * sizeof(FarVertex)), .ymin = 1e9f, .ymax = -1e9f};
+    for (int cz = 0; cz < TILE_CELLS; cz++)
+        for (int cx = 0; cx < TILE_CELLS; cx++) {
+            int idx = (cz + 1) * SIDE + cx + 1;
+            float hc = hf[idx];
+            int wx = j->tx * TILE_BLOCKS + cx * CELL_BLOCKS, wz = j->tz * TILE_BLOCKS + cz * CELL_BLOCKS;
+            bool water = hc < (float)sea;
+            float r, g, b;
+            if (water) {
                 float m = water_depth_mix((float)sea - hc);
                 r = lerpf(SHALLOW_WATER[0], DEEP_WATER[0], m); g = lerpf(SHALLOW_WATER[1], DEEP_WATER[1], m); b = lerpf(SHALLOW_WATER[2], DEEP_WATER[2], m);
-                top = hc - FAR_DROP_BLOCKS;
-                flat_normal = true;
-                v->water = 255;
             } else {
-                u32 col = gen_far_color_at((float)wx, (float)wz, hc);
-                float jitter = 1.0f + (hash_to_unit(hash3(7, wx, 0, wz)) - 0.5f) * 2.0f * COLOR_JITTER;
-                r = (float)(col & 255) / 255.0f * jitter;
-                g = (float)((col >> 8) & 255) / 255.0f * jitter;
-                b = (float)((col >> 16) & 255) / 255.0f * jitter;
-                top = hc - FAR_DROP_BLOCKS;
+                u32 col = gen_far_color_at((float)wx + CELL_BLOCKS * 0.5f, (float)wz + CELL_BLOCKS * 0.5f, hc);
+                r = (float)(col & 255) / 255.0f; g = (float)((col >> 8) & 255) / 255.0f; b = (float)((col >> 16) & 255) / 255.0f;
             }
-            v->height = (i16)CLAMP((int)floorf(top * HEIGHT_UNITS_PER_BLOCK), -32768, 32767);
-            v->r = (u8)CLAMP((int)(r * 255.0f), 0, 255);
-            v->g = (u8)CLAMP((int)(g * 255.0f), 0, 255);
-            v->b = (u8)CLAMP((int)(b * 255.0f), 0, 255);
-            v->nx = flat_normal ? 0 : (i8)CLAMP((int)(-dx * inv * 127.0f), -127, 127);
-            v->nz = flat_normal ? 0 : (i8)CLAMP((int)(-dz * inv * 127.0f), -127, 127);
-            if (top < j->ymin) j->ymin = top;
-            if (top > j->ymax) j->ymax = top;
-            if (v->water && (float)sea - FAR_WATER_DROP_BLOCKS > j->ymax) j->ymax = (float)sea - FAR_WATER_DROP_BLOCKS;
+            /* Per-column brightness variation stands in for the texture detail the far layer does not have. */
+            float jitter = 1.0f + (hash_to_unit(hash3(7, wx, 0, wz)) - 0.5f) * 2.0f * COLOR_JITTER;
+            u8 rgb[3] = {(u8)CLAMP((int)(r * jitter * 255.0f), 0, 255), (u8)CLAMP((int)(g * jitter * 255.0f), 0, 255), (u8)CLAMP((int)(b * jitter * 255.0f), 0, 255)};
+            int t = top[idx];
+            FarVertex q[4] = {far_vertex(cx, cz, t, rgb, DIR_PY, water), far_vertex(cx, cz + 1, t, rgb, DIR_PY, water),
+                              far_vertex(cx + 1, cz + 1, t, rgb, DIR_PY, water), far_vertex(cx + 1, cz, t, rgb, DIR_PY, water)};
+            emit_quad(&tb, q);
+            for (int d = 0; d < 6; d++) {
+                if (d == DIR_PY || d == DIR_NY) continue;
+                int ni = idx + DIR_VEC[d][2] * SIDE + DIR_VEC[d][0];
+                bool nwater = hf[ni] < (float)sea;
+                if (top[ni] >= t) continue;
+                emit_wall(&tb, cx, cz, d, t, water, top[ni], nwater, rgb);
+            }
+            if (water) tb.ymax = MAX(tb.ymax, (float)sea - FAR_WATER_DROP_BLOCKS);
         }
-    free(h);
+    j->verts = tb.v;
+    j->vert_count = tb.n;
+    j->ymin = tb.ymin; j->ymax = tb.ymax;
+    free(top);
+    free(hf);
 }
 
 static FarTile *find_tile(int tx, int tz) {
@@ -193,18 +245,16 @@ static void far_job_complete(void *data) {
         glGenBuffers(1, &t->vbo);
         glBindVertexArray(t->vao);
         glBindBuffer(GL_ARRAY_BUFFER, t->vbo);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(TILE_VERTS * sizeof(FarVertex)), j->verts, GL_STATIC_DRAW);
-        glVertexAttribIPointer(0, 1, GL_SHORT, sizeof(FarVertex), (void *)offsetof(FarVertex, height));
-        glVertexAttribPointer(1, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, r));
-        glVertexAttribPointer(2, 2, GL_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, nx));
-        glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, water));
-        glEnableVertexAttribArray(3);
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-        glEnableVertexAttribArray(2);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)j->vert_count * sizeof(FarVertex)), j->verts, GL_STATIC_DRAW);
+        glVertexAttribIPointer(0, 2, GL_UNSIGNED_BYTE, sizeof(FarVertex), (void *)offsetof(FarVertex, x));
+        glVertexAttribIPointer(1, 1, GL_SHORT, sizeof(FarVertex), (void *)offsetof(FarVertex, height));
+        glVertexAttribPointer(2, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, r));
+        glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(FarVertex), (void *)offsetof(FarVertex, flags));
+        for (int a = 0; a < 4; a++) glEnableVertexAttribArray((GLuint)a);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, F.ibo);
         glBindVertexArray(0);
         t->ymin = j->ymin; t->ymax = j->ymax;
+        t->index_count = j->vert_count / 4 * 6;
         t->ready = true;
     }
     free(j->verts);
@@ -314,7 +364,6 @@ void far_render(const Camera *cam, double time_s, int rd, int far_chunks, const 
     glUniformMatrix4fv(shader_uniform(sh, "u_viewproj"), 1, GL_FALSE, vp.m);
     glUniform1f(shader_uniform(sh, "u_height_scale"), 1.0f / HEIGHT_UNITS_PER_BLOCK);
     glUniform1f(shader_uniform(sh, "u_cell"), (float)CELL_BLOCKS);
-    glUniform1i(shader_uniform(sh, "u_side"), TILE_VERTS_SIDE);
     glUniform1f(shader_uniform(sh, "u_sea"), (float)gen_sea_level() - FAR_WATER_DROP_BLOCKS);
     glUniform1f(shader_uniform(sh, "u_ramp_start"), (float)(rd * CHUNK_SIZE));
     glUniform1f(shader_uniform(sh, "u_ramp_end"), (float)(rd * CHUNK_SIZE) + WATER_RAMP_BLOCKS);
@@ -341,7 +390,7 @@ void far_render(const Camera *cam, double time_s, int rd, int far_chunks, const 
         if (!frustum_box_visible(&cam->frustum, lo, hi)) continue;
         glUniform2i(shader_uniform(sh, "u_tile_origin"), t->tx * TILE_BLOCKS, t->tz * TILE_BLOCKS);
         glBindVertexArray(t->vao);
-        glDrawElements(GL_TRIANGLES, TILE_CELLS * TILE_CELLS * 6, GL_UNSIGNED_SHORT, NULL);
+        glDrawElements(GL_TRIANGLES, t->index_count, GL_UNSIGNED_SHORT, NULL);
         g_scene_stats.draw_calls++;
         drawn++;
     }

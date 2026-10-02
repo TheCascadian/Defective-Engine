@@ -624,7 +624,7 @@ u8 *file_read(const char *path, size_t *size) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (n < 0) { fclose(f); return NULL; }
+    if (n < 0 || path_is_dir(path)) { fclose(f); return NULL; }
     u8 *buf = xmalloc((size_t)n + 1);
     size_t got = fread(buf, 1, (size_t)n, f);
     fclose(f);

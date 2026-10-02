@@ -20,57 +20,74 @@
 #define MAX_DROP_PER_STEP 0.15f
 #define SWAP_SHARE_GPU_BOUND 0.3   /* without timer queries, a long swap wait means the GPU is the limit */
 #define SHAFT_STRENGTH 0.30f
+#define SHAFT_MASK_DIVISOR 2       /* mask is half size per axis, a quarter of the pixels */
 #define SHAFT_FACING_MIN 0.05f     /* shafts fade in as the sun comes within this of the screen edge direction */
 
 static struct {
     GLuint fbo, color, depth, vao;
+    GLuint mask_fbo, mask_tex;    /* quarter-pixel-count shaft brightness */
+    int mask_w, mask_h;
     int w, h;
-    Shader blit, shafts;
+    Shader blit, shafts, mask;
     float scale;
     double ema_ms;
     int frames_since_check;
     bool ready, drawing_offscreen;
     bool pack_active;        /* a mod replaces post.frag, so the pass must run even at full scale */
+    bool shafts_supported;   /* the engine's post.frag, or a replacement that handles the shaft passes */
     float shaft_strength;
 } P;
 
-static bool load_shaders(Shader *blit, Shader *shafts) {
+static bool load_shaders(Shader *blit, Shader *shafts, Shader *mask) {
     return shader_load(blit, "post", "assets/dfe/shaders/post.vert", "assets/dfe/shaders/post.frag", "") &&
-           shader_load(shafts, "post_shafts", "assets/dfe/shaders/post.vert", "assets/dfe/shaders/post.frag", "#define SHAFTS 1\n");
+           shader_load(shafts, "post_shafts", "assets/dfe/shaders/post.vert", "assets/dfe/shaders/post.frag", "#define SHAFTS 1\n") &&
+           shader_load(mask, "post_shaft_mask", "assets/dfe/shaders/post.vert", "assets/dfe/shaders/post.frag", "#define SHAFT_MASK 1\n");
 }
 
 /* A shader pack that grades the final image only works if the pass runs. The engine skips the pass at full scale to
  * save a full-screen copy, so a replaced post.frag turns it back on; the cost is paid only when a mod asks for it. */
-static bool post_shader_replaced(void) {
-    size_t size;
+static bool contains_text(const u8 *text, size_t size, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; text && i + n <= size; i++) if (!memcmp(text + i, needle, n)) return true;
+    return false;
+}
+
+/* Sets pack_active and shafts_supported. A replacement that never mentions SHAFT_MASK would run its own grade in
+ * the mask pass and ignore the result, so shafts are turned off for it rather than paying for a wasted pass. */
+static void inspect_post_shader(void) {
+    size_t size = 0;
     const char *owner = NULL;
     u8 *text = vfs_read("assets/dfe/shaders/post.frag", &size, &owner);
+    P.pack_active = owner && strcmp(owner, "dfe") != 0;
+    P.shafts_supported = !P.pack_active || contains_text(text, size, "SHAFT_MASK");
     free(text);
-    return owner && strcmp(owner, "dfe") != 0;
 }
 
 bool post_init(void) {
     memset(&P, 0, sizeof P);
-    if (!load_shaders(&P.blit, &P.shafts)) return false;
+    if (!load_shaders(&P.blit, &P.shafts, &P.mask)) return false;
     glGenVertexArrays(1, &P.vao);
     P.scale = 1.0f;
-    P.pack_active = post_shader_replaced();
+    inspect_post_shader();
     P.ready = true;
     return true;
 }
 
 bool post_reload_shaders(void) {
-    Shader blit = {0}, shafts = {0};
-    if (!load_shaders(&blit, &shafts)) {
+    Shader blit = {0}, shafts = {0}, mask = {0};
+    if (!load_shaders(&blit, &shafts, &mask)) {
         if (blit.program) shader_destroy(&blit);
         if (shafts.program) shader_destroy(&shafts);
+        if (mask.program) shader_destroy(&mask);
         return false;
     }
     shader_destroy(&P.blit);
     shader_destroy(&P.shafts);
+    shader_destroy(&P.mask);
     P.blit = blit;
     P.shafts = shafts;
-    P.pack_active = post_shader_replaced();
+    P.mask = mask;
+    inspect_post_shader();
     return true;
 }
 
@@ -78,7 +95,9 @@ static void release_target(void) {
     if (P.fbo) glDeleteFramebuffers(1, &P.fbo);
     if (P.color) glDeleteTextures(1, &P.color);
     if (P.depth) glDeleteTextures(1, &P.depth);
-    P.fbo = P.color = P.depth = 0;
+    if (P.mask_fbo) glDeleteFramebuffers(1, &P.mask_fbo);
+    if (P.mask_tex) glDeleteTextures(1, &P.mask_tex);
+    P.fbo = P.color = P.depth = P.mask_fbo = P.mask_tex = 0;
     P.w = P.h = 0;
 }
 
@@ -87,17 +106,18 @@ void post_shutdown(void) {
     release_target();
     shader_destroy(&P.blit);
     shader_destroy(&P.shafts);
+    shader_destroy(&P.mask);
     glDeleteVertexArrays(1, &P.vao);
     P.ready = false;
 }
 
-static GLuint make_texture(GLint internal, GLenum format, GLenum type, int w, int h) {
+static GLuint make_texture(GLint internal, GLenum format, GLenum type, int w, int h, GLint filter) {
     GLuint t;
     glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
     glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     return t;
@@ -109,13 +129,21 @@ static bool ensure_target(void) {
     release_target();
     P.w = g_win.fb_width;
     P.h = g_win.fb_height;
-    P.color = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, P.w, P.h);
-    P.depth = make_texture(GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, P.w, P.h);
+    P.color = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, P.w, P.h, GL_LINEAR);
+    /* Depth is only ever compared against the far plane, so nearest filtering is both cheaper and exact. */
+    P.depth = make_texture(GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, P.w, P.h, GL_NEAREST);
+    P.mask_w = MAX(1, P.w / SHAFT_MASK_DIVISOR);
+    P.mask_h = MAX(1, P.h / SHAFT_MASK_DIVISOR);
+    P.mask_tex = make_texture(GL_R8, GL_RED, GL_UNSIGNED_BYTE, P.mask_w, P.mask_h, GL_LINEAR);
+    glGenFramebuffers(1, &P.mask_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, P.mask_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, P.mask_tex, 0);
+    bool mask_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glGenFramebuffers(1, &P.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, P.fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, P.color, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, P.depth, 0);
-    bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    bool ok = mask_ok && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (!ok) {
         LOGW("the offscreen render target is not supported by this driver; dynamic resolution and light shafts are off");
@@ -130,7 +158,7 @@ float post_scale(void) { return P.drawing_offscreen ? P.scale : 1.0f; }
  * camera and visible, and fade in rain and underwater where the sky is not a bright source. */
 static float compute_shafts(const Camera *cam, V3 *uv_out, float aspect) {
     *uv_out = v3(0.5f, 0.5f, 0);
-    if (!g_gfx.light_shafts || g_atmo.sun_vis <= 0.01f) return 0.0f;
+    if (!g_gfx.light_shafts || !P.shafts_supported || g_atmo.sun_vis <= 0.01f) return 0.0f;
     V3 d = g_atmo.sun_dir;
     float vz = v3_dot(d, cam->forward);
     if (vz <= SHAFT_FACING_MIN) return 0.0f;
@@ -158,6 +186,23 @@ void post_begin_scene(const Camera *cam) {
     }
 }
 
+/* Marches toward the sun into the small mask target. Leaves the default framebuffer unbound; the caller rebinds it. */
+static void draw_shaft_mask(V3 sun_uv) {
+    glBindFramebuffer(GL_FRAMEBUFFER, P.mask_fbo);
+    glViewport(0, 0, P.mask_w, P.mask_h);
+    shader_use(&P.mask);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, P.depth);
+    glUniform1i(shader_uniform(&P.mask, "u_depth"), 0);
+    glUniform2f(shader_uniform(&P.mask, "u_scale"), (float)MAX(1, (int)((float)P.w * P.scale)) / (float)P.w, (float)MAX(1, (int)((float)P.h * P.scale)) / (float)P.h);
+    glUniform2f(shader_uniform(&P.mask, "u_texel"), 1.0f / (float)P.w, 1.0f / (float)P.h);
+    glUniform2f(shader_uniform(&P.mask, "u_sun_uv"), sun_uv.x, sun_uv.y);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g_win.fb_width, g_win.fb_height);
+    glBindTexture(GL_TEXTURE_2D, P.color);
+}
+
 void post_end_scene(const Camera *cam) {
     if (!P.drawing_offscreen) return;
     float aspect = (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1);
@@ -169,22 +214,22 @@ void post_end_scene(const Camera *cam) {
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     bool shafts = P.shaft_strength > 0.0f;
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(P.vao);
+    if (shafts) draw_shaft_mask(sun_uv);
     Shader *sh = shafts ? &P.shafts : &P.blit;
     shader_use(sh);
-    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, P.color);
     glUniform1i(shader_uniform(sh, "u_color"), 0);
     glUniform2f(shader_uniform(sh, "u_scale"), (float)MAX(1, (int)((float)P.w * P.scale)) / (float)P.w, (float)MAX(1, (int)((float)P.h * P.scale)) / (float)P.h);
     glUniform2f(shader_uniform(sh, "u_texel"), 1.0f / (float)P.w, 1.0f / (float)P.h);
     if (shafts) {
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, P.depth);
-        glUniform1i(shader_uniform(sh, "u_depth"), 1);
-        glUniform2f(shader_uniform(sh, "u_sun_uv"), sun_uv.x, sun_uv.y);
+        glBindTexture(GL_TEXTURE_2D, P.mask_tex);
+        glUniform1i(shader_uniform(sh, "u_shaft_mask"), 1);
         V3 c = v3_scale(g_atmo.sun_color, P.shaft_strength);
         glUniform3f(shader_uniform(sh, "u_shaft_color"), c.x, c.y, c.z);
     }
-    glBindVertexArray(P.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE1);

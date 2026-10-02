@@ -195,6 +195,7 @@ bool scene_init(void) {
     if (!build_index_buffer()) return false;
     if (!load_shaders(S.shader)) return false;
     page_init(&S.pages[S.page_count++]);
+    if (!far_init()) return false;
     S.ready = true;
     return true;
 }
@@ -207,13 +208,14 @@ bool scene_reload_shaders(void) {
         return false;
     }
     for (int l = 0; l < LAYER_COUNT; l++) { shader_destroy(&S.shader[l]); S.shader[l] = fresh[l]; }
-    return true;
+    return far_reload_shader();
 }
 
 void scene_shutdown(void) {
     if (!S.ready) return;
     for (int i = 0; i < S.page_count; i++) page_destroy(&S.pages[i]);
     for (int l = 0; l < LAYER_COUNT; l++) shader_destroy(&S.shader[l]);
+    far_shutdown();
     glDeleteBuffers(1, &S.ibo);
     free(S.visible); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
     free(S.draw_count); free(S.draw_index); free(S.draw_base);
@@ -352,6 +354,13 @@ static void draw_layer(int layer, bool reverse) {
     }
 }
 
+/* Fog reaches full density just inside the last drawn geometry, whichever layer that is, so edges never show. */
+static void fog_range(int rd, float *start, float *end) {
+    float e = (float)(rd + g_scene_cfg.far_chunks) * 32.0f - 12.0f;
+    *end = e;
+    *start = e * (g_scene_cfg.far_chunks > 0 ? 0.35f : 0.55f);
+}
+
 static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int rd) {
     shader_use(sh);
     int bx = ifloor(cam->pos.x), by = ifloor(cam->pos.y), bz = ifloor(cam->pos.z);
@@ -370,9 +379,17 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     glUniform3f(shader_uniform(sh, "u_sky_color"), 1.0f, 1.0f, 1.0f);
     glUniform1f(shader_uniform(sh, "u_ambient"), 0.04f);
     glUniform3f(shader_uniform(sh, "u_fog_color"), 0.62f, 0.76f, 0.95f);
-    float end = (float)rd * 32.0f - 12.0f;
-    glUniform1f(shader_uniform(sh, "u_fog_start"), end * 0.55f);
-    glUniform1f(shader_uniform(sh, "u_fog_end"), end);
+    float fog_start, fog_end;
+    fog_range(rd, &fog_start, &fog_end);
+    glUniform1f(shader_uniform(sh, "u_fog_start"), fog_start);
+    glUniform1f(shader_uniform(sh, "u_fog_end"), fog_end);
+}
+
+static void draw_far_layer(const Camera *cam, double time_s, int rd) {
+    FarFog fog = {.sun = v3(0.45f, 0.80f, 0.35f), .sky = v3(1, 1, 1), .color = v3(0.62f, 0.76f, 0.95f)};
+    fog_range(rd, &fog.start, &fog.end);
+    far_render(cam, time_s, rd, g_scene_cfg.far_chunks, &fog);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void scene_render(const Camera *cam, double time_s) {
@@ -394,6 +411,7 @@ void scene_render(const Camera *cam, double time_s) {
     glFrontFace(GL_CCW);
     for (int l = 0; l < LAYER_COUNT; l++) {
         bool translucent = l == LAYER_TRANSLUCENT;
+        if (translucent) draw_far_layer(cam, time_s, rd);
         if (translucent) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

@@ -816,6 +816,16 @@ bool world_ready(void) {
            W.stats.mesh_pending == 0 && W.stats.light_queue == 0;
 }
 
+bool world_column_meshed(int cx, int cz) {
+    Column *col = world_column(cx, cz);
+    if (!col || col->state != COLUMN_READY) return false;
+    for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
+        Chunk *c = world_chunk(cx, cy, cz);
+        if (c && !(c->flags & CF_MESHED_ONCE)) return false;
+    }
+    return true;
+}
+
 void world_stats(WorldStats *out) { *out = W.stats; }
 
 void world_flush_generation(int cx, int cz, int radius) {

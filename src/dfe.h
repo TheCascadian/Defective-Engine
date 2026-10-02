@@ -619,6 +619,7 @@ typedef struct SceneConfig {
     int render_distance;     /* chunks */
     float fov_deg;
     bool occlusion_culling;
+    bool wireframe;          /* debug view */
 } SceneConfig;
 extern SceneConfig g_scene_cfg;
 
@@ -670,5 +671,6 @@ typedef struct Options {
     char screenshot_path[256];
     int screenshot_frame;
     int overlay_page;
+    bool wireframe;
 } Options;
 extern Options g_opt;

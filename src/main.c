@@ -17,6 +17,7 @@ static void print_usage(void) {
          "  --render-distance N  chunks (default from preset)\n"
          "  --preset low|medium|high\n"
          "  --width W --height H window size\n"
+         "  --wireframe          draw chunk geometry as lines (also F4)\n"
          "  --no-vsync           disable vertical sync\n"
          "  --hidden             create the window hidden\n"
          "  --screenshot FILE    save the frame given by --screenshot-frame as PPM and exit\n"
@@ -47,6 +48,7 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--height") && has_val) g_opt.height = atoi(argv[++i]);
         else if (!strcmp(a, "--screenshot") && has_val) snprintf(g_opt.screenshot_path, sizeof g_opt.screenshot_path, "%s", argv[++i]);
         else if (!strcmp(a, "--screenshot-frame") && has_val) g_opt.screenshot_frame = atoi(argv[++i]);
+        else if (!strcmp(a, "--wireframe")) g_opt.wireframe = true;
         else if (!strcmp(a, "--overlay") && has_val) g_opt.overlay_page = atoi(argv[++i]);
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { print_usage(); return false; }
         else {
@@ -234,6 +236,7 @@ static int run_viewer(void) {
     world_init(seed);
     int rd = render_distance_for_preset();
     g_scene_cfg.render_distance = rd;
+    g_scene_cfg.wireframe = g_opt.wireframe;
 
     Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2) * 32.0f};
     if (g_opt.benchmark) benchmark_camera(&cam, 0);
@@ -258,6 +261,7 @@ static int run_viewer(void) {
             }
             if (g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
+            if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
         }
         if (g_opt.benchmark) {
             benchmark_camera(&cam, frame);

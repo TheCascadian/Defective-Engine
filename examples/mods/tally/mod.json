@@ -1,0 +1,11 @@
+{
+  "id": "tally",
+  "name": "Block Tally (native plugin)",
+  "version": "1.0.0",
+  "api": 1,
+  "depends": ["base>=1.0"],
+  "plugin": {
+    "linux": "plugins/libtally.so",
+    "windows": "plugins/tally.dll"
+  }
+}

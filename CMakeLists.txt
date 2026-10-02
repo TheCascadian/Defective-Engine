@@ -83,3 +83,18 @@ target_compile_options(dfe PRIVATE ${DFE_WARN})
 target_link_libraries(dfe PRIVATE dfe_engine)
 # Plugins resolve the C API through the executable, so symbols must be exported.
 set_target_properties(dfe PROPERTIES ENABLE_EXPORTS ON)
+
+# The native plugin example is built on request, straight into its mod folder, so that copying
+# examples/mods/tally into mods/ gives a working mod. It includes only include/dfe_api.h.
+option(DFE_BUILD_EXAMPLES "Build the native plugin example mod" OFF)
+if(DFE_BUILD_EXAMPLES)
+  add_library(tally MODULE examples/mods/tally/src/tally.c)
+  target_include_directories(tally PRIVATE include)
+  target_compile_options(tally PRIVATE ${DFE_WARN})
+  set_target_properties(tally PROPERTIES PREFIX "lib" C_VISIBILITY_PRESET hidden
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/mods/tally/plugins
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/mods/tally/plugins)
+  if(WIN32)
+    set_target_properties(tally PROPERTIES PREFIX "")
+  endif()
+endif()

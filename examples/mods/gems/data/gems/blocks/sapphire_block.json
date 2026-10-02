@@ -1,0 +1,7 @@
+{
+  "textures": { "all": "gems:block/sapphire_block" },
+  "light": { "emit": [2, 5, 13] },
+  "hardness": 2.0,
+  "tool": "pick",
+  "sound": "stone"
+}

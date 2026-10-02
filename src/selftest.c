@@ -192,6 +192,38 @@ static void test_registry(void) {
     CHECK(block_state_prop_index(r, st, 0) == 1 && block_state_prop_index(r, st, 1) == 2);
     CHECK(block_find("test:lever") == r && block_find("test:nothing") == NULL);
 
+    /* State text round trips, and every kind of typo fails instead of resolving to a default. */
+    char text[128];
+    CHECK(block_parse_state("test:lever[powered=true,facing=s]") == st);
+    CHECK(block_parse_state("test:lever[facing=s,powered=true]") == st);
+    CHECK(block_parse_state("test:lever[powered=true]") == r->first_state + 1);
+    CHECK(block_parse_state("test:lever") == r->default_state);
+    CHECK(block_format_state(st, text, sizeof text) && !strcmp(text, "test:lever[powered=true,facing=s]"));
+    CHECK(block_parse_state("test:lever[powered=maybe]") == STATE_UNLOADED);
+    CHECK(block_parse_state("test:lever[colour=red]") == STATE_UNLOADED);
+    CHECK(block_parse_state("test:lever[powered=true") == STATE_UNLOADED);
+    CHECK(block_parse_state("test:nothing[powered=true]") == STATE_UNLOADED);
+    CHECK(block_format_state(0xFFF0, text, sizeof text) == false);
+
+    /* A block can emit light only in the states where a property has a given value. */
+    BlockDef lamp = {0};
+    snprintf(lamp.name, sizeof lamp.name, "test:lamp");
+    snprintf(lamp.mod, sizeof lamp.mod, "test");
+    lamp.shape = SHAPE_CUBE;
+    lamp.nprops = 1;
+    snprintf(lamp.props[0].name, sizeof lamp.props[0].name, "lit");
+    lamp.props[0].count = 2;
+    snprintf(lamp.props[0].values[0], 16, "off");
+    snprintf(lamp.props[0].values[1], 16, "on");
+    lamp.emit[0] = 15;
+    lamp.emit_prop = 0;
+    snprintf(lamp.emit_prop_name, sizeof lamp.emit_prop_name, "lit");
+    snprintf(lamp.emit_value, sizeof lamp.emit_value, "on");
+    BlockDef *lr = block_register(&lamp);
+    registry_freeze_blocks();
+    CHECK(lr && g_state_emit[block_parse_state("test:lamp[lit=off]")] == 0);
+    CHECK(lr && g_state_emit[block_parse_state("test:lamp[lit=on]")] == (15 << 8));
+
     BlockNameTable saved;
     block_table_save_names(&saved);
     u32 index = 0;
@@ -574,6 +606,87 @@ static void test_mods_and_scripts(void) {
     test_scripting();
 }
 
+/* ---------------------------------------------------------------- example mods */
+
+/* Loads base plus every mod in examples/mods and exercises each one, so the examples cannot rot unnoticed.
+ * The native plugin is included only when it has been built (cmake -DDFE_BUILD_EXAMPLES=ON). */
+static void test_example_mods(void) {
+    if (!path_is_dir("examples/mods") || !path_is_dir("mods")) { printf("selftest examples skipped: run from the repository root\n"); return; }
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    data_error_reset();
+    mods_reset();
+    events_clear_all();
+    mods_discover("mods");
+    mods_discover("examples/mods");
+    mods_resolve();
+    mods_mount();
+    CHECK(data_error_count() == 0);
+    CHECK(mods_loaded_count() == 7);
+    CHECK(order_of("base") == 0 && order_of("gems") < order_of("builder"));
+    registry_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    CHECK(data_error_count() == 0);
+    CHECK(gen_sea_level() == 74); /* highsea shadows base's worldgen file */
+    u16 lamp_on = block_parse_state("gems:lamp[lit=on]"), lamp_off = block_parse_state("gems:lamp[lit=off]");
+    u16 ruby = block_parse_state("gems:ruby_block");
+    CHECK(lamp_on != STATE_UNLOADED && lamp_off != STATE_UNLOADED && ruby != STATE_UNLOADED);
+    CHECK(g_state_emit[lamp_off] == 0 && g_state_emit[lamp_on] != 0);
+    CHECK(block_parse_state("gems:amethyst_cluster") != STATE_UNLOADED);
+    if (data_error_count() || ruby == STATE_UNLOADED) return;
+
+    jobs_init(2);
+    world_init(4242);
+    world_flush_generation(0, 0, 2);
+    console_init();
+    CHECK(script_init());
+    CHECK(script_load_mods() == 0);
+    bool native = path_exists("examples/mods/tally/plugins/libtally.so") || path_exists("examples/mods/tally/plugins/tally.dll");
+    if (native) mods_load_plugins(true);
+
+    dfe_event_t tick = {.name = "tick", .dt = 0.05};
+    const int sky = 200; /* far above any terrain, so every position is air before the commands run */
+    command_run("sphere 8 200 8 3 gems:ruby_block");
+    command_run("fill 0 210 0 3 210 3 base:stone");
+    for (int i = 0; i < 4; i++) event_fire(&tick);
+    CHECK(world_get_state(8, sky, 8) == ruby && world_get_state(8, sky + 3, 8) == ruby && world_get_state(8, sky + 4, 8) == STATE_AIR);
+    CHECK(world_get_state(2, 210, 2) == block_parse_state("base:stone"));
+
+    command_run("setblock 8 200 8 gems:lamp");
+    command_run("lamp 8 200 8 on");
+    light_process(1 << 30);
+    CHECK(world_get_state(8, sky, 8) == lamp_on && LIGHT_R(world_get_light(8, sky, 8)) == 15);
+    command_run("lamp 8 200 8 toggle");
+    light_process(1 << 30);
+    CHECK(world_get_state(8, sky, 8) == lamp_off && LIGHT_R(world_get_light(8, sky, 8)) == 0);
+
+    /* Guard cancels edits made on the player's behalf inside a region and nowhere else. */
+    command_run("guard add 8 8 2");
+    command_run("setblock 8 230 8 base:stone");
+    CHECK(world_get_state(8, 230, 8) == STATE_AIR);
+    command_run("setblock 20 230 20 base:stone");
+    CHECK(world_get_state(20, 230, 20) == block_parse_state("base:stone"));
+    command_run("guard clear");
+    command_run("setblock 8 230 8 base:stone");
+    CHECK(world_get_state(8, 230, 8) == block_parse_state("base:stone"));
+
+    if (native) {
+        command_run("tally 8 200 8 8 203 8");
+        CHECK(last_log_contains("gems:ruby_block"));
+        command_run("tally");
+        CHECK(last_log_contains("placed"));
+    } else printf("selftest examples: native plugin not built, skipping tally\n");
+
+    mods_unload_plugins();
+    script_shutdown();
+    world_shutdown();
+    jobs_shutdown();
+    events_clear_all();
+    mods_reset();
+    data_error_reset();
+}
+
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
@@ -584,6 +697,7 @@ int selftest_run(void) {
         {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
         {"mods-scripts", test_mods_and_scripts},
+        {"examples", test_example_mods},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {
         int before = g_failures;

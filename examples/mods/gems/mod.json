@@ -1,0 +1,8 @@
+{
+  "id": "gems",
+  "name": "Gems and Lamps",
+  "version": "1.0.0",
+  "api": 1,
+  "depends": ["base>=1.0"],
+  "script": "scripts/main.lua"
+}

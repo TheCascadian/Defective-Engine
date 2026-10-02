@@ -30,7 +30,7 @@ typedef struct GenConfig {
 
 static GenConfig C;
 static struct {
-    fnl_state cont, mount, ridge, detail, temp, humid, cave_a, cave_b, cheese;
+    fnl_state cont, mount, ridge, hills, detail, temp, humid, cave_a, cave_b, cheese;
     bool ready;
 } N;
 
@@ -142,6 +142,7 @@ void gen_init(u64 seed) {
     N.mount = make_noise(s + 2, 0.0014f, 2);
     N.ridge = make_noise(s + 3, 0.0042f, 3);
     N.detail = make_noise(s + 4, 0.021f, 3);
+    N.hills = make_noise(s + 10, 0.0065f, 3);
     N.temp = make_noise(s + 5, 0.0007f, 2);
     N.humid = make_noise(s + 6, 0.0009f, 2);
     N.cave_a = make_noise(s + 7, 0.016f, 1);
@@ -166,6 +167,8 @@ float gen_height_at(float x, float z) {
     float mask = smooth01((fnlGetNoise2D(&N.mount, x, z) - 0.05f) / 0.5f) * smooth01((cont + 0.1f) * 4.0f);
     float r = 1.0f - fabsf(fnlGetNoise2D(&N.ridge, x, z));
     h += mask * (28.0f + 95.0f * r * r);
+    /* Rolling hills break up the broad continental slope; they fade out in the ocean so shelves stay smooth. */
+    h += fnlGetNoise2D(&N.hills, x, z) * 13.0f * smooth01((cont + 0.25f) * 3.0f);
     h += fnlGetNoise2D(&N.detail, x, z) * (3.0f + 6.0f * mask);
     return h;
 }

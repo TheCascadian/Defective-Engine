@@ -95,27 +95,34 @@ static bool setup_vfs(void) {
 
 static int worker_count_for_machine(void) { return CLAMP(cpu_count() - 1, 1, 6); }
 
-/* Deterministic path so two benchmark runs sample the same view: time advances by a fixed step per frame. */
-static void benchmark_camera(Camera *cam, int frame) {
-    float t = (float)frame / 60.0f;
-    float radius = 24.0f + 10.0f * sinf(t * 0.4f);
-    cam->pos = v3(cosf(t * 0.35f) * radius, 12.0f + 6.0f * sinf(t * 0.5f), sinf(t * 0.35f) * radius);
-    V3 to_center = v3_norm(v3_sub(v3(0, 2, 0), cam->pos));
-    cam->yaw = atan2f(-to_center.x, -to_center.z);
-    cam->pitch = asinf(to_center.y);
+#define DEFAULT_SEED 20240607ull
+#define SPAWN_CLEARANCE 14.0f
+#define BENCH_SPEED 16.0f
+#define UPLOAD_BUDGET_S 0.003
+#define PRESET_RD_LOW 8
+#define PRESET_RD_MEDIUM 12
+#define PRESET_RD_HIGH 16
+
+static int render_distance_for_preset(void) {
+    if (g_opt.render_distance > 0) return g_opt.render_distance;
+    if (!strcmp(g_opt.preset, "high")) return PRESET_RD_HIGH;
+    if (!strcmp(g_opt.preset, "medium")) return PRESET_RD_MEDIUM;
+    return PRESET_RD_LOW;
 }
 
-static void draw_test_scene(void) {
-    const int extent = 48;
-    u32 grid = rgba(90, 120, 150, 255), major = rgba(150, 190, 220, 255);
-    for (int i = -extent; i <= extent; i += 2) {
-        u32 c = (i % 16 == 0) ? major : grid;
-        debug_line(v3((float)i, 0, (float)-extent), v3((float)i, 0, (float)extent), c);
-        debug_line(v3((float)-extent, 0, (float)i), v3((float)extent, 0, (float)i), c);
-    }
-    debug_line(v3(0, 0, 0), v3(8, 0, 0), rgba(255, 70, 70, 255));
-    debug_line(v3(0, 0, 0), v3(0, 8, 0), rgba(70, 255, 70, 255));
-    debug_line(v3(0, 0, 0), v3(0, 0, 8), rgba(70, 70, 255, 255));
+/* Deterministic path so two benchmark runs sample the same view: time advances by a fixed step per frame.
+ * The camera follows the terrain at constant clearance while travelling, which exercises streaming, meshing
+ * and unloading the same way on every run. */
+static void benchmark_camera(Camera *cam, int frame) {
+    static float smooth_y = 0;
+    float t = (float)frame / 60.0f;
+    float x = BENCH_SPEED * t, z = 40.0f * sinf(t * 0.12f);
+    float ground = gen_height_at(x, z);
+    float target = MAX(ground, (float)gen_sea_level()) + SPAWN_CLEARANCE;
+    smooth_y = frame == 0 ? target : smooth_y + (target - smooth_y) * 0.04f;
+    cam->pos = v3(x, smooth_y, z);
+    cam->yaw = -1.5707963f + 0.5f * sinf(t * 0.35f);
+    cam->pitch = -0.22f + 0.08f * sinf(t * 0.5f);
 }
 
 static void fly_camera(Camera *cam, double dt) {
@@ -168,68 +175,143 @@ static void print_benchmark_report(double wall_s) {
     free(tmp);
 }
 
-static int run_viewer(void) {
-    if (!window_create("Defective Engine", g_opt.width, g_opt.height, !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
-    if (!ui_init()) return 1;
-    debug_lines_init();
-    jobs_init(worker_count_for_machine());
+static bool boot_content(bool with_gl) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    if (data_error_count() > 0) {
+        LOGE("%d content error(s) found; the first is: %s", data_error_count(), data_error_text(0));
+        return false;
+    }
+    if (with_gl && !textures_build()) return false;
+    return true;
+}
 
-    Camera cam = {.pos = v3(0, 6, 20), .yaw = 0, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = 1000.0f};
-    if (!g_opt.benchmark) window_set_cursor_captured(true);
+static void print_stream_report(double cold_start_s) {
+    WorldStats ws;
+    world_stats(&ws);
+    JobKindStats gen = jobs_stats(JOB_KIND_GEN), mesh = jobs_stats(JOB_KIND_MESH);
+    printf("cold start to playable: %.2f s\n", cold_start_s);
+    printf("worker threads: %d\n", jobs_worker_count());
+    printf("column gen: %llu jobs, avg %.2f ms, max %.2f ms\n", (unsigned long long)gen.count, gen.count ? gen.total_s * 1000.0 / (double)gen.count : 0.0, gen.max_s * 1000.0);
+    printf("chunk mesh: %llu jobs, avg %.2f ms, max %.2f ms\n", (unsigned long long)mesh.count, mesh.count ? mesh.total_s * 1000.0 / (double)mesh.count : 0.0, mesh.max_s * 1000.0);
+    printf("world: %d columns, %d chunks, %d meshed, light queue %d\n", ws.columns_loaded, ws.chunks_loaded, ws.chunks_meshed, ws.light_queue);
+    printf("arena: %d page(s), %.1f MB resident, %llu vertices drawn last frame\n", g_scene_stats.arena_pages, g_scene_stats.arena_used_mb, (unsigned long long)g_scene_stats.vertices_drawn);
+    printf("visibility: %d visible, %d culled by frustum, draw calls %d\n", g_scene_stats.chunks_visible, g_scene_stats.chunks_culled_frustum, g_scene_stats.draw_calls);
+}
+
+/* Blocks until the area around the camera is fully built, so the first frame is not a half-loaded world. */
+static double load_world_around(const Camera *cam, int rd) {
+    double t0 = time_now_s();
+    int quiet = 0;
+    while (quiet < 3) {
+        world_stream(cam->pos, cam->forward, rd, true);
+        jobs_pump(0.02);
+        if (world_ready()) quiet++; else quiet = 0;
+        static double last_log;
+        if (time_now_s() - last_log > 1.0) {
+            WorldStats ws; world_stats(&ws);
+            LOGI("loading: missing %d pending %d unmeshed %d mesh_pending %d light %d", ws.columns_missing, ws.columns_pending, ws.chunks_unmeshed, ws.mesh_pending, ws.light_queue);
+            last_log = time_now_s();
+        }
+        sleep_ms(1);
+    }
+    return time_now_s() - t0;
+}
+
+static int run_viewer(void) {
+    bool gl = !g_opt.no_render;
+    if (gl) {
+        if (!window_create("Defective Engine", g_opt.width, g_opt.height, !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
+        if (!ui_init()) return 1;
+        debug_lines_init();
+    }
+    jobs_init(worker_count_for_machine());
+    if (!boot_content(gl)) return 1;
+    if (gl && !scene_init()) return 1;
+    u64 seed = g_opt.seed_set ? g_opt.seed : DEFAULT_SEED;
+    world_init(seed);
+    int rd = render_distance_for_preset();
+    g_scene_cfg.render_distance = rd;
+
+    Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2) * 32.0f};
+    if (g_opt.benchmark) benchmark_camera(&cam, 0);
+    else cam.pos.y = MAX(gen_height_at(0, 0), (float)gen_sea_level()) + 4.0f;
+    camera_update(&cam, 16.0f / 9.0f);
+    double cold = load_world_around(&cam, rd);
+    jobs_stats_reset();
+
+    if (gl && !g_opt.benchmark) window_set_cursor_captured(true);
     for (int i = 0; i < g_opt.overlay_page; i++) overlay_cycle();
     double last = time_now_s(), bench_start = last;
     int frame = 0;
-    while (!g_win.should_close) {
+    while (gl ? !g_win.should_close : (time_now_s() - bench_start < g_opt.bench_seconds)) {
         double frame_start = time_now_s();
         double dt = frame_start - last;
         last = frame_start;
-        window_poll();
-        if (key_pressed(GLFW_KEY_ESCAPE)) {
-            if (g_in.cursor_captured) window_set_cursor_captured(false);
-            else g_win.should_close = true;
+        if (gl) {
+            window_poll();
+            if (key_pressed(GLFW_KEY_ESCAPE)) {
+                if (g_in.cursor_captured) window_set_cursor_captured(false);
+                else g_win.should_close = true;
+            }
+            if (g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
+            if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
         }
-        if (g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
-        if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
-
         if (g_opt.benchmark) {
             benchmark_camera(&cam, frame);
-            if (frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
-        } else {
+            if (gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
+        } else if (gl) {
             fly_camera(&cam, dt);
         }
-        camera_update(&cam, (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1));
+        camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
 
-        g_stats.draw_calls_last = 0;
-        glViewport(0, 0, g_win.fb_width, g_win.fb_height);
-        glClearColor(0.08f, 0.10f, 0.14f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        draw_test_scene();
-        debug_lines_flush(&cam);
-        ui_begin(g_win.width, g_win.height);
-        overlay_draw();
-        ui_end();
-
+        g_scene_stats.uploads_this_frame = 0;
+        world_stream(cam.pos, cam.forward, rd, false);
+        jobs_pump(UPLOAD_BUDGET_S);
+        if (gl) {
+            g_stats.draw_calls_last = 0;
+            glViewport(0, 0, g_win.fb_width, g_win.fb_height);
+            glClearColor(0.62f, 0.76f, 0.95f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            scene_render(&cam, time_now_s() - bench_start);
+            g_stats.draw_calls_last = g_scene_stats.draw_calls;
+            ui_begin(g_win.width, g_win.height);
+            overlay_draw();
+            ui_end();
+        }
         double cpu_ms = (time_now_s() - frame_start) * 1000.0;
-        if (g_opt.screenshot_path[0] && frame == g_opt.screenshot_frame) {
+        if (gl && g_opt.screenshot_path[0] && frame == g_opt.screenshot_frame) {
             screenshot_save_ppm(g_opt.screenshot_path);
             g_win.should_close = true;
         }
-        window_swap();
+        if (gl) window_swap();
         double frame_ms = (time_now_s() - frame_start) * 1000.0;
-        overlay_frame(frame_ms / 1000.0, cpu_ms);
+        if (gl) overlay_frame(frame_ms / 1000.0, cpu_ms);
         if (g_opt.benchmark && frame > 2) stats_record_frame(frame_ms, cpu_ms);
+        if (!gl) sleep_ms(1);
         frame++;
     }
-    if (g_opt.benchmark) print_benchmark_report(time_now_s() - bench_start);
+    if (g_opt.benchmark) {
+        if (g_stats.count) print_benchmark_report(time_now_s() - bench_start);
+        print_stream_report(cold);
+    }
+    world_shutdown();
     jobs_shutdown();
-    ui_shutdown();
-    window_destroy();
+    if (gl) {
+        scene_shutdown();
+        textures_destroy();
+        ui_shutdown();
+        window_destroy();
+    }
     return 0;
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0); /* keep log lines ordered with stderr and visible if the process is killed */
     if (!parse_args(argc, argv)) return 2;
-    if (g_opt.selftest) return selftest_run() == 0 ? 0 : 1;
     if (!setup_vfs()) return 1;
+    if (g_opt.selftest) return selftest_run() == 0 ? 0 : 1;
     return run_viewer();
 }

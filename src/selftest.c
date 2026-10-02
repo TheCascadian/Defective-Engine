@@ -105,10 +105,254 @@ static void test_vfs(void) {
     vfs_reset();
 }
 
+
+/* ------------------------------------------------------------------ storage */
+
+static void test_palette(void) {
+    Chunk *c = chunk_create(0, 0, 0);
+    c->uniform = 7;
+    CHECK(chunk_get(c, 0) == 7 && chunk_get(c, CHUNK_VOL - 1) == 7 && c->bits == 0);
+    chunk_set(c, 5, 7);
+    CHECK(c->bits == 0); /* writing the existing value must not allocate */
+    u16 *shadow = xmalloc(CHUNK_VOL * sizeof(u16));
+    for (int i = 0; i < CHUNK_VOL; i++) shadow[i] = 7;
+    Rng rng = {99};
+    /* Growing the number of distinct values walks the palette through 1, 2, 4, 8 and 16 bit indices. */
+    int widths_seen = 0, last_bits = -1;
+    for (int distinct = 1; distinct <= 400; distinct++) {
+        for (int k = 0; k < 40; k++) {
+            int idx = rng_range(&rng, 0, CHUNK_VOL - 1);
+            u16 v = (u16)(7 + rng_range(&rng, 0, distinct));
+            chunk_set(c, idx, v);
+            shadow[idx] = v;
+        }
+        if (c->bits != last_bits) { widths_seen++; last_bits = c->bits; }
+    }
+    CHECK(widths_seen >= 4);
+    bool same = true;
+    for (int i = 0; i < CHUNK_VOL; i++) same &= chunk_get(c, i) == shadow[i];
+    CHECK(same);
+    u16 *flat = xmalloc(CHUNK_VOL * sizeof(u16));
+    chunk_unpack(c, flat);
+    CHECK(!memcmp(flat, shadow, CHUNK_VOL * sizeof(u16)));
+    Chunk *d = chunk_create(1, 0, 0);
+    chunk_pack_from(d, flat);
+    same = true;
+    for (int i = 0; i < CHUNK_VOL; i++) same &= chunk_get(d, i) == shadow[i];
+    CHECK(same);
+    size_t before = chunk_memory_bytes(d);
+    for (int i = 0; i < CHUNK_VOL; i++) chunk_set(d, i, 3);
+    chunk_compact(d);
+    CHECK(chunk_get(d, 1234) == 3 && d->bits == 0 && chunk_memory_bytes(d) < before);
+    chunk_destroy(c);
+    chunk_destroy(d);
+    free(shadow);
+    free(flat);
+}
+
+static void test_json(void) {
+    const char *text = "// comment\n{\"a\": 1, \"b\": [1, 2, 3,], /* x */ \"c\": {\"d\": \"e\"},}\n";
+    char err[100];
+    int line = 0;
+    Json *j = json_parse(text, strlen(text), err, sizeof err, &line);
+    CHECK(j != NULL);
+    if (j) {
+        CHECK(json_int(j, "a", 0) == 1 && json_len(json_get(j, "b")) == 3);
+        CHECK(!strcmp(json_str(json_get(j, "c"), "d", ""), "e"));
+        CHECK(json_get(j, "c")->line == 2);
+        json_free(j);
+    }
+    const char *bad = "{\n  \"a\": 1\n  \"b\": 2\n}";
+    CHECK(json_parse(bad, strlen(bad), err, sizeof err, &line) == NULL && line == 3);
+}
+
+/* Registry behaviour with hand-made blocks, independent of any mod on disk. */
+static void test_registry(void) {
+    registry_reset();
+    BlockDef b = {0};
+    snprintf(b.name, sizeof b.name, "test:lever");
+    snprintf(b.mod, sizeof b.mod, "test");
+    b.shape = SHAPE_CUBE;
+    b.nprops = 2;
+    snprintf(b.props[0].name, sizeof b.props[0].name, "powered");
+    b.props[0].count = 2;
+    snprintf(b.props[0].values[0], 16, "false");
+    snprintf(b.props[0].values[1], 16, "true");
+    snprintf(b.props[1].name, sizeof b.props[1].name, "facing");
+    b.props[1].count = 3;
+    snprintf(b.props[1].values[0], 16, "n");
+    snprintf(b.props[1].values[1], 16, "e");
+    snprintf(b.props[1].values[2], 16, "s");
+    BlockDef *r = block_register(&b);
+    CHECK(r && r->state_count == 6);
+    registry_freeze_blocks();
+    u16 st = block_state_with(r, r->default_state, "facing", "s");
+    st = block_state_with(r, st, "powered", "true");
+    CHECK(st == r->first_state + 1 + 2 * 2);
+    CHECK(block_state_prop_index(r, st, 0) == 1 && block_state_prop_index(r, st, 1) == 2);
+    CHECK(block_find("test:lever") == r && block_find("test:nothing") == NULL);
+
+    BlockNameTable saved;
+    block_table_save_names(&saved);
+    u32 index = 0;
+    for (int i = 0; i < saved.names.n; i++) if (!strcmp(saved.names.d[i], "test:lever")) index = (u32)i;
+    CHECK(block_table_remap_state(&saved, index, 3) == r->first_state + 3);
+    CHECK(block_table_remap_state(&saved, 9999, 0) == STATE_MISSING);
+    block_table_free(&saved);
+
+    BlockDef dup = b;
+    dup.nprops = 1;
+    CHECK(block_register(&dup) == NULL && data_error_count() > 0);
+    data_error_reset();
+}
+
+/* ---------------------------------------------------------------- mesher */
+
+static void fill_padded(MeshInput *in, u16 state) {
+    in->states = xmalloc(MESH_PAD_VOL * sizeof(u16));
+    in->light = xmalloc(MESH_PAD_VOL * sizeof(u16));
+    for (int i = 0; i < MESH_PAD_VOL; i++) { in->states[i] = state; in->light[i] = LIGHT_FULL_SKY; }
+}
+
+static void set_padded(MeshInput *in, int x, int y, int z, u16 s) { in->states[((y + 1) * MESH_PAD + (z + 1)) * MESH_PAD + (x + 1)] = s; }
+
+static void test_mesher(const BlockDef *stone) {
+    MeshInput in = {0};
+    MeshOutput out;
+    fill_padded(&in, STATE_AIR);
+    mesh_build(&in, &out);
+    CHECK(out.count[0] + out.count[1] + out.count[2] == 0 && out.conn == 0x7FFF);
+    mesh_output_free(&out);
+
+    set_padded(&in, 5, 5, 5, stone->default_state);
+    mesh_build(&in, &out);
+    CHECK(out.count[LAYER_OPAQUE] == 24); /* one cube: six quads */
+    mesh_output_free(&out);
+
+    set_padded(&in, 6, 5, 5, stone->default_state);
+    mesh_build(&in, &out);
+    CHECK(out.count[LAYER_OPAQUE] == 24); /* two cubes: end caps plus four merged side quads */
+    mesh_output_free(&out);
+
+    /* A solid slab through the middle separates the lower half of the chunk from the upper half. */
+    for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) set_padded(&in, x, 16, z, stone->default_state);
+    mesh_build(&in, &out);
+    CHECK(!chunk_faces_connected(out.conn, DIR_PY, DIR_NY));
+    CHECK(chunk_faces_connected(out.conn, DIR_PX, DIR_NX) == true);
+    mesh_output_free(&out);
+    mesh_input_free(&in);
+
+    CHECK(conn_pair_index(0, 1) == 0 && conn_pair_index(4, 5) == 14 && conn_pair_index(5, 4) == 14);
+}
+
+static void test_light_column(const BlockDef *stone) {
+    const int layers = 2, h = layers * CHUNK_SIZE;
+    u16 *states = xcalloc((size_t)h * CHUNK_AREA, sizeof(u16));
+    u16 *light = xcalloc((size_t)h * CHUNK_AREA, sizeof(u16));
+    /* Stone roof at y=40 over x in [0,15]; the rest of the layer stays open to the sky. */
+    for (int z = 0; z < 32; z++) for (int x = 0; x < 16; x++) states[(40 << 10) | (z << 5) | x] = stone->default_state;
+    light_init_column(states, layers, light);
+    CHECK(LIGHT_SKY(light[(63 << 10) | (5 << 5) | 5]) == 15);
+    CHECK(LIGHT_SKY(light[(39 << 10) | (5 << 5) | 5]) == 4);     /* eleven voxels in from the open edge */
+    CHECK(LIGHT_SKY(light[(39 << 10) | (5 << 5) | 15]) == 14);  /* one step in from the open edge */
+    CHECK(LIGHT_SKY(light[(39 << 10) | (5 << 5) | 12]) == 11);
+    CHECK(LIGHT_SKY(light[(39 << 10) | (5 << 5) | 16]) == 15);
+    free(states);
+    free(light);
+}
+
+/* Needs the real base content: generation, incremental light, edits. */
+static void test_world_light(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    CHECK(data_error_count() == 0);
+    BlockDef *crystal = block_find("base:crystal_red"), *stone = block_find("base:stone");
+    CHECK(crystal && stone);
+    if (!crystal || !stone || data_error_count()) return;
+    jobs_init(2);
+    world_init(4242);
+    world_flush_generation(0, 0, 2);
+
+    int x = 8, z = 8;
+    int ground = ifloor(gen_height_at((float)x, (float)z));
+    CHECK(world_get_state(x, ground, z) != STATE_AIR);
+    CHECK(LIGHT_SKY(world_get_light(x, ground + 6, z)) == 15);
+    CHECK(LIGHT_SKY(world_get_light(x, ground - 8, z)) == 0);
+
+    /* Block light from a coloured emitter falls off by one per voxel in open air and is exactly undone on removal. */
+    int ey = ground + 12;
+    CHECK(world_set_state(x, ey, z, crystal->default_state));
+    light_process(1 << 30);
+    CHECK(LIGHT_R(world_get_light(x, ey, z)) == 15);
+    CHECK(LIGHT_R(world_get_light(x + 1, ey, z)) == 14);
+    CHECK(LIGHT_R(world_get_light(x, ey + 4, z)) == 11);
+    CHECK(LIGHT_G(world_get_light(x + 1, ey, z)) == 2);
+    CHECK(world_set_state(x, ey, z, STATE_AIR));
+    light_process(1 << 30);
+    CHECK(LIGHT_R(world_get_light(x + 1, ey, z)) == 0 && LIGHT_G(world_get_light(x, ey + 2, z)) == 0);
+    CHECK(LIGHT_SKY(world_get_light(x + 1, ey, z)) == 15);
+
+    /* A roof removes sky light below it and taking the roof away restores it. */
+    int ry = ground + 5;
+    for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) world_set_state(x + dx, ry, z + dz, stone->default_state);
+    light_process(1 << 30);
+    CHECK(LIGHT_SKY(world_get_light(x, ry - 2, z)) < 15);
+    for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) world_set_state(x + dx, ry, z + dz, STATE_AIR);
+    light_process(1 << 30);
+    CHECK(LIGHT_SKY(world_get_light(x, ry - 2, z)) == 15);
+
+    world_shutdown();
+    jobs_shutdown();
+}
+
+static void test_gen_determinism(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    if (data_error_count()) { CHECK(false); return; }
+    gen_init(777);
+    int lo, hi;
+    gen_band(&lo, &hi);
+    size_t n = (size_t)(hi - lo + 1) * CHUNK_VOL;
+    u16 *a = xmalloc(n * sizeof(u16)), *b = xmalloc(n * sizeof(u16));
+    GenScratch *s1 = gen_scratch_create(), *s2 = gen_scratch_create();
+    gen_column(s1, -3, 7, a);
+    gen_column(s2, 4, 4, b);   /* dirty the second scratch with a different column first */
+    gen_column(s2, -3, 7, b);
+    CHECK(!memcmp(a, b, n * sizeof(u16)));
+    gen_scratch_destroy(s1);
+    gen_scratch_destroy(s2);
+    gen_shutdown();
+    free(a);
+    free(b);
+}
+
+static void test_world_and_mesh(void) {
+    test_world_light();
+    test_gen_determinism();
+    registry_reset();
+    BlockDef st = {0};
+    snprintf(st.name, sizeof st.name, "test:stone");
+    snprintf(st.mod, sizeof st.mod, "test");
+    st.shape = SHAPE_CUBE;
+    st.nprops = 0;
+    BlockDef *stone = block_register(&st);
+    registry_freeze_blocks();
+    test_mesher(stone);
+    test_light_column(stone);
+}
+
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
         {"jobs", test_jobs},
+        {"palette", test_palette},
+        {"json", test_json},
+        {"registry", test_registry},
+        {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {

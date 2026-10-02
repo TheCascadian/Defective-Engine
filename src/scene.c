@@ -387,6 +387,7 @@ void scene_render(const Camera *cam, double time_s) {
     glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_array);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, g_tex.gl_anim);
+    glPolygonMode(GL_FRONT_AND_BACK, g_scene_cfg.wireframe ? GL_LINE : GL_FILL);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -405,6 +406,7 @@ void scene_render(const Camera *cam, double time_s) {
             glDepthMask(GL_TRUE);
         }
     }
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
     g_scene_stats.arena_pages = S.page_count;

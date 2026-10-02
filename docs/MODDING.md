@@ -325,7 +325,7 @@ Weather darkens and greys these colours and pulls the fog in; a mod does not nee
 | `render_distance` | Chunks of full detail, 2 to 32. |
 | `far_chunks` | Extra chunks of coarse distant terrain beyond the render distance, 0 (off) to 64. |
 | `clouds`, `stars` | Draw the cloud layer and the night stars. |
-| `light_shafts` | A screen-space shaft effect toward the sun. It costs a full-screen pass, so the base game enables it only on High. |
+| `light_shafts` | A screen-space shaft effect toward the sun, marched at quarter resolution and applied in the resolve pass. It still needs the scene drawn offscreen, so the base game enables it only on High. |
 | `dynamic_resolution` | Let the controller change the render scale to hold `target_fps`. |
 | `min_scale` | The lowest render scale the controller may choose, 0.4 to 1. Below 0.4 the picture is too soft to play. |
 | `target_fps` | The frame rate the controller tries to hold, 15 to 240. |
@@ -369,7 +369,7 @@ Every shader the engine draws with is an ordinary asset, so a mod replaces one b
 | File under `assets/dfe/shaders/` | What it draws |
 |----------------------------------|---------------|
 | `chunk.vert`, `chunk.frag` | All terrain, near and far. The fragment shader is also compiled with `PASS_CUTOUT`, `PASS_TRANSLUCENT` and `LOD` defined. |
-| `post.vert`, `post.frag` | The resolve pass that scales the scene to the window. The engine skips it at full scale without shafts to save a full-screen copy, but it always runs while a mod replaces `post.frag`, so a grading shader is applied at every setting. The cost of that pass is paid by every player of the pack. |
+| `post.vert`, `post.frag` | The resolve pass that scales the scene to the window. The engine skips it at full scale without shafts to save a full-screen copy, but it always runs while a mod replaces `post.frag`, so a grading shader is applied at every setting. The cost of that pass is paid by every player of the pack. The file is compiled three times: plain, with `SHAFTS` (the resolve, which reads the shaft mask) and with `SHAFT_MASK` (a quarter-resolution march toward the sun that writes one brightness value). A replacement that does not contain the text `SHAFT_MASK` is treated as not supporting light shafts, and they are switched off for it. To keep them, copy the engine's file and edit its final colour step. |
 | `entity.vert`, `entity.frag` | Entities. |
 | `sky.vert`, `sky.frag` | The sky, stars, sun, moon, clouds and the rain layer, selected by `PASS_SKY` and `PASS_RAIN`. Shaders can `#include` other files through the same virtual filesystem. |
 | `ui.vert`, `ui.frag`, `debug_line.vert`, `debug_line.frag` | Menus, the HUD and debug lines. |

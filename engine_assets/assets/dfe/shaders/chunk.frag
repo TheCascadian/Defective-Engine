@@ -16,9 +16,24 @@ uniform vec3 u_fog_color;
 uniform float u_fog_start;
 uniform float u_fog_end;
 
+#ifdef LOD
+in vec2 v_cover_pos;
+flat in float v_lod_level;
+uniform sampler2D u_cover;        // finest ready level per 32-block column, 0 for real chunks, 255 for none
+uniform int u_cover_dim;
+uniform ivec2 u_cover_origin;
+#endif
+
 out vec4 o_color;
 
 void main() {
+#ifdef LOD
+    ivec2 col = ivec2(floor(v_cover_pos / 32.0)) - u_cover_origin;
+    if (all(greaterThanEqual(col, ivec2(0))) && all(lessThan(col, ivec2(u_cover_dim)))) {
+        float finest = texelFetch(u_cover, col, 0).r * 255.0;
+        if (finest < v_lod_level - 0.5) discard;
+    }
+#endif
     float layer = v_layer;
     vec2 anim = texelFetch(u_anim, ivec2(int(layer), 0), 0).rg * 255.0;
     if (anim.x > 1.0) layer += mod(floor(u_time * anim.y * 0.25), anim.x);

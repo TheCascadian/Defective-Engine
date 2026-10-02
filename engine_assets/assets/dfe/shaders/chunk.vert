@@ -18,6 +18,11 @@ out float v_shade;                 // directional shade times ambient occlusion
 out vec3 v_tint;
 out float v_dist;
 out float v_water_depth;           // 0 for everything but water, else the depth bucket in 0..1
+#ifdef LOD
+uniform float u_sea;               // sea level in blocks; coarse water is clamped to it so it meets near water
+out vec2 v_cover_pos;              // world x, z in blocks for the coverage lookup
+flat out float v_lod_level;
+#endif
 
 const float FACE_SHADE[8] = float[8](0.80, 0.80, 1.00, 0.55, 0.70, 0.70, 0.90, 0.90);
 const float AO_CURVE[4] = float[4](0.50, 0.68, 0.84, 1.00);
@@ -36,8 +41,12 @@ vec2 face_uv(uint face, vec3 p) {
 void main() {
     ivec3 ip = ivec3(int(a_a & 1023u), int((a_a >> 10) & 1023u), int((a_a >> 20) & 1023u));
     uint extra = a_a >> 30;
-    vec3 local = vec3(ip) * (1.0 / 16.0);
     ivec4 origin = texelFetch(u_origins, gl_VertexID >> 8);
+#ifdef LOD
+    vec3 local = vec3(ip) * (float(1 << origin.w) / 16.0);
+#else
+    vec3 local = vec3(ip) * (1.0 / 16.0);
+#endif
     vec3 world_rel = vec3(origin.xyz - u_cam_base) + local - u_cam_frac;
 
     uint face = (a_b >> 10) & 7u;
@@ -49,6 +58,15 @@ void main() {
         float t = u_time * 1.7 + wp.x * 0.6 + wp.z * 0.45;
         world_rel.xz += vec2(sin(t), cos(t * 0.8)) * (0.045 * weight);
     }
+#ifdef LOD
+    if (((a_b >> 29) & 3u) == 3u) {
+        // Water tops sit at the voxel grid height, which can exceed sea level at coarse scale. Clamp them.
+        float wy = world_rel.y + float(u_cam_base.y) + u_cam_frac.y;
+        if (wy > u_sea - 0.125) world_rel.y -= wy - (u_sea - 0.125);
+    }
+    v_cover_pos = world_rel.xz + vec2(u_cam_base.xz) + u_cam_frac.xz;
+    v_lod_level = float(origin.w);
+#endif
     gl_Position = u_viewproj * vec4(world_rel, 1.0);
 
     if (face >= 6u) {

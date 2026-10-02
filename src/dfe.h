@@ -671,6 +671,7 @@ typedef struct Options {
     char screenshot_path[256];
     int screenshot_frame;
     int overlay_page;
+    int workers;             /* 0 = automatic */
     bool wireframe;
 } Options;
 extern Options g_opt;

@@ -62,6 +62,8 @@ add_library(dfe_engine STATIC
   src/settings.c
   src/post.c
   src/reload.c
+  src/menu.c
+  src/entity.c
   src/json.c
   src/registry.c
   src/world.c

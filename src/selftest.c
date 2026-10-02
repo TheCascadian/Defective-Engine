@@ -634,7 +634,13 @@ static void test_example_mods(void) {
     mods_resolve();
     mods_mount();
     CHECK(data_error_count() == 0);
-    CHECK(mods_loaded_count() == 7);
+    CHECK(mods_loaded_count() == 8);
+    /* The shader pack replaces an engine shader through the same override rule as any other asset. */
+    size_t pack_size = 0;
+    const char *pack_owner = NULL;
+    u8 *pack = vfs_read("assets/dfe/shaders/post.frag", &pack_size, &pack_owner);
+    CHECK(pack && pack_owner && !strcmp(pack_owner, "warmgrade"));
+    free(pack);
     CHECK(order_of("base") == 0 && order_of("gems") < order_of("builder"));
     registry_reset();
     registry_load_blocks();
@@ -732,6 +738,28 @@ static void test_player_physics(u16 stone) {
     for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, STATE_AIR);
     CHECK(!player_box_blocked(v3(8.5f, (float)(SLAB_Y + 1) + 0.01f, 8.5f)));
     CHECK(player_box_blocked(v3(8.5f, (float)SLAB_Y + 0.5f, 8.5f)));
+}
+
+static void test_entities(void) {
+    registry_load_entities();
+    CHECK(entity_type_count() >= 1);
+    int hopper_id = 0;
+    for (int i = 0; i < entity_type_count(); i++) if (!strcmp(entity_type_at(i)->id, "base:hopper")) hopper_id = 1;
+    CHECK(hopper_id == 1);
+    entity_world_init(1);
+    CHECK(entity_spawn("nosuch:type", v3(8.5f, 210.0f, 8.5f)) == 0);
+    int id = entity_spawn("base:hopper", v3(8.5f, 210.0f, 8.5f));
+    CHECK(id > 0 && entity_count() == 1);
+    /* Two seconds is long enough to land on the slab and short enough that wandering cannot reach its edge. */
+    for (int i = 0; i < 120; i++) entity_update(1.0f / 60.0f);
+    V3 p;
+    CHECK(entity_position(id, &p) && fabsf(p.y - (float)(SLAB_Y + 1)) < 0.01f);
+    CHECK(p.x > 0.0f && p.x < (float)SLAB_MAX && p.z > 0.0f && p.z < (float)SLAB_MAX);
+    CHECK(entity_remove(id) && !entity_remove(id) && entity_count() == 0);
+    int other = entity_spawn("base:hopper", v3(8.5f, 210.0f, 8.5f));
+    CHECK(other != id); /* handles are not reused */
+    entity_clear();
+    CHECK(entity_count() == 0);
 }
 
 static void test_raycast_and_inventory(u16 stone) {
@@ -947,6 +975,7 @@ static void test_gameplay(void) {
     for (int z = 0; z <= SLAB_MAX; z++)
         for (int x = 0; x <= SLAB_MAX; x++) world_set_state(x, SLAB_Y, z, stone);
     test_player_physics(stone);
+    test_entities();
     test_raycast_and_inventory(stone);
     test_server_and_fluids(stone, water);
     test_inventory_save(stone, dirt);

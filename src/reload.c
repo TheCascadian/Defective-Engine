@@ -18,13 +18,15 @@ bool hot_reload_now(void) {
     bool all_ok = true;
     bool gl = g_win.handle != NULL;
     if (gl) {
-        bool ok = scene_reload_shaders() && post_reload_shaders() && atmosphere_gl_reload_shaders();
+        bool ok = scene_reload_shaders() && post_reload_shaders() && entity_reload_shaders() && atmosphere_gl_reload_shaders();
         all_ok &= report("shaders", ok, data_error_count());
     }
     int before = data_error_count();
     all_ok &= report("atmosphere", atmosphere_reload_data() == 0, before);
     before = data_error_count();
     all_ok &= report("presets", registry_load_presets() == 0, before);
+    before = data_error_count();
+    all_ok &= report("entity types", registry_load_entities() == 0, before);
     gfx_apply();
     return all_ok;
 }

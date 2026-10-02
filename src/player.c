@@ -37,6 +37,8 @@ Player g_player;
 void player_init(Player *p, V3 feet) {
     memset(p, 0, sizeof *p);
     p->pos = feet;
+    p->half_width = HALF_WIDTH;
+    p->height = PLAYER_HEIGHT;
 }
 
 V3 player_eye(const Player *p) { return v3(p->pos.x, p->pos.y + PLAYER_EYE, p->pos.z); }
@@ -46,10 +48,10 @@ static bool cell_blocks(int x, int y, int z) {
     return s == STATE_UNLOADED || state_solid(s);
 }
 
-bool player_box_blocked(V3 f) {
-    int x0 = ifloor(f.x - HALF_WIDTH + SKIN), x1 = ifloor(f.x + HALF_WIDTH - SKIN);
-    int y0 = ifloor(f.y + SKIN), y1 = ifloor(f.y + PLAYER_HEIGHT - SKIN);
-    int z0 = ifloor(f.z - HALF_WIDTH + SKIN), z1 = ifloor(f.z + HALF_WIDTH - SKIN);
+bool box_blocked(V3 f, float half_width, float height) {
+    int x0 = ifloor(f.x - half_width + SKIN), x1 = ifloor(f.x + half_width - SKIN);
+    int y0 = ifloor(f.y + SKIN), y1 = ifloor(f.y + height - SKIN);
+    int z0 = ifloor(f.z - half_width + SKIN), z1 = ifloor(f.z + half_width - SKIN);
     for (int y = y0; y <= y1; y++)
         for (int z = z0; z <= z1; z++)
             for (int x = x0; x <= x1; x++)
@@ -57,25 +59,27 @@ bool player_box_blocked(V3 f) {
     return false;
 }
 
+bool player_box_blocked(V3 f) { return box_blocked(f, HALF_WIDTH, PLAYER_HEIGHT); }
+
 /* Moves along one axis and snaps to the face that stops the box. Returns true when something was hit. */
 static bool move_axis(Player *p, int axis, float delta) {
     if (delta == 0.0f) return false;
     float *c = axis == 0 ? &p->pos.x : axis == 1 ? &p->pos.y : &p->pos.z;
     float old = *c;
     *c = old + delta;
-    if (!player_box_blocked(p->pos)) return false;
-    float lo_extent = axis == 1 ? 0.0f : HALF_WIDTH, hi_extent = axis == 1 ? PLAYER_HEIGHT : HALF_WIDTH;
+    if (!box_blocked(p->pos, p->half_width, p->height)) return false;
+    float lo_extent = axis == 1 ? 0.0f : p->half_width, hi_extent = axis == 1 ? p->height : p->half_width;
     if (delta > 0) *c = (float)ifloor(old + hi_extent + delta) - hi_extent - SKIN * 2.0f;
     else *c = (float)(ifloor(old - lo_extent + delta) + 1) + lo_extent + SKIN * 2.0f;
     /* The snap can still overlap when the box starts inside a block, such as after a block is placed on it. */
-    if (player_box_blocked(p->pos)) *c = old;
+    if (box_blocked(p->pos, p->half_width, p->height)) *c = old;
     return true;
 }
 
 static void sample_medium(Player *p) {
     int x = ifloor(p->pos.x), z = ifloor(p->pos.z);
     u16 feet = world_get_state(x, ifloor(p->pos.y + 0.2f), z), body = world_get_state(x, ifloor(p->pos.y + 1.0f), z);
-    u16 head = world_get_state(x, ifloor(p->pos.y + PLAYER_EYE), z);
+    u16 head = world_get_state(x, ifloor(p->pos.y + p->height * (PLAYER_EYE / PLAYER_HEIGHT)), z);
     bool feet_f = feet != STATE_UNLOADED && (g_state_flags[feet] & BF_FLUID);
     bool body_f = body != STATE_UNLOADED && (g_state_flags[body] & BF_FLUID);
     p->in_water = feet_f || body_f;
@@ -164,7 +168,7 @@ static void step_climb(Player *p, const PlayerInput *in, float dt) {
 }
 
 static void step_walk(Player *p, const PlayerInput *in, float dt) {
-    float wx, wz, speed = in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED;
+    float wx, wz, speed = (in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED) * (in->speed_scale > 0 ? in->speed_scale : 1.0f);
     horizontal_wish(p, in, speed, &wx, &wz);
     float rate = p->on_ground ? GROUND_RESPONSE : AIR_RESPONSE;
     approach(&p->vel.x, wx, rate, dt);

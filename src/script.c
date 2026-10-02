@@ -173,6 +173,23 @@ static int l_set_block(lua_State *state) {
     return 1;
 }
 
+static int l_entity_spawn(lua_State *state) {
+    int id = api_get()->entity_spawn(luaL_checkstring(state, 1), luaL_checknumber(state, 2), luaL_checknumber(state, 3), luaL_checknumber(state, 4));
+    if (id) lua_pushinteger(state, id); else lua_pushnil(state);
+    return 1;
+}
+
+static int l_entity_remove(lua_State *state) { lua_pushboolean(state, api_get()->entity_remove((int)luaL_checkinteger(state, 1))); return 1; }
+
+static int l_entity_position(lua_State *state) {
+    double p[3];
+    if (!api_get()->entity_position((int)luaL_checkinteger(state, 1), p)) { lua_pushnil(state); return 1; }
+    for (int i = 0; i < 3; i++) lua_pushnumber(state, p[i]);
+    return 3;
+}
+
+static int l_entity_count(lua_State *state) { lua_pushinteger(state, api_get()->entity_count()); return 1; }
+
 static int l_get_light(lua_State *state) {
     uint8_t out[4];
     if (!api_get()->get_light((int)floor(luaL_checknumber(state, 1)), (int)floor(luaL_checknumber(state, 2)), (int)floor(luaL_checknumber(state, 3)), out)) { lua_pushnil(state); return 1; }
@@ -332,6 +349,7 @@ static int l_require(lua_State *state) {
 static const luaL_Reg DFE_FUNCS[] = {
     {"log", l_log}, {"console", l_console}, {"block_state", l_block_state}, {"block_name", l_block_name}, {"state_name", l_state_name},
     {"get_state", l_get_state}, {"get_block", l_get_block}, {"set_block", l_set_block}, {"get_light", l_get_light},
+    {"entity_spawn", l_entity_spawn}, {"entity_remove", l_entity_remove}, {"entity_position", l_entity_position}, {"entity_count", l_entity_count},
     {"seed", l_seed}, {"time", l_time}, {"on", l_on}, {"command", l_command}, {NULL, NULL}};
 
 /* Pushes a new global table for a mod and returns its registry reference. */

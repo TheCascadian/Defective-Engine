@@ -88,6 +88,15 @@ typedef struct dfe_api_t {
      * Writes the canonical text of a state, such as "base:stone" or "mymod:lamp[lit=on]", into out. Returns false
      * for an invalid state or when size is 0; the text is truncated to fit size. */
     bool (*state_string)(uint16_t state, char *out, size_t size);
+
+    /* Added in API 1.2 (struct_size covers it when >= offsetof(dfe_api_t, entity_count) + sizeof(void *)).
+     * entity_spawn takes a type id such as "base:hopper" and a feet position in blocks. It returns a handle (>0),
+     * or 0 when the type is unknown or the entity limit is reached; the reason is logged. Handles are never reused. */
+    int (*entity_spawn)(const char *type, double x, double y, double z);
+    bool (*entity_remove)(int handle);
+    /* Writes the feet position to out[3]. Returns false for a handle that no longer exists. */
+    bool (*entity_position)(int handle, double out[3]);
+    int (*entity_count)(void);
 } dfe_api_t;
 
 #ifdef __cplusplus

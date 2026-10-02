@@ -13,7 +13,7 @@
 #define BUDGET_COLD_START_S 10.0
 #define NS_TO_MS 1e-6
 
-static const char *const SECTION_NAME[GPU_SECTION_COUNT] = {"opaque", "cutout", "sky", "water", "rain", "ui", "post"};
+static const char *const SECTION_NAME[GPU_SECTION_COUNT] = {"opaque", "cutout", "sky", "water", "rain", "ui", "post", "entity"};
 
 static struct {
     GLuint queries[QUERY_RING][GPU_SECTION_COUNT];

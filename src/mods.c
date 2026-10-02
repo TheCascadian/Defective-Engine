@@ -464,6 +464,16 @@ static bool api_get_light(int x, int y, int z, uint8_t out[4]) {
     return true;
 }
 
+static int api_entity_spawn(const char *type, double x, double y, double z) { return entity_spawn(type, v3((float)x, (float)y, (float)z)); }
+static bool api_entity_remove(int handle) { return entity_remove(handle); }
+static bool api_entity_position(int handle, double out[3]) {
+    V3 p;
+    if (!entity_position(handle, &p)) return false;
+    out[0] = p.x; out[1] = p.y; out[2] = p.z;
+    return true;
+}
+static int api_entity_count(void) { return entity_count(); }
+
 static uint64_t api_world_seed(void) { return world_seed(); }
 static double api_game_time(void) { return g_game_time; }
 static void api_console_print(const char *message) { console_print("%s", message); }
@@ -484,6 +494,10 @@ const dfe_api_t *api_get(void) {
         .register_command = api_register_command,
         .console_print = api_console_print,
         .state_string = api_state_string,
+        .entity_spawn = api_entity_spawn,
+        .entity_remove = api_entity_remove,
+        .entity_position = api_entity_position,
+        .entity_count = api_entity_count,
     };
     return &api;
 }

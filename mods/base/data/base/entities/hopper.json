@@ -1,0 +1,8 @@
+{
+  "name": "Hopper",
+  "size": [0.5, 0.6],
+  "color": [0.82, 0.74, 0.62],
+  "accent": [0.93, 0.88, 0.80],
+  "speed": 0.45,
+  "wander": true
+}

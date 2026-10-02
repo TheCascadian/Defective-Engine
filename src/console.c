@@ -57,18 +57,19 @@ static void cmd_getblock(const char *args, void *user) {
     if (sscanf(args, "%d %d %d", &x, &y, &z) != 3) { console_print("usage: getblock <x> <y> <z>"); return; }
     u16 s = world_get_state(x, y, z);
     if (s == STATE_UNLOADED) { console_print("that position is not loaded"); return; }
-    const BlockDef *b = block_of_state(s);
-    console_print("%s (state %u)", b ? b->name : "unknown", s);
+    char text[128];
+    console_print("%s (state %u)", block_format_state(s, text, sizeof text) ? text : "unknown", s);
 }
 
 static void cmd_setblock(const char *args, void *user) {
     (void)user;
     int x, y, z, n = 0;
     char name[80];
-    if (sscanf(args, "%d %d %d %79s%n", &x, &y, &z, name, &n) != 4) { console_print("usage: setblock <x> <y> <z> <namespace:block>"); return; }
-    const BlockDef *b = block_find(name);
-    if (!b) { console_print("unknown block \"%s\". Use a registered name such as base:stone", name); return; }
-    if (!world_set_state(x, y, z, b->default_state)) console_print("that position is not loaded");
+    if (sscanf(args, "%d %d %d %79s%n", &x, &y, &z, name, &n) != 4) { console_print("usage: setblock <x> <y> <z> <namespace:block[prop=value]>"); return; }
+    u16 state = block_parse_state(name);
+    if (state == STATE_UNLOADED) { console_print("unknown block or state \"%s\". Use a registered name such as base:stone, or one with properties such as mymod:lamp[lit=on]", name); return; }
+    if (world_get_state(x, y, z) == STATE_UNLOADED) { console_print("that position is not loaded"); return; }
+    if (!game_edit_block(x, y, z, state)) console_print("the edit was cancelled by a mod");
 }
 
 void console_init(void) {

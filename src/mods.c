@@ -373,6 +373,19 @@ bool event_fire(const dfe_event_t *ev) {
     return false;
 }
 
+/* The one entry point for edits made on behalf of the player (the console now, the interaction code later).
+ * It fires block_break when the result is air and block_place otherwise, and a handler that cancels leaves
+ * the world untouched. Mods writing through dfe.set_block bypass it on purpose: a handler that edits blocks
+ * would otherwise trigger itself. */
+bool game_edit_block(int x, int y, int z, u16 state) {
+    u16 old = world_get_state(x, y, z);
+    if (old == STATE_UNLOADED) return false;
+    bool breaking = state == STATE_AIR;
+    dfe_event_t ev = {.name = breaking ? "block_break" : "block_place", .x = x, .y = y, .z = z, .state = breaking ? old : state};
+    if (event_fire(&ev)) return false;
+    return world_set_state(x, y, z, state);
+}
+
 void events_clear(const char *mod_id) {
     int w = 0;
     for (int i = 0; i < g_sub_count; i++) if (strcmp(g_subs[i].mod, mod_id)) g_subs[w++] = g_subs[i];
@@ -432,10 +445,8 @@ static void api_log(dfe_log_level level, const char *mod_id, const char *message
     log_msg(l, "[mod %s] %s", mod_id ? mod_id : "?", message);
 }
 
-static uint16_t api_block_state(const char *name) {
-    const BlockDef *b = block_find(name);
-    return b ? b->default_state : DFE_STATE_UNLOADED;
-}
+static uint16_t api_block_state(const char *name) { return block_parse_state(name); }
+static bool api_state_string(uint16_t state, char *out, size_t size) { return block_format_state(state, out, size); }
 
 static const char *api_block_name(uint16_t state) {
     if (state == STATE_UNLOADED) return NULL;
@@ -472,6 +483,7 @@ const dfe_api_t *api_get(void) {
         .subscribe = api_subscribe,
         .register_command = api_register_command,
         .console_print = api_console_print,
+        .state_string = api_state_string,
     };
     return &api;
 }

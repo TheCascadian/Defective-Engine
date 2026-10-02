@@ -142,6 +142,12 @@ static int l_block_name(lua_State *state) {
     return 1;
 }
 
+static int l_state_name(lua_State *state) {
+    char buf[128];
+    if (api_get()->state_string((uint16_t)luaL_checkinteger(state, 1), buf, sizeof buf)) lua_pushstring(state, buf); else lua_pushnil(state);
+    return 1;
+}
+
 static int l_get_state(lua_State *state) {
     uint16_t s = api_get()->get_state((int)floor(luaL_checknumber(state, 1)), (int)floor(luaL_checknumber(state, 2)), (int)floor(luaL_checknumber(state, 3)));
     if (s == DFE_STATE_UNLOADED) lua_pushnil(state); else lua_pushinteger(state, s);
@@ -324,7 +330,7 @@ static int l_require(lua_State *state) {
 }
 
 static const luaL_Reg DFE_FUNCS[] = {
-    {"log", l_log}, {"console", l_console}, {"block_state", l_block_state}, {"block_name", l_block_name},
+    {"log", l_log}, {"console", l_console}, {"block_state", l_block_state}, {"block_name", l_block_name}, {"state_name", l_state_name},
     {"get_state", l_get_state}, {"get_block", l_get_block}, {"set_block", l_set_block}, {"get_light", l_get_light},
     {"seed", l_seed}, {"time", l_time}, {"on", l_on}, {"command", l_command}, {NULL, NULL}};
 

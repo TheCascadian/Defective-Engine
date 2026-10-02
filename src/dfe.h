@@ -405,6 +405,8 @@ typedef struct BlockDef {
     char item_name[64];
     float friction;
     int light_filter; /* reserved for per-state opacity variants */
+    int emit_prop;    /* index of the property that gates emission, or -1 when the block always emits */
+    char emit_prop_name[24], emit_value[16];
 } BlockDef;
 
 extern BlockDef *g_blocks[];
@@ -420,6 +422,8 @@ BlockDef *block_register(const BlockDef *def);
 BlockDef *block_find(const char *name);
 BlockDef *block_of_state(u16 state);
 u16 block_state_with(const BlockDef *b, u16 state, const char *prop, const char *value);
+u16 block_parse_state(const char *spec);
+bool block_format_state(u16 state, char *out, size_t cap);
 int block_state_prop_index(const BlockDef *b, u16 state, int prop);
 void registry_freeze_blocks(void);
 /* Parses data/NS/blocks/ JSON files from every mounted mod. Returns the number of errors reported. */
@@ -771,6 +775,7 @@ double game_time_get(void);
 void game_time_set(double seconds);
 /* Advances simulated time by one fixed step and fires the "tick" event. */
 void game_tick(void);
+bool game_edit_block(int x, int y, int z, u16 state);
 
 /* ------------------------------------------------------------ console.c */
 

@@ -156,6 +156,50 @@ u16 block_state_with(const BlockDef *b, u16 state, const char *prop, const char 
     return (u16)(b->first_state + idx + (v - cur) * stride);
 }
 
+/* Parses "ns:name" or "ns:name[prop=value,prop=value]" into a state. Unknown blocks, properties and values
+ * all fail rather than being ignored, so a typo in a mod is reported instead of silently placing the wrong block. */
+u16 block_parse_state(const char *spec) {
+    char name[96];
+    const char *open = strchr(spec, '[');
+    size_t name_len = open ? (size_t)(open - spec) : strlen(spec);
+    if (name_len == 0 || name_len >= sizeof name) return STATE_UNLOADED;
+    memcpy(name, spec, name_len);
+    name[name_len] = 0;
+    const BlockDef *b = block_find(name);
+    if (!b) return STATE_UNLOADED;
+    u16 state = b->default_state;
+    if (!open) return state;
+    const char *p = open + 1;
+    while (*p && *p != ']') {
+        const char *eq = strchr(p, '='), *end = p + strcspn(p, ",]");
+        if (!eq || eq > end) return STATE_UNLOADED;
+        char prop[sizeof b->props[0].name], value[sizeof b->props[0].values[0]];
+        if ((size_t)(eq - p) >= sizeof prop || (size_t)(end - eq - 1) >= sizeof value) return STATE_UNLOADED;
+        memcpy(prop, p, (size_t)(eq - p)); prop[eq - p] = 0;
+        memcpy(value, eq + 1, (size_t)(end - eq - 1)); value[end - eq - 1] = 0;
+        int pi = prop_find(b, prop);
+        if (pi < 0) return STATE_UNLOADED;
+        bool known = false;
+        for (int i = 0; i < b->props[pi].count; i++) known |= !strcmp(b->props[pi].values[i], value);
+        if (!known) return STATE_UNLOADED;
+        state = block_state_with(b, state, prop, value);
+        p = *end == ',' ? end + 1 : end;
+    }
+    return *p == ']' ? state : STATE_UNLOADED;
+}
+
+/* Writes the canonical text of a state, "ns:name" or "ns:name[prop=value,...]". Returns false for an invalid state. */
+bool block_format_state(u16 state, char *out, size_t cap) {
+    const BlockDef *b = block_of_state(state);
+    if (!b || cap == 0) return false;
+    size_t n = (size_t)snprintf(out, cap, "%s", b->name);
+    for (int i = 0; i < b->nprops && n < cap; i++)
+        n += (size_t)snprintf(out + n, cap - n, "%c%s=%s", i == 0 ? '[' : ',', b->props[i].name,
+                              b->props[i].values[block_state_prop_index(b, state, i)]);
+    if (b->nprops > 0 && n < cap) snprintf(out + n, cap - n, "]");
+    return true;
+}
+
 void registry_freeze_blocks(void) {
     for (int i = 0; i < g_block_count; i++) {
         BlockDef *b = g_blocks[i];
@@ -167,7 +211,9 @@ void registry_freeze_blocks(void) {
             g_state_block[st] = b->id;
             g_state_flags[st] = b->flags;
             g_state_opacity[st] = b->opacity;
-            g_state_emit[st] = (u16)((b->emit[0] << 8) | (b->emit[1] << 4) | b->emit[2]);
+            bool gated = b->emit_prop_name[0] && b->emit_prop >= 0;
+            bool emits = !gated || !strcmp(b->props[b->emit_prop].values[block_state_prop_index(b, st, b->emit_prop)], b->emit_value);
+            g_state_emit[st] = emits ? (u16)((b->emit[0] << 8) | (b->emit[1] << 4) | b->emit[2]) : 0;
         }
     }
 }
@@ -247,6 +293,16 @@ static bool parse_block_file(const char *ns, const char *stem, const char *rel, 
     d.opacity = (u8)CLAMP(json_int(light, "opacity", (shape == SHAPE_CUBE && layer == LAYER_OPAQUE) ? 15 : (shape == SHAPE_FLUID ? 2 : 0)), 0, 15);
     const Json *emit = json_get(light, "emit");
     for (int i = 0; i < 3; i++) d.emit[i] = (u8)CLAMP((int)json_as_num(json_at(emit, i), 0), 0, 15);
+    d.emit_prop = -1;
+    const Json *emit_when = json_get(light, "emit_when");
+    if (emit_when && (emit_when->type != JSON_OBJECT || emit_when->count != 1)) {
+        data_error(mod, rel, emit_when->line, "\"emit_when\" must hold exactly one property, such as {\"lit\": \"on\"}");
+        emit_when = NULL;
+    }
+    if (emit_when) { /* the block emits only in states where that property has that value; resolved once properties are parsed */
+        snprintf(d.emit_prop_name, sizeof d.emit_prop_name, "%s", emit_when->keys[0]);
+        snprintf(d.emit_value, sizeof d.emit_value, "%s", json_as_str(emit_when->items[0], ""));
+    }
     d.hardness = (float)json_num(root, "hardness", 1.0);
     snprintf(d.tool, sizeof d.tool, "%s", json_str(root, "tool", ""));
     snprintf(d.drop, sizeof d.drop, "%s", json_str(root, "drops", d.name));
@@ -277,6 +333,13 @@ static bool parse_block_file(const char *ns, const char *stem, const char *rel, 
             for (int k = 0; k < vals->count; k++) snprintf(p->values[k], sizeof p->values[k], "%s", json_as_str(vals->items[k], "?"));
             d.nprops++;
         }
+    }
+    if (d.emit_prop_name[0]) {
+        int pi = prop_find(&d, d.emit_prop_name), vi = -1;
+        for (int i = 0; pi >= 0 && i < d.props[pi].count; i++) if (!strcmp(d.props[pi].values[i], d.emit_value)) vi = i;
+        if (pi < 0 || vi < 0) data_error(mod, rel, json_get(light, "emit_when")->line, "\"emit_when\" names %s '%s', which block '%s' does not declare under \"properties\"; declare the property with that value",
+                                         pi < 0 ? "property" : "value", pi < 0 ? d.emit_prop_name : d.emit_value, d.name);
+        else d.emit_prop = pi;
     }
     parse_textures(&d, json_get(root, "textures"), rel, json_get(root, "textures") ? json_get(root, "textures")->line : 1);
     if (d.shape != SHAPE_NONE && d.shape != SHAPE_MODEL && !d.tex_name[0][0]) {

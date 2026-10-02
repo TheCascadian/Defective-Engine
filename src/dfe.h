@@ -693,6 +693,83 @@ void selftest_check(bool ok, const char *expr, const char *file, int line);
 /* Runs every registered self-test group. Returns the number of failed checks. */
 int selftest_run(void);
 
+/* ----------------------------------------------------------------- mods.c */
+
+#include "dfe_api.h"
+
+#define MOD_MAX_DEPS 16
+#define MOD_MAX_AFTER 8
+
+typedef struct ModDep {
+    char id[32];
+    char op;      /* '>' minimum version, '=' exact, '^' same major and at least */
+    int ver[3];
+    bool optional;
+} ModDep;
+
+typedef struct ModInfo {
+    char id[32], name[64], version[16], dir[512], manifest[560];
+    int ver[3];
+    ModDep deps[MOD_MAX_DEPS];
+    int dep_count;
+    char load_after[MOD_MAX_AFTER][32];
+    int after_count;
+    char script[96];     /* Lua entry file relative to the mod folder, empty when the mod has none */
+    char plugin[96];     /* shared library relative to the mod folder for this platform, empty when none */
+    bool disabled;       /* switched off in mods.json */
+    bool failed;         /* did not load, reason is in the error list */
+    int order;           /* position in the final load order, -1 when not loaded */
+} ModInfo;
+
+/* Finds every folder under dir that holds a mod.json. Problems go to the data error list. */
+int mods_discover(const char *dir);
+/* Applies mods.json, checks dependencies and versions, then fixes a deterministic load order:
+ * base first, then dependencies before dependents, ties broken by id. Returns mods that will load. */
+int mods_resolve(void);
+/* Mounts loaded mods into the virtual filesystem in load order (later mods override earlier ones). */
+void mods_mount(void);
+int mods_total(void);
+const ModInfo *mods_at(int index);       /* discovery order */
+int mods_loaded_count(void);
+const ModInfo *mods_loaded_at(int order); /* load order */
+const ModInfo *mods_find(const char *id);
+void mods_reset(void);
+/* Native plugins. They are skipped with a clear message unless allowed. */
+void mods_load_plugins(bool allow_native);
+void mods_unload_plugins(void);
+
+/* Event bus and command table shared by Lua and native plugins. */
+const dfe_api_t *api_get(void);
+/* Fires an event. Returns true when a subscriber asked to cancel it. */
+bool event_fire(const dfe_event_t *ev);
+void events_clear(const char *mod_id); /* drops every subscription and command of a mod, used by reload */
+void events_clear_all(void);
+/* Runs a console line: a registered command, or the "command" event, or reports unknown. */
+void command_run(const char *line);
+int command_count(void);
+const char *command_name(int i);
+const char *command_help(int i);
+
+/* ------------------------------------------------------------ console.c */
+
+void console_init(void);
+void console_print(const char *fmt, ...);
+/* Returns true while the console owns the keyboard. Toggled with the grave key. */
+bool console_open(void);
+void console_update(void);
+void console_draw(int width, int height);
+
+/* ------------------------------------------------------------- script.c */
+
+/* One sandboxed Lua state shared by every mod, with its own instruction budget per call. */
+bool script_init(void);
+void script_shutdown(void);
+/* Runs the entry script of every loaded mod in load order. Returns the number of script errors. */
+int script_load_mods(void);
+/* Evaluates console input. Returns true if it was handled. */
+void script_eval(const char *code);
+int script_error_count(void);
+
 /* ---------------------------------------------------------------- main.c */
 
 typedef struct Options {
@@ -715,6 +792,7 @@ typedef struct Options {
     int overlay_page;
     int workers;             /* 0 = automatic */
     bool wireframe;
+    bool allow_native;       /* load native plugins from mods */
     bool camera_set;         /* --camera pins the start pose and freezes the benchmark path, for screenshots */
     float camera[5];         /* x y z yaw pitch (degrees) */
 } Options;

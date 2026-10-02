@@ -4,8 +4,9 @@ flat in float v_layer;
 in vec4 v_light;
 in float v_shade;
 in vec3 v_tint;
-in float v_dist;
-in float v_view_cos;
+// Distance and view angle come from the interpolated position, not from interpolated scalars: distant terrain is
+// meshed into quads dozens of blocks wide, and a ratio such as y / dist is far from linear across one.
+in vec3 v_rel;
 in float v_water_depth;
 
 uniform sampler2DArray u_tex;
@@ -28,6 +29,7 @@ uniform ivec2 u_cover_origin;
 out vec4 o_color;
 
 void main() {
+    float dist = length(v_rel);
 #ifdef LOD
     ivec2 col = ivec2(floor(v_cover_pos / 32.0)) - u_cover_origin;
     if (all(greaterThanEqual(col, ivec2(0))) && all(lessThan(col, ivec2(u_cover_dim)))) {
@@ -56,16 +58,18 @@ void main() {
     if (v_water_depth >= 0.0) {
         // Schlick-style reflection: water seen at a grazing angle mirrors the sky, which keeps a wide ocean from
         // reading as a black sheet and fades it into the horizon haze instead of ending at a hard edge.
-        float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(v_view_cos, 0.0, 1.0), 5.0);
+        float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(abs(v_rel.y) / max(dist, 0.001), 0.0, 1.0), 5.0);
         rgb = mix(rgb, u_fog_color * max(u_sky_color.g, 0.15), min(fresnel * 1.2, 0.85));
     }
-    float fog = smoothstep(u_fog_start, u_fog_end, v_dist);
+    float fog = smoothstep(u_fog_start, u_fog_end, dist);
     rgb = mix(rgb, u_fog_color, fog);
 #ifdef PASS_TRANSLUCENT
-    // Shallow water shows the bed through it; deep water must not, or an unlit sea floor turns the ocean black
-    // and the far-terrain water, which is opaque, no longer matches the near water at the seam.
-    float alpha = v_water_depth < 0.0 ? 0.72 : mix(0.55, 0.96, v_water_depth);
-    o_color = vec4(rgb, tex.a * alpha);
+    // Shallow water shows the bed through it; deep water is fully opaque. Any bed showing through deep water makes
+    // the real chunks (lit bed) and the far tiles (differently lit bed) disagree, which draws their boundary as
+    // rectangles, and an unlit bed turns a wide ocean black. The texture alpha is ignored for water for the same
+    // reason: it would leave a fixed share of the bed visible at every depth.
+    float alpha = v_water_depth < 0.0 ? 0.72 : mix(0.55, 1.0, v_water_depth);
+    o_color = vec4(rgb, v_water_depth < 0.0 ? tex.a * alpha : alpha);
 #else
     o_color = vec4(rgb, 1.0);
 #endif

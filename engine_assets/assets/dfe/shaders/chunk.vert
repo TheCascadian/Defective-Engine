@@ -16,8 +16,7 @@ flat out float v_layer;
 out vec4 v_light;                  // sky, r, g, b in 0..1
 out float v_shade;                 // directional shade times ambient occlusion
 out vec3 v_tint;
-out float v_dist;
-out float v_view_cos;               // cosine between the view ray and the vertical, drives the water reflection
+out vec3 v_rel;                    // camera relative position; distance and view angle are derived per fragment
 out float v_water_depth;           // 0 for everything but water, else the depth bucket in 0..1
 #ifdef LOD
 uniform float u_sea;               // sea level in blocks; coarse water is clamped to it so it meets near water
@@ -83,6 +82,5 @@ void main() {
     v_shade = FACE_SHADE[face] * ao;
     v_tint = tint == 3u ? mix(u_tint[3], u_water_deep, float(extra) / 3.0) : u_tint[tint];
     v_water_depth = tint == 3u ? float(extra) / 3.0 : -1.0;
-    v_dist = length(world_rel);
-    v_view_cos = abs(world_rel.y) / max(v_dist, 0.001);
+    v_rel = world_rel;
 }

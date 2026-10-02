@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/snow"
+  },
+  "hardness": 0.2,
+  "tool": "shovel",
+  "sound": "snow"
+}

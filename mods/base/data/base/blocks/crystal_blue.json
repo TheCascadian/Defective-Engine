@@ -1,0 +1,16 @@
+{
+  "textures": {
+    "all": "base:block/crystal_blue"
+  },
+  "light": {
+    "opacity": 15,
+    "emit": [
+      3,
+      6,
+      15
+    ]
+  },
+  "hardness": 1.0,
+  "tool": "pick",
+  "sound": "glass"
+}

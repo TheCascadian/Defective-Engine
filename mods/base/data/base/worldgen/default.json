@@ -1,0 +1,58 @@
+{
+  "sea_level": 62,
+  "deep_level": 0,
+  "blocks": {
+    "stone": "base:stone",
+    "deep_stone": "base:deep_stone",
+    "dirt": "base:dirt",
+    "grass": "base:grass_block",
+    "sand": "base:sand",
+    "sandstone": "base:sandstone",
+    "gravel": "base:gravel",
+    "snow": "base:snow",
+    "mud": "base:mud",
+    "water": "base:water"
+  },
+  "far_colors": {
+    "ocean": [
+      40,
+      80,
+      150
+    ],
+    "beach": [
+      222,
+      207,
+      150
+    ],
+    "desert": [
+      222,
+      200,
+      140
+    ],
+    "tundra": [
+      235,
+      240,
+      245
+    ],
+    "swamp": [
+      80,
+      100,
+      60
+    ],
+    "forest": [
+      70,
+      130,
+      55
+    ],
+    "plains": [
+      110,
+      165,
+      70
+    ],
+    "mountain": [
+      130,
+      130,
+      134
+    ]
+  }
+}

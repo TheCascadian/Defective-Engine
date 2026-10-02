@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/mud"
+  },
+  "hardness": 0.5,
+  "tool": "shovel",
+  "sound": "mud"
+}

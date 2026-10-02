@@ -1,0 +1,10 @@
+{
+  "shape": "cross",
+  "layer": "cutout",
+  "wind": true,
+  "textures": {
+    "all": "base:block/flower_red"
+  },
+  "hardness": 0.0,
+  "sound": "grass"
+}

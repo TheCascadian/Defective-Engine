@@ -20,6 +20,7 @@ static void print_usage(void) {
          "  --render-distance N  chunks (default from preset)\n"
          "  --preset NAME        quality preset: low, medium, high or one added by a mod\n"
          "  --render-scale F     draw the world at this share of the window size (0.4 to 1) and stretch it\n"
+         "  --dev                reload shaders, the atmosphere file and presets whenever they change (also F5)\n"
          "  --dynamic-res        let the engine pick the render scale to hold the preset's target frame rate\n"
          "  --width W --height H window size\n"
          "  --workers N          worker thread count (default: cores minus one, at most 6)\n"
@@ -56,6 +57,7 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--seed") && has_val) { g_opt.seed = strtoull(argv[++i], NULL, 10); g_opt.seed_set = true; }
         else if (!strcmp(a, "--render-distance") && has_val) g_opt.render_distance = atoi(argv[++i]);
         else if (!strcmp(a, "--render-scale") && has_val) { g_opt.render_scale = (float)atof(argv[++i]); g_opt.render_scale_set = true; }
+        else if (!strcmp(a, "--dev")) g_opt.dev = true;
         else if (!strcmp(a, "--dynamic-res")) g_opt.dynamic_res = true;
         else if (!strcmp(a, "--preset") && has_val) snprintf(g_opt.preset, sizeof g_opt.preset, "%s", argv[++i]);
         else if (!strcmp(a, "--width") && has_val) g_opt.width = atoi(argv[++i]);
@@ -409,6 +411,8 @@ static int run_viewer(void) {
             if (!console_open() && !hud_inventory_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
+            if (key_pressed(GLFW_KEY_F5)) hot_reload_now();
+            hot_reload_poll(frame_start, g_opt.dev);
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);

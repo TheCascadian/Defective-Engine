@@ -113,6 +113,11 @@ static void cmd_give(const char *args, void *user) {
     console_print("gave %d x %s%s", count - left, name, left ? " (inventory full)" : "");
 }
 
+static void cmd_reload(const char *args, void *user) {
+    (void)args; (void)user;
+    console_print(hot_reload_now() ? "reloaded shaders, atmosphere and presets" : "reload had errors; the previous versions are still running, see the log");
+}
+
 void console_init(void) {
     const dfe_api_t *api = api_get();
     api->register_command("help", "list every command", cmd_help, NULL, "engine");
@@ -120,6 +125,7 @@ void console_init(void) {
     api->register_command("seed", "show the world seed", cmd_seed, NULL, "engine");
     api->register_command("time", "time [set <name or 0..1>]", cmd_time, NULL, "engine");
     api->register_command("weather", "weather <clear|overcast|rain> [now]", cmd_weather, NULL, "engine");
+    api->register_command("reload", "reload shaders, atmosphere and presets without restarting", cmd_reload, NULL, "engine");
     api->register_command("lua", "run Lua in the console sandbox", cmd_lua, NULL, "engine");
     api->register_command("getblock", "getblock x y z", cmd_getblock, NULL, "engine");
     api->register_command("setblock", "setblock x y z name", cmd_setblock, NULL, "engine");

@@ -84,6 +84,10 @@ static void load_preset_file(const char *rel, const char *stem) {
 
 int registry_load_presets(void) {
     int errors_before = data_error_count();
+    /* Keep the previous set so a reload with a mistake in it leaves the running game untouched. */
+    Preset previous[MAX_PRESETS];
+    int previous_count = g_preset_count;
+    memcpy(previous, g_presets, sizeof previous);
     g_preset_count = 0;
     StrList namespaces = {0};
     vfs_list("data", &namespaces);
@@ -104,7 +108,12 @@ int registry_load_presets(void) {
     }
     strlist_free(&namespaces);
     if (!g_preset_count) data_error("?", "data/<namespace>/presets", 0, "no quality presets found. Add a file such as data/base/presets/low.json with \"render_distance\" and \"far_chunks\"; the base mod ships three.");
-    return data_error_count() - errors_before;
+    int errors = data_error_count() - errors_before;
+    if (errors && previous_count) {
+        memcpy(g_presets, previous, sizeof previous);
+        g_preset_count = previous_count;
+    }
+    return errors;
 }
 
 /* ---------------------------------------------------------------- settings */

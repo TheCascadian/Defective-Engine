@@ -725,6 +725,14 @@ void scene_render(const Camera *cam, double time_s);
 bool scene_reload_shaders(void);
 void scene_mesh_job_complete_hook(void);
 
+/* ----------------------------------------------------------------- reload.c */
+
+/* Re-reads shaders, the atmosphere file and presets. A file with errors is reported and the old version keeps
+ * running. Returns true when everything reloaded cleanly. Block, texture and script changes need a restart. */
+bool hot_reload_now(void);
+/* Call once per frame; reloads when a file that was read through the virtual filesystem has changed. */
+void hot_reload_poll(double now_s, bool enabled);
+
 /* --------------------------------------------------------------- settings.c */
 
 #define MAX_PRESETS 16
@@ -821,6 +829,8 @@ typedef struct Atmosphere {
 extern Atmosphere g_atmo;
 
 int registry_load_atmosphere(void);
+int atmosphere_reload_data(void);
+bool atmosphere_gl_reload_shaders(void);
 void atmosphere_init_state(void);
 void atmosphere_evaluate(Atmosphere *a, double game_seconds);
 void atmosphere_update(double dt, V3 eye);
@@ -1102,6 +1112,7 @@ typedef struct Options {
     float render_scale;      /* --render-scale, valid when render_scale_set */
     bool render_scale_set;
     bool dynamic_res;        /* --dynamic-res */
+    bool dev;                /* --dev: reload shaders and data files as they change */
     bool camera_set;         /* --camera pins the start pose and freezes the benchmark path, for screenshots */
     float camera[5];         /* x y z yaw pitch (degrees) */
     float start_phase;       /* --time: day phase 0..1 forced at start, valid when start_phase_set */

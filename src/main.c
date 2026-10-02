@@ -103,6 +103,7 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define SPAWN_CLEARANCE 14.0f
 #define BENCH_SPEED 16.0f
 #define UPLOAD_BUDGET_S 0.003
+#define AUTOSAVE_INTERVAL_S 30.0
 #define PRESET_RD_LOW 8
 #define PRESET_RD_MEDIUM 12
 #define PRESET_RD_HIGH 16
@@ -257,6 +258,14 @@ static int run_viewer(void) {
     if (!boot_content(gl)) return 1;
     if (gl && !scene_init()) return 1;
     u64 seed = g_opt.seed_set ? g_opt.seed : DEFAULT_SEED;
+    /* Benchmarks use a fixed seed and must never read or write a player's world. */
+    bool persist = !g_opt.benchmark;
+    if (persist) {
+        char dir[600];
+        snprintf(dir, sizeof dir, "saves/%s", g_opt.world_name);
+        if (!save_open(dir, seed)) return 1;
+        seed = save_seed();
+    }
     world_init(seed);
     if (gl) {
         overlay_add_page("world", overlay_world_page);
@@ -268,7 +277,12 @@ static int run_viewer(void) {
 
     Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2) * 32.0f};
     if (g_opt.benchmark) benchmark_camera(&cam, 0);
-    else cam.pos.y = MAX(gen_height_at(0, 0), (float)gen_sea_level()) + 4.0f;
+    else if (persist && save_meta()->has_player) {
+        const SaveMeta *m = save_meta();
+        cam.pos = v3((float)m->x, (float)m->y, (float)m->z);
+        cam.yaw = m->yaw;
+        cam.pitch = m->pitch;
+    } else cam.pos.y = MAX(gen_height_at(0, 0), (float)gen_sea_level()) + 4.0f;
     camera_update(&cam, 16.0f / 9.0f);
     double cold = load_world_around(&cam, rd);
     jobs_stats_reset();
@@ -277,6 +291,7 @@ static int run_viewer(void) {
     for (int i = 0; i < g_opt.overlay_page; i++) overlay_cycle();
     double last = time_now_s(), bench_start = last;
     int frame = 0;
+    double last_autosave = last;
     while (gl ? !g_win.should_close : (time_now_s() - bench_start < g_opt.bench_seconds)) {
         double frame_start = time_now_s();
         double dt = frame_start - last;
@@ -302,6 +317,10 @@ static int run_viewer(void) {
         g_scene_stats.uploads_this_frame = 0;
         world_stream(cam.pos, cam.forward, rd, false);
         jobs_pump(UPLOAD_BUDGET_S);
+        if (persist && frame_start - last_autosave > AUTOSAVE_INTERVAL_S) {
+            world_save_dirty();
+            last_autosave = frame_start;
+        }
         if (gl) {
             g_stats.draw_calls_last = 0;
             glViewport(0, 0, g_win.fb_width, g_win.fb_height);
@@ -329,7 +348,14 @@ static int run_viewer(void) {
         if (g_stats.count) print_benchmark_report(time_now_s() - bench_start);
         print_stream_report(cold);
     }
+    if (persist) {
+        SaveMeta *m = save_meta();
+        m->has_player = true;
+        m->x = cam.pos.x; m->y = cam.pos.y; m->z = cam.pos.z;
+        m->yaw = cam.yaw; m->pitch = cam.pitch;
+    }
     world_shutdown();
+    save_close();
     jobs_shutdown();
     if (gl) {
         scene_shutdown();

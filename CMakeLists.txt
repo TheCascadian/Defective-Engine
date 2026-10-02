@@ -67,6 +67,7 @@ add_library(dfe_engine STATIC
   src/mesher.c
   src/scene.c
   src/lod.c
+  src/atmosphere.c
   src/mods.c
   src/script.c
   src/console.c

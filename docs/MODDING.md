@@ -77,6 +77,7 @@ mods/
     mod.json                 required manifest
     data/<namespace>/blocks/<name>.json       block definitions
     data/<namespace>/worldgen/default.json    world generation settings
+    data/<namespace>/atmosphere/default.json  sky colours, day length, clouds and weather
     assets/<namespace>/textures/block/<name>.png
     assets/<namespace>/textures/block/<name>.json   optional animation settings
     scripts/main.lua         entry script named by "script"
@@ -269,6 +270,32 @@ A texture id such as `mymod:block/ruby` names the file `assets/mymod/textures/bl
 
 The roles from `stone` to `water` are required. The decoration roles from `log` onward are optional; leaving one out removes that feature. Biome layout, cave shapes and tree shapes are built into the generator. Data-driven definitions for them and a Lua generator hook arrive in a later milestone.
 
+### Atmosphere
+
+`data/<namespace>/atmosphere/default.json` describes the day. The engine interpolates the colour keys and derives the sun, moon, stars, clouds, fog and light colour from them. The base game's file is the complete example.
+
+```json
+{
+  "day_length": 1200,
+  "start_phase": 0.30,
+  "clouds": { "altitude": 172, "scale": 0.0035, "speed": 1.6 },
+  "weather": { "min_seconds": 300, "max_seconds": 900, "rain_share": 0.4 },
+  "keys": [
+    { "time": 0.50, "zenith": [0.22, 0.47, 0.86], "horizon": [0.66, 0.80, 0.96], "sky_light": [1, 1, 1], "ambient": 0.05 }
+  ]
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `day_length` | Seconds of game time per day, at least 30. |
+| `start_phase` | Phase of a new world at game time 0. Phase 0 is midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. |
+| `clouds` | Cloud layer height in blocks, noise scale (smaller is larger clouds) and drift speed in blocks per second. Clouds are hidden when the camera is above the layer. |
+| `weather` | Shortest and longest spell of one weather in seconds, and the chance that a change brings rain instead of overcast sky. |
+| `keys` | Two to sixteen keys in increasing `time` order. `zenith` is the colour overhead, `horizon` the colour at the horizon and the distance fog, `sky_light` the colour that sunlit surfaces are multiplied by, `ambient` the minimum brightness. Colours are red, green, blue in 0 to 1. The last key blends into the first, so the cycle repeats. |
+
+Weather darkens and greys these colours and pulls the fog in; a mod does not need to describe it. The console commands `time set` and `weather` change the state, and the options `--time` and `--weather` set it at start.
+
 ### Replacing content
 
 Because later mods win, replacing base content needs no special syntax: provide a file at the same path.
@@ -278,6 +305,7 @@ Because later mods win, replacing base content needs no special syntax: provide 
 | The stone texture | `assets/base/textures/block/stone.png` |
 | The stone block definition | `data/base/blocks/stone.json` |
 | World generation settings | `data/base/worldgen/default.json` |
+| The day cycle and weather | `data/base/atmosphere/default.json` |
 
 The `retexture` and `highsea` example mods do exactly this.
 
@@ -398,7 +426,8 @@ Built-in commands:
 | `help` | List every command with its help text, including mod commands. |
 | `mods` | List installed mods with version, state and load order. |
 | `seed` | Show the world seed. |
-| `time` | Show simulated time. |
+| `time [set name\|0..1]` | Show game time and the day phase, or set the time of day to midnight, dawn, morning, noon, afternoon, dusk, night or a phase from 0 to 1. |
+| `weather [clear\|overcast\|rain] [now]` | Show or change the weather. It blends over about 25 seconds unless `now` is given. |
 | `getblock x y z` | Show the state at a position. |
 | `setblock x y z block` | Place a block or state, as the player. Fires the cancellable events. |
 | `gamemode creative\|survival` | Switch mode. Creative has instant breaking, a block palette and flight (F). Survival uses hardness, drops and consumes placed blocks. |

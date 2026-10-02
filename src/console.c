@@ -48,7 +48,29 @@ static void cmd_mods(const char *args, void *user) {
 }
 
 static void cmd_seed(const char *args, void *user) { (void)args; (void)user; console_print("seed %llu", (unsigned long long)world_seed()); }
-static void cmd_time(const char *args, void *user) { (void)args; (void)user; console_print("game time %.1f s", game_time_get()); }
+static void cmd_time(const char *args, void *user) {
+    (void)user;
+    float phase;
+    if (!strncmp(args, "set ", 4)) {
+        if (!atmosphere_parse_phase(args + 4, &phase)) { console_print("usage: time set <midnight|dawn|morning|noon|afternoon|dusk|night|0..1>"); return; }
+        atmosphere_set_phase(phase);
+        console_print("time of day is now %s (phase %.2f)", atmosphere_phase_name(phase), phase);
+        return;
+    }
+    console_print("game time %.1f s, day phase %.2f (%s). Use: time set <name or 0..1>", game_time_get(), g_atmo.phase, atmosphere_phase_name(g_atmo.phase));
+}
+
+static void cmd_weather(const char *args, void *user) {
+    (void)user;
+    char name[32], flag[16] = "";
+    Weather w;
+    int n = sscanf(args, "%31s %15s", name, flag);
+    if (n < 1) { console_print("weather is %s. Use: weather <clear|overcast|rain> [now]", atmosphere_weather_name(g_atmo.weather)); return; }
+    if (!atmosphere_parse_weather(name, &w)) { console_print("usage: weather <clear|overcast|rain> [now]"); return; }
+    bool now = n == 2 && !strcmp(flag, "now");
+    atmosphere_set_weather(w, now);
+    console_print("weather is changing to %s%s", atmosphere_weather_name(w), now ? " immediately" : " over about 25 seconds");
+}
 static void cmd_lua(const char *args, void *user) { (void)user; if (*args) script_eval(args); else console_print("usage: lua <expression or statement>"); }
 
 static void cmd_getblock(const char *args, void *user) {
@@ -96,7 +118,8 @@ void console_init(void) {
     api->register_command("help", "list every command", cmd_help, NULL, "engine");
     api->register_command("mods", "list installed mods and their state", cmd_mods, NULL, "engine");
     api->register_command("seed", "show the world seed", cmd_seed, NULL, "engine");
-    api->register_command("time", "show simulated time", cmd_time, NULL, "engine");
+    api->register_command("time", "time [set <name or 0..1>]", cmd_time, NULL, "engine");
+    api->register_command("weather", "weather <clear|overcast|rain> [now]", cmd_weather, NULL, "engine");
     api->register_command("lua", "run Lua in the console sandbox", cmd_lua, NULL, "engine");
     api->register_command("getblock", "getblock x y z", cmd_getblock, NULL, "engine");
     api->register_command("setblock", "setblock x y z name", cmd_setblock, NULL, "engine");

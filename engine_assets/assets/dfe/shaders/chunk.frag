@@ -17,6 +17,10 @@ uniform float u_ambient;
 uniform vec3 u_fog_color;
 uniform float u_fog_start;
 uniform float u_fog_end;
+uniform vec3 u_light_dir;
+uniform vec3 u_glint;             // colour and strength of the light that glints on water
+uniform ivec3 u_cam_base;
+uniform vec3 u_cam_frac;
 
 #ifdef LOD
 in vec2 v_cover_pos;
@@ -55,13 +59,21 @@ void main() {
         albedo = v_tint * (0.9 + 0.5 * ripple);
     }
     vec3 rgb = albedo * light * v_shade;
+    float fog = smoothstep(u_fog_start, u_fog_end, dist);
     if (v_water_depth >= 0.0) {
         // Schlick-style reflection: water seen at a grazing angle mirrors the sky, which keeps a wide ocean from
         // reading as a black sheet and fades it into the horizon haze instead of ending at a hard edge.
         float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(abs(v_rel.y) / max(dist, 0.001), 0.0, 1.0), 5.0);
-        rgb = mix(rgb, u_fog_color * max(u_sky_color.g, 0.15), min(fresnel * 1.2, 0.85));
+        rgb = mix(rgb, u_fog_color, min(fresnel * 1.2, 0.85));
+        // Sun glint: mirror the view ray about the surface, nudged by two slow ripples, and look for the light.
+        // The world position is reduced modulo 1024 so float precision survives far from the origin.
+        vec2 wp = vec2(u_cam_base.xz % 1024) + u_cam_frac.xz + v_rel.xz;
+        vec2 wob = vec2(sin(wp.x * 1.9 + u_time * 1.3) + sin(wp.y * 2.7 - u_time * 0.9), sin(wp.y * 2.1 + u_time * 1.1) + sin(wp.x * 3.1 + u_time * 0.7)) * 0.025;
+        vec3 vdir = v_rel / max(dist, 0.001);
+        vec3 refl = normalize(vec3(vdir.x + wob.x, -vdir.y, vdir.z + wob.y));
+        float glint = pow(max(dot(refl, u_light_dir), 0.0), 220.0);
+        rgb += u_glint * glint * 1.4 * (1.0 - fog);
     }
-    float fog = smoothstep(u_fog_start, u_fog_end, dist);
     rgb = mix(rgb, u_fog_color, fog);
 #ifdef PASS_TRANSLUCENT
     // Shallow water shows the bed through it; deep water is fully opaque. Any bed showing through deep water makes

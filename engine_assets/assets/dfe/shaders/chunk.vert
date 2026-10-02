@@ -10,6 +10,8 @@ uniform mat4 u_viewproj;          // projection * rotation-only view
 uniform float u_time;
 uniform vec3 u_tint[4];           // none, grass, foliage, water shallow
 uniform vec3 u_water_deep;
+uniform vec3 u_light_dir;         // dominant light, sun or moon
+uniform float u_light_shade;      // how strongly the light direction modulates face shade, 0 flat
 
 out vec2 v_uv;
 flat out float v_layer;
@@ -24,6 +26,8 @@ out vec2 v_cover_pos;              // world x, z in blocks for the coverage look
 flat out float v_lod_level;
 #endif
 
+// Face normals in the mesher's face order: +X, -X, +Y, -Y, +Z, -Z; the two plant faces use up.
+const vec3 FACE_NORMAL[8] = vec3[8](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1), vec3(0, 1, 0), vec3(0, 1, 0));
 const float FACE_SHADE[8] = float[8](0.80, 0.80, 1.00, 0.55, 0.70, 0.70, 0.90, 0.90);
 const float AO_CURVE[4] = float[4](0.50, 0.68, 0.84, 1.00);
 
@@ -79,7 +83,9 @@ void main() {
     v_light = vec4(float((a_b >> 13) & 15u), float((a_b >> 17) & 15u), float((a_b >> 21) & 15u), float((a_b >> 25) & 15u)) * (1.0 / 15.0);
     // Water carries its depth bucket in the extra bits instead of ambient occlusion, so it takes no AO shade.
     float ao = (face >= 6u || tint == 3u) ? 1.0 : AO_CURVE[extra];
-    v_shade = FACE_SHADE[face] * ao;
+    // The fixed per-face shade is the ambient look; the light direction scales it so lit faces change with the sun.
+    float sunlit = max(dot(FACE_NORMAL[face], u_light_dir), 0.0);
+    v_shade = FACE_SHADE[face] * mix(1.0, 0.8 + 0.35 * sunlit, u_light_shade) * ao;
     v_tint = tint == 3u ? mix(u_tint[3], u_water_deep, float(extra) / 3.0) : u_tint[tint];
     v_water_depth = tint == 3u ? float(extra) / 3.0 : -1.0;
     v_rel = world_rel;

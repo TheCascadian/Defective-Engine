@@ -30,6 +30,7 @@ static struct {
     double ema_ms;
     int frames_since_check;
     bool ready, drawing_offscreen;
+    bool pack_active;        /* a mod replaces post.frag, so the pass must run even at full scale */
     float shaft_strength;
 } P;
 
@@ -38,11 +39,22 @@ static bool load_shaders(Shader *blit, Shader *shafts) {
            shader_load(shafts, "post_shafts", "assets/dfe/shaders/post.vert", "assets/dfe/shaders/post.frag", "#define SHAFTS 1\n");
 }
 
+/* A shader pack that grades the final image only works if the pass runs. The engine skips the pass at full scale to
+ * save a full-screen copy, so a replaced post.frag turns it back on; the cost is paid only when a mod asks for it. */
+static bool post_shader_replaced(void) {
+    size_t size;
+    const char *owner = NULL;
+    u8 *text = vfs_read("assets/dfe/shaders/post.frag", &size, &owner);
+    free(text);
+    return owner && strcmp(owner, "dfe") != 0;
+}
+
 bool post_init(void) {
     memset(&P, 0, sizeof P);
     if (!load_shaders(&P.blit, &P.shafts)) return false;
     glGenVertexArrays(1, &P.vao);
     P.scale = 1.0f;
+    P.pack_active = post_shader_replaced();
     P.ready = true;
     return true;
 }
@@ -58,6 +70,7 @@ bool post_reload_shaders(void) {
     shader_destroy(&P.shafts);
     P.blit = blit;
     P.shafts = shafts;
+    P.pack_active = post_shader_replaced();
     return true;
 }
 
@@ -136,7 +149,7 @@ void post_begin_scene(const Camera *cam) {
     P.shaft_strength = compute_shafts(cam, &sun_uv, aspect);
     if (!g_gfx.dynamic_resolution) P.scale = g_gfx.fixed_scale;
     bool reduced = P.scale < SCALE_FULL;
-    if ((reduced || P.shaft_strength > 0.0f) && ensure_target()) {
+    if ((reduced || P.shaft_strength > 0.0f || P.pack_active) && ensure_target()) {
         glBindFramebuffer(GL_FRAMEBUFFER, P.fbo);
         glViewport(0, 0, MAX(1, (int)((float)P.w * P.scale)), MAX(1, (int)((float)P.h * P.scale)));
         P.drawing_offscreen = true;

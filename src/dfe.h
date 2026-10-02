@@ -295,9 +295,9 @@ typedef struct FrameStats {
 extern FrameStats g_stats;
 
 /* perf.c: GPU pass timers, per-frame recording and the benchmark report. */
-typedef enum { GPU_OPAQUE, GPU_CUTOUT, GPU_SKY, GPU_WATER, GPU_RAIN, GPU_UI, GPU_SECTION_COUNT } GpuSection;
+typedef enum { GPU_OPAQUE, GPU_CUTOUT, GPU_SKY, GPU_WATER, GPU_RAIN, GPU_UI, GPU_POST, GPU_SECTION_COUNT } GpuSection;
 typedef struct FrameSample {
-    float frame_ms, cpu_ms, stream_ms, render_ms, swap_ms, gpu_ms;
+    float frame_ms, cpu_ms, stream_ms, render_ms, swap_ms, gpu_ms, scale;
     float gpu_section_ms[GPU_SECTION_COUNT];
     int draw_calls, uploads;
     u32 vertices;
@@ -725,6 +725,62 @@ void scene_render(const Camera *cam, double time_s);
 bool scene_reload_shaders(void);
 void scene_mesh_job_complete_hook(void);
 
+/* --------------------------------------------------------------- settings.c */
+
+#define MAX_PRESETS 16
+#define PRESET_ID_MAX 32
+
+/* A quality preset, loaded from data/<namespace>/presets/<id>.json. */
+typedef struct Preset {
+    char id[PRESET_ID_MAX];
+    char name[48];
+    int render_distance, far_chunks;
+    bool clouds, stars, light_shafts, dynamic_resolution;
+    float min_scale;         /* lowest render scale the dynamic controller may pick */
+    float target_fps;        /* frame rate the controller tries to hold */
+} Preset;
+
+/* What the player chose, saved to settings.json. Fields at their "automatic" value follow the preset. */
+typedef struct Settings {
+    char preset[PRESET_ID_MAX];
+    int render_distance;     /* chunks, 0 follows the preset */
+    int dynamic_resolution;  /* -1 follows the preset, 0 off, 1 on */
+    float render_scale;      /* fixed scale used while dynamic resolution is off, 0.5 to 1 */
+    float fov_deg;
+    bool vsync;
+} Settings;
+extern Settings g_settings;
+
+/* The values the renderer actually uses: preset, then settings, then command line. */
+typedef struct GraphicsConfig {
+    int render_distance, far_chunks;
+    bool clouds, stars, light_shafts, dynamic_resolution;
+    float min_scale, fixed_scale, target_ms, fov_deg;
+    bool vsync;
+} GraphicsConfig;
+extern GraphicsConfig g_gfx;
+
+int registry_load_presets(void);
+int preset_count(void);
+const Preset *preset_at(int i);
+const Preset *preset_find(const char *id);
+void settings_defaults(void);
+void settings_load(void);
+bool settings_save(void);
+/* Recomputes g_gfx from the current preset and settings and pushes it to the scene and atmosphere. */
+void gfx_apply(void);
+
+/* post.c: offscreen target for dynamic resolution and light shafts. */
+bool post_init(void);
+void post_shutdown(void);
+bool post_reload_shaders(void);
+/* Binds the target the scene draws into and sets the viewport. Call before clearing. */
+void post_begin_scene(const Camera *cam);
+/* Resolves the scene to the window. Call after all world-space drawing and before the 2D layer. */
+void post_end_scene(const Camera *cam);
+float post_scale(void);
+void post_update_controller(double frame_ms, double swap_ms);
+
 /* ------------------------------------------------------------ atmosphere.c */
 
 #define ATMO_MAX_KEYS 16
@@ -1033,7 +1089,7 @@ typedef struct Options {
     u64 seed;
     bool seed_set;
     int render_distance;
-    char preset[16];
+    char preset[16];         /* --preset: empty keeps the saved choice */
     char screenshot_path[256];
     int screenshot_frame;
     int overlay_page;
@@ -1043,6 +1099,9 @@ typedef struct Options {
     int workers;             /* 0 = automatic */
     bool wireframe;
     bool allow_native;       /* load native plugins from mods */
+    float render_scale;      /* --render-scale, valid when render_scale_set */
+    bool render_scale_set;
+    bool dynamic_res;        /* --dynamic-res */
     bool camera_set;         /* --camera pins the start pose and freezes the benchmark path, for screenshots */
     float camera[5];         /* x y z yaw pitch (degrees) */
     float start_phase;       /* --time: day phase 0..1 forced at start, valid when start_phase_set */

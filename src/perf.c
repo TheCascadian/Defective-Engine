@@ -13,7 +13,7 @@
 #define BUDGET_COLD_START_S 10.0
 #define NS_TO_MS 1e-6
 
-static const char *const SECTION_NAME[GPU_SECTION_COUNT] = {"opaque", "cutout", "sky", "water", "rain", "ui"};
+static const char *const SECTION_NAME[GPU_SECTION_COUNT] = {"opaque", "cutout", "sky", "water", "rain", "ui", "post"};
 
 static struct {
     GLuint queries[QUERY_RING][GPU_SECTION_COUNT];
@@ -95,7 +95,7 @@ typedef struct Summary {
     int hitches;
     double cpu_avg, stream_avg, render_avg, swap_avg, gpu_avg;
     double section_avg[GPU_SECTION_COUNT];
-    double peak_mb, cold_s;
+    double peak_mb, cold_s, scale_avg, scale_min;
 } Summary;
 
 typedef float (*FrameField)(const FrameSample *);
@@ -141,10 +141,12 @@ static void summarise(Summary *out, double wall_s, double cold_s) {
         out->render_avg += s->render_ms;
         out->swap_avg += s->swap_ms;
         out->gpu_avg += s->gpu_ms;
+        out->scale_avg += s->scale;
+        out->scale_min = i ? MIN(out->scale_min, s->scale) : s->scale;
         for (int k = 0; k < GPU_SECTION_COUNT; k++) out->section_avg[k] += s->gpu_section_ms[k];
         if (s->frame_ms > HITCH_MS) out->hitches++;
     }
-    out->avg_ms /= n; out->cpu_avg /= n; out->stream_avg /= n; out->render_avg /= n; out->swap_avg /= n; out->gpu_avg /= n;
+    out->avg_ms /= n; out->cpu_avg /= n; out->stream_avg /= n; out->render_avg /= n; out->swap_avg /= n; out->gpu_avg /= n; out->scale_avg /= n;
     for (int k = 0; k < GPU_SECTION_COUNT; k++) out->section_avg[k] /= n;
     out->fps_avg = wall_s > 0 ? n / wall_s : 0;
     out->fps_low1 = low1_fps(ms, n);
@@ -176,9 +178,9 @@ static void print_text_report(const Summary *m) {
     printf("\n=== benchmark ===\n");
     if (g_opt.bench_label[0]) printf("label: %s\n", g_opt.bench_label);
     printf("gl: %s\n", gl_info_string());
-    printf("setup: %dx%d  preset %s  render distance %d  far %d  workers %d  cores %d\n", g_win.fb_width, g_win.fb_height, g_opt.preset,
+    printf("setup: %dx%d  preset %s  render distance %d  far %d  workers %d  cores %d\n", g_win.fb_width, g_win.fb_height, g_settings.preset,
            g_scene_cfg.render_distance, g_scene_cfg.far_chunks, jobs_worker_count(), cpu_count());
-    printf("frames: %d in %.2f s\n", m->n, m->wall_s);
+    printf("frames: %d in %.2f s   render scale avg %.2f min %.2f\n", m->n, m->wall_s, m->scale_avg, m->scale_min);
     printf("fps avg: %.1f   1%% low: %.1f\n", m->fps_avg, m->fps_low1);
     printf("frame ms  avg %.2f  p50 %.2f  p95 %.2f  p99 %.2f  max %.2f   hitches %d\n", m->avg_ms, m->p50, m->p95, m->p99, m->max_ms, m->hitches);
     printf("cpu ms    avg %.2f  (stream %.2f, render submit %.2f)   swap wait avg %.2f\n", m->cpu_avg, m->stream_avg, m->render_avg, m->swap_avg);
@@ -203,8 +205,8 @@ static void write_json(const Summary *m, const char *path) {
     if (!f) { LOGW("cannot write %s; check that the folder exists and is writable", path); return; }
     fprintf(f, "{\n  \"label\": \"%s\",\n  \"gl\": \"%s\",\n", g_opt.bench_label, gl_info_string());
     fprintf(f, "  \"width\": %d, \"height\": %d, \"preset\": \"%s\", \"render_distance\": %d, \"far_chunks\": %d, \"workers\": %d, \"cores\": %d,\n",
-            g_win.fb_width, g_win.fb_height, g_opt.preset, g_scene_cfg.render_distance, g_scene_cfg.far_chunks, jobs_worker_count(), cpu_count());
-    fprintf(f, "  \"frames\": %d, \"seconds\": %.3f, \"fps_avg\": %.2f, \"fps_low1\": %.2f,\n", m->n, m->wall_s, m->fps_avg, m->fps_low1);
+            g_win.fb_width, g_win.fb_height, g_settings.preset, g_scene_cfg.render_distance, g_scene_cfg.far_chunks, jobs_worker_count(), cpu_count());
+    fprintf(f, "  \"frames\": %d, \"seconds\": %.3f, \"fps_avg\": %.2f, \"fps_low1\": %.2f, \"scale_avg\": %.3f, \"scale_min\": %.3f,\n", m->n, m->wall_s, m->fps_avg, m->fps_low1, m->scale_avg, m->scale_min);
     fprintf(f, "  \"frame_ms\": {\"avg\": %.3f, \"p50\": %.3f, \"p95\": %.3f, \"p99\": %.3f, \"max\": %.3f}, \"hitches\": %d,\n", m->avg_ms, m->p50, m->p95, m->p99, m->max_ms, m->hitches);
     fprintf(f, "  \"cpu_ms\": {\"total\": %.3f, \"stream\": %.3f, \"render\": %.3f, \"swap\": %.3f},\n", m->cpu_avg, m->stream_avg, m->render_avg, m->swap_avg);
     fprintf(f, "  \"gpu_available\": %s, \"gpu_ms\": {\"total\": %.3f", P.ok ? "true" : "false", m->gpu_avg);
@@ -218,12 +220,12 @@ static void write_csv(const char *path) {
     if (!f) { LOGW("cannot write %s; check that the folder exists and is writable", path); return; }
     fprintf(f, "frame,frame_ms,cpu_ms,stream_ms,render_ms,swap_ms,gpu_ms");
     for (int k = 0; k < GPU_SECTION_COUNT; k++) fprintf(f, ",gpu_%s_ms", SECTION_NAME[k]);
-    fprintf(f, ",draw_calls,vertices,uploads\n");
+    fprintf(f, ",scale,draw_calls,vertices,uploads\n");
     for (int i = 0; i < P.count; i++) {
         const FrameSample *s = &P.samples[i];
         fprintf(f, "%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f", i, s->frame_ms, s->cpu_ms, s->stream_ms, s->render_ms, s->swap_ms, s->gpu_ms);
         for (int k = 0; k < GPU_SECTION_COUNT; k++) fprintf(f, ",%.3f", s->gpu_section_ms[k]);
-        fprintf(f, ",%d,%u,%d\n", s->draw_calls, s->vertices, s->uploads);
+        fprintf(f, ",%.3f,%d,%u,%d\n", s->scale, s->draw_calls, s->vertices, s->uploads);
     }
     fclose(f);
 }

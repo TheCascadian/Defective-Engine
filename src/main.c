@@ -18,7 +18,9 @@ static void print_usage(void) {
          "  --world NAME         world to create or load\n"
          "  --seed N             world seed\n"
          "  --render-distance N  chunks (default from preset)\n"
-         "  --preset low|medium|high\n"
+         "  --preset NAME        quality preset: low, medium, high or one added by a mod\n"
+         "  --render-scale F     draw the world at this share of the window size (0.4 to 1) and stretch it\n"
+         "  --dynamic-res        let the engine pick the render scale to hold the preset's target frame rate\n"
          "  --width W --height H window size\n"
          "  --workers N          worker thread count (default: cores minus one, at most 6)\n"
          "  --wireframe          draw chunk geometry as lines (also F4)\n"
@@ -36,7 +38,6 @@ static bool parse_args(int argc, char **argv) {
     g_opt.width = 1280;
     g_opt.height = 720;
     g_opt.bench_seconds = 20;
-    snprintf(g_opt.preset, sizeof g_opt.preset, "low");
     snprintf(g_opt.world_name, sizeof g_opt.world_name, "world");
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -54,6 +55,8 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--world") && has_val) snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]);
         else if (!strcmp(a, "--seed") && has_val) { g_opt.seed = strtoull(argv[++i], NULL, 10); g_opt.seed_set = true; }
         else if (!strcmp(a, "--render-distance") && has_val) g_opt.render_distance = atoi(argv[++i]);
+        else if (!strcmp(a, "--render-scale") && has_val) { g_opt.render_scale = (float)atof(argv[++i]); g_opt.render_scale_set = true; }
+        else if (!strcmp(a, "--dynamic-res")) g_opt.dynamic_res = true;
         else if (!strcmp(a, "--preset") && has_val) snprintf(g_opt.preset, sizeof g_opt.preset, "%s", argv[++i]);
         else if (!strcmp(a, "--width") && has_val) g_opt.width = atoi(argv[++i]);
         else if (!strcmp(a, "--height") && has_val) g_opt.height = atoi(argv[++i]);
@@ -135,26 +138,6 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define AUTOSAVE_INTERVAL_S 30.0
 /* The first frames pay for shader and driver warm-up, which is not what a player sees in steady state. */
 #define BENCH_WARMUP_FRAMES 2
-#define PRESET_RD_LOW 8
-#define PRESET_RD_MEDIUM 12
-#define PRESET_RD_HIGH 16
-#define PRESET_FAR_LOW 14
-#define PRESET_FAR_MEDIUM 24
-#define PRESET_FAR_HIGH 40
-
-static int far_chunks_for_preset(void) {
-    if (!strcmp(g_opt.preset, "high")) return PRESET_FAR_HIGH;
-    if (!strcmp(g_opt.preset, "medium")) return PRESET_FAR_MEDIUM;
-    return PRESET_FAR_LOW;
-}
-
-static int render_distance_for_preset(void) {
-    if (g_opt.render_distance > 0) return g_opt.render_distance;
-    if (!strcmp(g_opt.preset, "high")) return PRESET_RD_HIGH;
-    if (!strcmp(g_opt.preset, "medium")) return PRESET_RD_MEDIUM;
-    return PRESET_RD_LOW;
-}
-
 /* Deterministic path so two benchmark runs sample the same view: time advances by a fixed step per frame.
  * The camera follows the terrain at constant clearance while travelling, which exercises streaming, meshing
  * and unloading the same way on every run. */
@@ -234,6 +217,7 @@ static bool boot_content(bool with_gl) {
     registry_load_blocks();
     registry_load_worldgen_config();
     registry_load_atmosphere();
+    registry_load_presets();
     if (data_error_count() > known_errors) {
         LOGE("%d content error(s) found; the first is: %s", data_error_count() - known_errors, data_error_text(known_errors));
         errors_screen("Game content has errors", false);
@@ -241,6 +225,11 @@ static bool boot_content(bool with_gl) {
     }
     if (with_gl && !textures_build()) return false;
     return true;
+}
+
+/* Far plane covers the real chunks plus the distant terrain; it follows the settings so a change takes effect at once. */
+static float view_far_plane(void) {
+    return (float)(g_gfx.render_distance + 2 + g_gfx.far_chunks) * CHUNK_SIZE;
 }
 
 static void print_stream_report(double cold_start_s) {
@@ -297,13 +286,32 @@ static void overlay_jobs_page(float x, float y) {
     }
 }
 
+/* A benchmark ignores the saved settings so two machines or two builds measure the same configuration. */
+static void load_settings_for_run(void) {
+    if (g_opt.benchmark) {
+        settings_defaults();
+        g_settings.dynamic_resolution = g_opt.dynamic_res ? 1 : 0;
+    } else {
+        settings_load();
+        if (g_opt.dynamic_res) g_settings.dynamic_resolution = 1;
+    }
+    if (g_opt.preset[0]) snprintf(g_settings.preset, sizeof g_settings.preset, "%s", g_opt.preset);
+    if (g_opt.render_distance > 0) g_settings.render_distance = g_opt.render_distance;
+    if (g_opt.render_scale_set) {
+        g_settings.render_scale = CLAMP(g_opt.render_scale, 0.4f, 1.0f);
+        g_settings.dynamic_resolution = 0;
+    }
+}
+
 static int run_viewer(void) {
     bool gl = !g_opt.no_render;
+    load_settings_for_run();
     if (gl) {
-        if (!window_create("Defective Engine", g_opt.width, g_opt.height, !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
+        if (!window_create("Defective Engine", g_opt.width, g_opt.height, g_settings.vsync && !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
         if (!ui_init()) return 1;
         debug_lines_init();
         perf_init();
+        if (!post_init()) return 1;
     }
     /* Mods that failed to resolve are excluded already; the player may continue without them. */
     if (data_error_count() > 0 && !errors_screen("Some mods could not be loaded", mods_find("base") && !mods_find("base")->failed)) return 1;
@@ -328,6 +336,7 @@ static int run_viewer(void) {
     world_init(seed);
     if (persist) game_time_set(save_meta()->day_time);
     atmosphere_init_state();
+    gfx_apply();
     if (g_opt.start_phase_set) atmosphere_set_phase(g_opt.start_phase);
     if (g_opt.start_weather_set) atmosphere_set_weather((Weather)g_opt.start_weather, true);
     /* A benchmark must not change weather mid-run, or two runs would not be comparable. */
@@ -344,12 +353,11 @@ static int run_viewer(void) {
         overlay_add_page("world", overlay_world_page);
         overlay_add_page("jobs", overlay_jobs_page);
     }
-    int rd = render_distance_for_preset();
-    g_scene_cfg.render_distance = rd;
     g_scene_cfg.wireframe = g_opt.wireframe;
-    g_scene_cfg.far_chunks = gl ? far_chunks_for_preset() : 0;
+    int rd = g_gfx.render_distance;
 
-    Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2 + (gl ? far_chunks_for_preset() : 0)) * 32.0f};
+    Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = g_gfx.fov_deg * DEG2RAD, .znear = 0.1f};
+    cam.zfar = view_far_plane();
     if (g_opt.camera_set) {
         cam.pos = v3(g_opt.camera[0], g_opt.camera[1], g_opt.camera[2]);
         cam.yaw = g_opt.camera[3] * (float)M_PI / 180.0f;
@@ -414,11 +422,13 @@ static int run_viewer(void) {
         }
         tick_accumulator = MIN(tick_accumulator + dt, GAME_TICK_DT * MAX_TICKS_PER_FRAME);
         while (tick_accumulator >= GAME_TICK_DT) { game_tick(); tick_accumulator -= GAME_TICK_DT; }
+        cam.fov_y = g_gfx.fov_deg * DEG2RAD;
+        cam.zfar = view_far_plane();
         camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
 
         g_scene_stats.uploads_this_frame = 0;
         double stream_start = time_now_s();
-        world_stream(cam.pos, cam.forward, rd, false);
+        world_stream(cam.pos, cam.forward, g_gfx.render_distance, false);
         jobs_pump(UPLOAD_BUDGET_S);
         double stream_ms = (time_now_s() - stream_start) * 1000.0;
         if (persist && frame_start - last_autosave > AUTOSAVE_INTERVAL_S) {
@@ -429,13 +439,16 @@ static int run_viewer(void) {
         if (gl) {
             perf_gpu_frame_begin();
             g_stats.draw_calls_last = 0;
-            glViewport(0, 0, g_win.fb_width, g_win.fb_height);
             atmosphere_update(dt, cam.pos);
+            post_begin_scene(&cam);
             glClearColor(g_atmo.fog_color.x, g_atmo.fog_color.y, g_atmo.fog_color.z, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             scene_render(&cam, time_now_s() - bench_start);
             g_stats.draw_calls_last = g_scene_stats.draw_calls;
             if (play) { draw_selection_box(); debug_lines_flush(&cam); }
+            perf_gpu_begin(GPU_POST);
+            post_end_scene(&cam);
+            perf_gpu_end();
             perf_gpu_begin(GPU_UI);
             ui_begin(g_win.width, g_win.height);
             if (play) hud_draw(g_win.width, g_win.height);
@@ -453,10 +466,11 @@ static int run_viewer(void) {
         if (gl) window_swap();
         double frame_ms = (time_now_s() - frame_start) * 1000.0;
         if (gl) overlay_frame(frame_ms / 1000.0, cpu_ms);
+        if (gl) post_update_controller(frame_ms, frame_ms - cpu_ms);
         if (g_opt.benchmark && frame > BENCH_WARMUP_FRAMES) {
             FrameSample fs = {.frame_ms = (float)frame_ms, .cpu_ms = (float)cpu_ms, .stream_ms = (float)stream_ms,
                               .render_ms = (float)((cpu_end - render_start) * 1000.0), .swap_ms = (float)(frame_ms - cpu_ms),
-                              .draw_calls = g_scene_stats.draw_calls, .uploads = g_scene_stats.uploads_this_frame,
+                              .scale = post_scale(), .draw_calls = g_scene_stats.draw_calls, .uploads = g_scene_stats.uploads_this_frame,
                               .vertices = (u32)g_scene_stats.vertices_drawn};
             perf_record_frame(&fs);
         }
@@ -492,6 +506,7 @@ static int run_viewer(void) {
     jobs_shutdown();
     if (gl) {
         scene_shutdown();
+        post_shutdown();
         perf_shutdown();
         hud_shutdown();
         textures_destroy();

@@ -1,0 +1,11 @@
+{
+  "name": "Low",
+  "render_distance": 8,
+  "far_chunks": 14,
+  "clouds": true,
+  "stars": true,
+  "light_shafts": false,
+  "dynamic_resolution": true,
+  "min_scale": 0.6,
+  "target_fps": 60
+}

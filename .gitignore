@@ -3,3 +3,4 @@ build/
 saves/
 examples/mods/*/plugins/
 perf_results/
+settings.json

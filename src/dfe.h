@@ -289,14 +289,32 @@ void debug_lines_flush(const Camera *cam);
 /* ----------------------------------------------------------------- stats */
 
 typedef struct FrameStats {
-    double frame_ms[8192];
-    double cpu_ms[8192];
-    int count;
     int draw_calls_last;
     u64 triangles_last;
 } FrameStats;
 extern FrameStats g_stats;
-void stats_record_frame(double dt_ms, double cpu_ms);
+
+/* perf.c: GPU pass timers, per-frame recording and the benchmark report. */
+typedef enum { GPU_OPAQUE, GPU_CUTOUT, GPU_SKY, GPU_WATER, GPU_RAIN, GPU_UI, GPU_SECTION_COUNT } GpuSection;
+typedef struct FrameSample {
+    float frame_ms, cpu_ms, stream_ms, render_ms, swap_ms, gpu_ms;
+    float gpu_section_ms[GPU_SECTION_COUNT];
+    int draw_calls, uploads;
+    u32 vertices;
+} FrameSample;
+void perf_init(void);
+void perf_shutdown(void);
+/* Collects the timer results of earlier frames; call once at the top of each rendered frame. */
+void perf_gpu_frame_begin(void);
+/* Sections must not nest: GL allows one timer query at a time. */
+void perf_gpu_begin(GpuSection s);
+void perf_gpu_end(void);
+void perf_record_frame(const FrameSample *s);
+/* Latest finished GPU timings, for the overlay. Valid when perf_gpu_available() is true. */
+bool perf_gpu_available(void);
+float perf_gpu_latest_ms(GpuSection s);
+/* Prints the benchmark summary and writes the optional JSON and CSV files. */
+void perf_report(double wall_s, double cold_start_s);
 bool screenshot_save_ppm(const char *path);
 
 /* ----------------------------------------------------------------- json.c */
@@ -1019,6 +1037,9 @@ typedef struct Options {
     char screenshot_path[256];
     int screenshot_frame;
     int overlay_page;
+    char bench_label[64];     /* --bench-label: free text copied into the JSON so runs can be told apart */
+    char bench_json[256];     /* --bench-json: summary of the run */
+    char bench_csv[256];      /* --bench-csv: one row per frame */
     int workers;             /* 0 = automatic */
     bool wireframe;
     bool allow_native;       /* load native plugins from mods */

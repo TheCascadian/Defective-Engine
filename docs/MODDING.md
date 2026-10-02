@@ -219,11 +219,11 @@ A block is one JSON file at `data/<namespace>/blocks/<name>.json`. Its id is `<n
 | `light.emit_when` | object | none | One property and value, such as `{"lit": "on"}`. The block emits only in states where the property has that value. The property must be declared under `properties`. |
 | `properties` | object | none | State properties. Each key maps to an array of 1 to 16 string values. At most 4 properties per block. |
 | `defaults` | object | first value of each | Property values of the default state. |
-| `fluid` | object | none | Makes the block a fluid. `viscosity` is ticks per spread step, `group` names the fluid family. |
+| `fluid` | object | none | Makes the block a fluid. `viscosity` is ticks per spread step, `group` names the fluid family, `reach` (1 to 14, default 7) is how many blocks it flows from a source, and `infinite` (default false) lets two adjacent sources create a third. A fluid must declare a `level` property with exactly `reach + 2` values (`"0"` is a source, `"1"` to `"reach"` flow, the last is falling). The error message prints the exact array to use. |
 
 Mistakes that name a bad value, such as an unknown `shape` or `tint`, are reported with the file and line and list the valid choices.
 
-The keys `hardness`, `tool`, `drops`, `sound`, `random_tick`, `friction` and `climbable` are stored with the block and read by the interaction and tick systems as those arrive. Today they have no visible effect on their own.
+`hardness` (seconds to break in survival, negative for unbreakable) and `drops` (the block name given when broken, `""` for nothing) are used by the player. `random_tick: true` makes the block fire the `random_tick` event. `climbable` lets the player climb it. `tool`, `sound` and `friction` are stored and not yet used.
 
 ### Block states and properties
 
@@ -257,12 +257,17 @@ A texture id such as `mymod:block/ruby` names the file `assets/mymod/textures/bl
   "blocks": {
     "stone": "base:stone", "deep_stone": "base:deep_stone", "dirt": "base:dirt",
     "grass": "base:grass_block", "sand": "base:sand", "sandstone": "base:sandstone",
-    "gravel": "base:gravel", "snow": "base:snow", "mud": "base:mud", "water": "base:water"
+    "gravel": "base:gravel", "snow": "base:snow", "mud": "base:mud", "water": "base:water",
+    "log": "base:log", "leaves": "base:leaves", "tall_grass": "base:tall_grass",
+    "flower_red": "base:flower_red", "flower_yellow": "base:flower_yellow",
+    "mushroom": "base:mushroom", "dead_bush": "base:dead_bush",
+    "coal_ore": "base:coal_ore", "iron_ore": "base:iron_ore",
+    "gold_ore": "base:gold_ore", "diamond_ore": "base:diamond_ore"
   }
 }
 ```
 
-Biomes, caves, ores and structures are currently built into the generator. Data-driven definitions for them and a Lua generator hook arrive with the world generation milestone.
+The roles from `stone` to `water` are required. The decoration roles from `log` onward are optional; leaving one out removes that feature. Biome layout, cave shapes and tree shapes are built into the generator. Data-driven definitions for them and a Lua generator hook arrive in a later milestone.
 
 ### Replacing content
 
@@ -369,6 +374,7 @@ A state is an integer that identifies one block with one set of property values.
 | `block_break` | A block is removed on the player's behalf | `x`, `y`, `z`, `state` (the state about to be removed) | Yes |
 | `world_load` | After a world is opened, before the first tick | none | No |
 | `world_unload` | Before a world closes | none | No |
+| `random_tick` | Each game tick, a few randomly chosen blocks near the player, for blocks with `random_tick: true` | `x`, `y`, `z`, `state` | No |
 | `command` | A console line matched no command | `text`, the full line | Yes: return true to mark it handled |
 
 Every table also has a `name` field with the event name.
@@ -395,6 +401,8 @@ Built-in commands:
 | `time` | Show simulated time. |
 | `getblock x y z` | Show the state at a position. |
 | `setblock x y z block` | Place a block or state, as the player. Fires the cancellable events. |
+| `gamemode creative\|survival` | Switch mode. Creative has instant breaking, a block palette and flight (F). Survival uses hardness, drops and consumes placed blocks. |
+| `give block [count]` | Add items to the inventory. |
 | `lua code` | Run a Lua statement or expression in the sandbox and print the result. |
 
 A line that matches no command fires the `command` event before the game prints "unknown command".
@@ -490,7 +498,7 @@ The last two need `guard` and `tally`. `tally` also needs the engine started wit
 
 Stated plainly so that mod authors can plan.
 
-* There is no player, inventory or interaction API yet. `block_place` and `block_break` currently fire for the `setblock` console command and will fire for the player when interaction is added, with no change to the mod API.
+* Mods cannot read or change the player or inventory from Lua yet. `block_place` and `block_break` fire for the player's own edits and for the `setblock` command.
 * Lua world generators, data-driven biomes, ores and structures, custom screens, entities and shader packs are planned and are not part of mod API 1. Block, texture and world setting data are available now.
 * Mods have no persistent storage. State kept in Lua variables is lost when the game closes. Block edits persist because the world is saved.
 * `dfe.seed()` returns only the low 32 bits of the seed. Use the C API for all 64 bits.

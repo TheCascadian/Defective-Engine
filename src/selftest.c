@@ -307,6 +307,68 @@ static void test_world_light(void) {
     jobs_shutdown();
 }
 
+/* Edits survive a save, unload and reload, and untouched columns are not written at all. */
+static void remove_tree_files(const char *dir) {
+    char path[600];
+    StrList names = {0};
+    snprintf(path, sizeof path, "%s/region", dir);
+    dir_list(path, &names);
+    for (int i = 0; i < names.n; i++) {
+        char f[700];
+        snprintf(f, sizeof f, "%s/%s", path, names.d[i]);
+        remove(f);
+    }
+    strlist_free(&names);
+    remove(path);
+    snprintf(path, sizeof path, "%s/world.json", dir);
+    remove(path);
+    remove(dir);
+}
+
+static void test_save_roundtrip(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    BlockDef *crystal = block_find("base:crystal_red"), *stone = block_find("base:stone"), *glass = block_find("base:glass");
+    CHECK(crystal && stone && glass);
+    if (!crystal || !stone || !glass || data_error_count()) return;
+    const char *dir = "selftest_world";
+    remove_tree_files(dir);
+    jobs_init(2);
+    CHECK(save_open(dir, 99));
+    CHECK(save_seed() == 99);
+    world_init(save_seed());
+    world_flush_generation(0, 0, 2);
+    int ground = ifloor(gen_height_at(5, 5));
+    int ey = ground + 10;
+    /* A varied pattern forces a multi-entry palette, and the emitter forces non-uniform light. */
+    for (int i = 0; i < 40; i++) world_set_state(2 + i % 20, ey, 2 + i / 2, (i & 1) ? stone->default_state : glass->default_state);
+    world_set_state(5, ey + 3, 5, crystal->default_state);
+    light_process(1 << 30);
+    u16 want_state = world_get_state(5, ey + 3, 5), want_light = world_get_light(6, ey + 3, 5);
+    u16 want_pat = world_get_state(3 + 0, ey, 2 + 0);
+    CHECK(LIGHT_R(want_light) == 14);
+    world_shutdown();
+    save_close();
+    jobs_shutdown();
+
+    jobs_init(2);
+    CHECK(save_open(dir, 12345));
+    CHECK(save_seed() == 99); /* an existing world keeps its own seed */
+    world_init(save_seed());
+    world_flush_generation(0, 0, 2);
+    CHECK(world_get_state(5, ey + 3, 5) == want_state && want_state == crystal->default_state);
+    CHECK(world_get_light(6, ey + 3, 5) == want_light);
+    CHECK(world_get_state(3, ey, 2) == want_pat);
+    /* Terrain far from the edit regenerates identically. */
+    CHECK(world_get_state(-40, ifloor(gen_height_at(-40, 3)), 3) != STATE_AIR);
+    world_shutdown();
+    save_close();
+    jobs_shutdown();
+    remove_tree_files(dir);
+}
+
 static void test_gen_determinism(void) {
     registry_reset();
     data_error_reset();
@@ -332,6 +394,7 @@ static void test_gen_determinism(void) {
 
 static void test_world_and_mesh(void) {
     test_world_light();
+    test_save_roundtrip();
     test_gen_determinism();
     registry_reset();
     BlockDef st = {0};

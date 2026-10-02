@@ -160,7 +160,7 @@ static void step_add(Node n) {
         u16 merged = light_max(cur, cand);
         if (merged == cur) continue;
         chunk_set_light(c, idx, merged);
-        c->flags |= CF_SAVE_DIRTY;
+        if (c->flags & CF_PERSISTENT) c->flags |= CF_SAVE_DIRTY;
         world_light_touched(x, y, z);
         push_add(x, y, z);
     }
@@ -186,7 +186,7 @@ static void step_remove(Node n) {
         }
         if (clear_mask) {
             chunk_set_light(c, idx, cur & ~clear_mask);
-            c->flags |= CF_SAVE_DIRTY;
+            if (c->flags & CF_PERSISTENT) c->flags |= CF_SAVE_DIRTY;
             world_light_touched(x, y, z);
             push_rem(x, y, z, removed);
         }

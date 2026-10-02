@@ -274,6 +274,8 @@ typedef struct GenJob {
     int cx, cz;
     u32 serial;
     int lo, hi;
+    u16 deep_state;
+    bool loaded;     /* chunks came from the save, not the generator */
     Chunk **chunks;
 } GenJob;
 
@@ -404,14 +406,14 @@ static Chunk *column_expand_to(Column *col, int cy) {
         Chunk *c = chunk_create(col->cx, ++col->hi_cy, col->cz);
         c->uniform = STATE_AIR;
         c->light_uniform = LIGHT_FULL_SKY;
-        c->flags = CF_GENERATED | CF_VIRTUAL;
+        c->flags = CF_GENERATED | CF_VIRTUAL | CF_PERSISTENT;
         ptrmap_set(&W.chunks, pack3(c->cx, c->cy, c->cz), c);
     }
     while (cy < col->lo_cy) {
         Chunk *c = chunk_create(col->cx, --col->lo_cy, col->cz);
         c->uniform = col->deep_state;
         c->light_uniform = 0;
-        c->flags = CF_GENERATED | CF_VIRTUAL;
+        c->flags = CF_GENERATED | CF_VIRTUAL | CF_PERSISTENT;
         ptrmap_set(&W.chunks, pack3(c->cx, c->cy, c->cz), c);
     }
     return world_chunk(col->cx, cy, col->cz);
@@ -425,6 +427,14 @@ Chunk *world_chunk_materialize(int cx, int cy, int cz) {
     return column_expand_to(col, cy);
 }
 
+/* Light changes only need saving in columns that are saved at all; elsewhere regeneration and border seeding reproduce them. */
+static void column_make_persistent(const Column *col) {
+    for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
+        Chunk *c = ptrmap_get(&W.chunks, pack3(col->cx, cy, col->cz));
+        if (c) c->flags |= CF_PERSISTENT;
+    }
+}
+
 bool world_set_state(int x, int y, int z, u16 state) {
     int cx = x >> CHUNK_SHIFT, cy = y >> CHUNK_SHIFT, cz = z >> CHUNK_SHIFT;
     Chunk *c = world_chunk_materialize(cx, cy, cz);
@@ -433,6 +443,7 @@ bool world_set_state(int x, int y, int z, u16 state) {
     u16 old = chunk_get(c, idx);
     if (old == state) return false;
     chunk_set(c, idx, state);
+    if (!(c->flags & CF_PERSISTENT)) column_make_persistent(world_column(cx, cz));
     c->flags |= CF_SAVE_DIRTY | CF_MESH_DIRTY;
     c->flags &= ~CF_VIRTUAL;
     mark_voxel_dirty(x, y, z);
@@ -444,7 +455,7 @@ void world_set_light_raw(int x, int y, int z, u16 light) {
     Chunk *c = world_chunk(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT, z >> CHUNK_SHIFT);
     if (!c) return;
     chunk_set_light(c, ((y & 31) << 10) | ((z & 31) << 5) | (x & 31), light);
-    c->flags |= CF_SAVE_DIRTY;
+    if (c->flags & CF_PERSISTENT) c->flags |= CF_SAVE_DIRTY;
     mark_voxel_dirty(x, y, z);
 }
 
@@ -470,6 +481,13 @@ static WorkerBuffers *worker_buffers(int worker, int layers) {
 
 static void gen_job_run(void *data, int worker) {
     GenJob *j = data;
+    SavedColumn saved;
+    if (save_load_column(j->cx, j->cz, &saved)) {
+        j->lo = saved.lo; j->hi = saved.hi; j->deep_state = saved.deep_state;
+        j->chunks = saved.chunks;
+        j->loaded = true;
+        return;
+    }
     int layers = j->hi - j->lo + 1;
     WorkerBuffers *wb = worker_buffers(worker, layers);
     gen_column(wb->scratch, j->cx, j->cz, wb->states);
@@ -494,6 +512,7 @@ static void gen_job_complete(void *data) {
     } else {
         for (int k = 0; k < layers; k++) ptrmap_set(&W.chunks, pack3(j->cx, j->lo + k, j->cz), j->chunks[k]);
         col->state = COLUMN_READY;
+        if (j->loaded) { col->lo_cy = j->lo; col->hi_cy = j->hi; col->deep_state = j->deep_state; }
         W.stats.columns_generated++;
         light_seed_column_borders(j->cx, j->cz);
     }
@@ -516,7 +535,37 @@ static void column_submit(int cx, int cz, float prio) {
     jobs_submit(JOB_KIND_GEN, prio, gen_job_run, gen_job_complete, j);
 }
 
+static bool column_is_dirty(const Column *col) {
+    for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
+        const Chunk *c = ptrmap_get(&W.chunks, pack3(col->cx, cy, col->cz));
+        if (c && (c->flags & CF_SAVE_DIRTY)) return true;
+    }
+    return false;
+}
+
+/* Serialises the column and clears its dirty flags. The write itself happens on a worker. */
+static void column_save(Column *col) {
+    int layers = col->hi_cy - col->lo_cy + 1;
+    Chunk **list = xcalloc((size_t)layers, sizeof(Chunk *));
+    for (int k = 0; k < layers; k++) {
+        list[k] = ptrmap_get(&W.chunks, pack3(col->cx, col->lo_cy + k, col->cz));
+        if (!list[k]) { free(list); return; }
+    }
+    save_store_column(col, list);
+    for (int k = 0; k < layers; k++) list[k]->flags &= ~CF_SAVE_DIRTY;
+    free(list);
+}
+
+void world_save_dirty(void) {
+    if (!W.active || !save_active()) return;
+    for (u32 i = 0; i < W.columns.cap; i++) {
+        Column *col = W.columns.vals[i] && W.columns.vals[i] != TOMB ? W.columns.vals[i] : NULL;
+        if (col && col->state == COLUMN_READY && column_is_dirty(col)) column_save(col);
+    }
+}
+
 static void column_unload(Column *col) {
+    if (col->state == COLUMN_READY && save_active() && column_is_dirty(col)) column_save(col);
     for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
         Chunk *c = ptrmap_get(&W.chunks, pack3(col->cx, cy, col->cz));
         if (!c) continue;

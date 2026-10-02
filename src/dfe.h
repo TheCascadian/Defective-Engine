@@ -466,6 +466,7 @@ void block_table_free(BlockNameTable *t);
 #define CF_HAS_MESH 16u
 #define CF_VIRTUAL 32u   /* no stored data, behaves as uniform air or filler */
 #define CF_MESHED_ONCE 64u
+#define CF_PERSISTENT 128u /* column is saved or edited, so light changes must reach the disk too */
 
 typedef struct MeshSlot {
     i32 page;       /* arena page, -1 when empty */
@@ -510,6 +511,8 @@ typedef struct WorldStats {
 
 void world_init(u64 seed);
 void world_shutdown(void);
+/* Writes every edited column. Called periodically and on exit. */
+void world_save_dirty(void);
 u64 world_seed(void);
 Chunk *world_chunk(int cx, int cy, int cz);
 Column *world_column(int cx, int cz);
@@ -545,6 +548,30 @@ size_t chunk_memory_bytes(const Chunk *c);
 u16 chunk_get_light(const Chunk *c, int idx);
 void chunk_set_light_from(Chunk *c, const u16 *flat);
 void chunk_set_light(Chunk *c, int idx, u16 light);
+
+/* ----------------------------------------------------------------- save.c */
+
+typedef struct SaveMeta {
+    bool has_player, flying;
+    double x, y, z, day_time;
+    float yaw, pitch;
+} SaveMeta;
+typedef struct SavedColumn {
+    int lo, hi;
+    u16 deep_state;
+    Chunk **chunks;
+} SavedColumn;
+/* Opens or creates a world folder. The seed argument is used only when the world is new. */
+bool save_open(const char *dir, u64 default_seed);
+bool save_active(void);
+u64 save_seed(void);
+SaveMeta *save_meta(void);
+/* Main thread: serialises the column now and writes it on a worker. */
+void save_store_column(const Column *col, Chunk *const *chunks);
+/* Worker-safe. Returns true and hands over freshly allocated chunks when the column was saved earlier. */
+bool save_load_column(int cx, int cz, SavedColumn *out);
+int save_jobs_inflight(void);
+void save_close(void);
 
 /* ---------------------------------------------------------------- light.c */
 

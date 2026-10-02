@@ -62,6 +62,7 @@ add_library(dfe_engine STATIC
   src/world.c
   src/light.c
   src/gen.c
+  src/save.c
   src/mesher.c
   src/scene.c
   src/selftest.c)

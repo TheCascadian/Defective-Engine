@@ -20,6 +20,7 @@
 #define DFE_API_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -63,8 +64,9 @@ typedef struct dfe_api_t {
 
     void (*log)(dfe_log_level level, const char *mod_id, const char *message);
 
-    /* Block lookup. block_state returns the default state of a namespaced name such as
-     * "base:stone", or DFE_STATE_UNLOADED when no loaded mod defines it. */
+    /* Block lookup. block_state takes a namespaced name such as "base:stone" and returns its default state, or
+     * DFE_STATE_UNLOADED when no loaded mod defines it. A state with properties is selected with a bracket
+     * suffix: "mymod:lamp[lit=on]" or "mymod:door[half=upper,open=false]". Unknown properties and values fail. */
     uint16_t (*block_state)(const char *name);
     const char *(*block_name)(uint16_t state);
 
@@ -81,6 +83,11 @@ typedef struct dfe_api_t {
     int (*register_command)(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id);
     /* Writes a line to the in-game console. */
     void (*console_print)(const char *message);
+
+    /* Added in API 1.1 (struct_size covers it when >= offsetof(dfe_api_t, state_string) + sizeof(void *)).
+     * Writes the canonical text of a state, such as "base:stone" or "mymod:lamp[lit=on]", into out. Returns false
+     * for an invalid state or when size is 0; the text is truncated to fit size. */
+    bool (*state_string)(uint16_t state, char *out, size_t size);
 } dfe_api_t;
 
 #ifdef __cplusplus

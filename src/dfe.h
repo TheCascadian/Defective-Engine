@@ -224,6 +224,7 @@ void window_swap(void);
 void window_set_cursor_captured(bool captured);
 void window_set_vsync(bool vsync);
 void window_set_fullscreen(bool fullscreen);
+void window_resize(int width, int height);
 void window_set_title(const char *title);
 bool key_down(int key);
 bool key_pressed(int key);
@@ -315,6 +316,22 @@ bool perf_gpu_available(void);
 float perf_gpu_latest_ms(GpuSection s);
 /* Prints the benchmark summary and writes the optional JSON and CSV files. */
 void perf_report(double wall_s, double cold_start_s);
+
+/* In-process benchmark matrix (bench.c): several preset and window size cases run one after another in one launch. */
+#define BENCH_PRESET_MAX 32 /* equals PRESET_ID_MAX, which is declared further down */
+typedef struct BenchCase { char preset[BENCH_PRESET_MAX]; int width, height; } BenchCase;
+/* Parses "preset:WxH,preset:WxH" and repeats the list `runs` times, run after run. Returns false with a message on
+ * stderr when the text is malformed or names an unknown preset. */
+bool bench_matrix_parse(const char *spec, int runs);
+int bench_case_total(void);
+const BenchCase *bench_case_at(int index);
+/* Switches settings and window size to the case. Leaves the world and camera to the caller. */
+void bench_case_apply(const BenchCase *c);
+/* perf.c: matrix output. One JSON array holds every case; a text line is printed per case. */
+void perf_matrix_begin(void);
+void perf_report_case(const BenchCase *c, int index, int total, double wall_s, double cold_start_s);
+void perf_matrix_end(void);
+void perf_reset_samples(void);
 bool screenshot_save_ppm(const char *path);
 
 /* ----------------------------------------------------------------- json.c */
@@ -1152,6 +1169,8 @@ typedef struct Options {
     char bench_label[64];     /* --bench-label: free text copied into the JSON so runs can be told apart */
     char bench_json[256];     /* --bench-json: summary of the run */
     char bench_csv[256];      /* --bench-csv: one row per frame */
+    char bench_matrix[512];   /* --bench-matrix: cases run in one launch, see bench.c */
+    int bench_runs;           /* --bench-runs: repetitions of the matrix, default 1 */
     int workers;             /* 0 = automatic */
     bool wireframe;
     bool allow_native;       /* load native plugins from mods */

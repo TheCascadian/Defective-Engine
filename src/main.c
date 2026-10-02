@@ -12,6 +12,8 @@ static void print_usage(void) {
          "  --bench-seconds N    benchmark duration (default 20)\n"
          "  --bench-json FILE    write the benchmark summary as JSON\n"
          "  --bench-csv FILE     write one row per benchmark frame\n"
+         "  --bench-matrix SPEC  run cases in one launch: preset:WxH,preset:WxH (seconds apply per case)\n"
+         "  --bench-runs N       repeat the matrix N times, run after run\n"
          "  --bench-label TEXT   free text stored in the JSON, to tell runs apart\n"
          "  --no-render          benchmark simulation and streaming without a GL context\n"
          "  --mods DIR           mods directory (default: ./mods or next to the executable)\n"
@@ -39,6 +41,7 @@ static bool parse_args(int argc, char **argv) {
     g_opt.width = 1280;
     g_opt.height = 720;
     g_opt.bench_seconds = 20;
+    g_opt.bench_runs = 1;
     snprintf(g_opt.world_name, sizeof g_opt.world_name, "world");
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -51,6 +54,8 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--bench-seconds") && has_val) g_opt.bench_seconds = atoi(argv[++i]);
         else if (!strcmp(a, "--bench-json") && has_val) snprintf(g_opt.bench_json, sizeof g_opt.bench_json, "%s", argv[++i]);
         else if (!strcmp(a, "--bench-csv") && has_val) snprintf(g_opt.bench_csv, sizeof g_opt.bench_csv, "%s", argv[++i]);
+        else if (!strcmp(a, "--bench-matrix") && has_val) { snprintf(g_opt.bench_matrix, sizeof g_opt.bench_matrix, "%s", argv[++i]); g_opt.benchmark = true; }
+        else if (!strcmp(a, "--bench-runs") && has_val) { g_opt.bench_runs = atoi(argv[++i]); if (g_opt.bench_runs < 1) g_opt.bench_runs = 1; }
         else if (!strcmp(a, "--bench-label") && has_val) snprintf(g_opt.bench_label, sizeof g_opt.bench_label, "%s", argv[++i]);
         else if (!strcmp(a, "--mods") && has_val) snprintf(g_opt.mods_dir, sizeof g_opt.mods_dir, "%s", argv[++i]);
         else if (!strcmp(a, "--world") && has_val) { snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]); g_opt.world_set = true; }
@@ -140,6 +145,9 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define AUTOSAVE_INTERVAL_S 30.0
 /* The first frames pay for shader and driver warm-up, which is not what a player sees in steady state. */
 #define BENCH_WARMUP_FRAMES 2
+/* Matrix cases follow one another in a warm process, so each discards its first second while the new size and
+ * preset settle (target reallocation, driver shader variants) before anything is recorded. */
+#define MATRIX_SETTLE_S 1.0
 /* Deterministic path so two benchmark runs sample the same view: time advances by a fixed step per frame.
  * The camera follows the terrain at constant clearance while travelling, which exercises streaming, meshing
  * and unloading the same way on every run. */
@@ -306,6 +314,20 @@ static void load_settings_for_run(void) {
     }
 }
 
+/* Moves to the next matrix case: new settings and size, the camera back at the start of the path, atmosphere back at
+ * its starting state, and the area around the start fully built so the case begins from the same view every time. */
+static void matrix_begin_case(Camera *cam, const BenchCase *c) {
+    bench_case_apply(c);
+    game_time_set(0);
+    atmosphere_init_state();
+    gfx_apply();
+    g_atmo.auto_weather = false;
+    if (g_opt.start_phase_set) atmosphere_set_phase(g_opt.start_phase);
+    benchmark_camera(cam, 0);
+    camera_update(cam, (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1));
+    load_world_around(cam, g_gfx.render_distance);
+}
+
 static int run_viewer(void) {
     bool gl = !g_opt.no_render;
     load_settings_for_run();
@@ -400,6 +422,16 @@ static int run_viewer(void) {
     for (int i = 0; i < g_opt.overlay_page; i++) overlay_cycle();
     double last = time_now_s(), bench_start = last;
     int frame = 0;
+    int case_index = 0;
+    double record_start = 0;
+    bool matrix = gl && g_opt.bench_matrix[0];
+    if (g_opt.bench_matrix[0] && !gl) { fprintf(stderr, "--bench-matrix measures rendering and cannot be combined with --no-render\n"); return 2; }
+    if (matrix) {
+        if (!bench_matrix_parse(g_opt.bench_matrix, g_opt.bench_runs)) return 2;
+        perf_matrix_begin();
+        matrix_begin_case(&cam, bench_case_at(0));
+        last = bench_start = time_now_s();
+    }
     double last_autosave = last, tick_accumulator = 0;
     while (gl ? !g_win.should_close : (time_now_s() - bench_start < g_opt.bench_seconds)) {
         double frame_start = time_now_s();
@@ -424,7 +456,18 @@ static int run_viewer(void) {
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);
-            if (gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
+            if (matrix && frame_start - bench_start >= g_opt.bench_seconds) {
+                perf_report_case(bench_case_at(case_index), case_index, bench_case_total(), time_now_s() - record_start, cold);
+                perf_reset_samples();
+                record_start = 0;
+                if (++case_index >= bench_case_total()) g_win.should_close = true;
+                else {
+                    matrix_begin_case(&cam, bench_case_at(case_index));
+                    frame = 0;
+                    last = bench_start = frame_start = time_now_s();
+                    dt = 0;
+                }
+            } else if (!matrix && gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
         } else if (play) {
             drive_player(&cam, dt);
             server_pump();
@@ -481,7 +524,9 @@ static int run_viewer(void) {
         double frame_ms = (time_now_s() - frame_start) * 1000.0;
         if (gl) overlay_frame(frame_ms / 1000.0, cpu_ms);
         if (gl) post_update_controller(frame_ms, frame_ms - cpu_ms);
-        if (g_opt.benchmark && frame > BENCH_WARMUP_FRAMES) {
+        bool settled = !matrix || frame_start - bench_start >= MATRIX_SETTLE_S;
+        if (settled && !record_start) record_start = frame_start;
+        if (g_opt.benchmark && frame > BENCH_WARMUP_FRAMES && settled) {
             FrameSample fs = {.frame_ms = (float)frame_ms, .cpu_ms = (float)cpu_ms, .stream_ms = (float)stream_ms,
                               .render_ms = (float)((cpu_end - render_start) * 1000.0), .swap_ms = (float)(frame_ms - cpu_ms),
                               .scale = post_scale(), .draw_calls = g_scene_stats.draw_calls, .uploads = g_scene_stats.uploads_this_frame,
@@ -491,8 +536,9 @@ static int run_viewer(void) {
         if (!gl) sleep_ms(1);
         frame++;
     }
+    if (matrix) perf_matrix_end();
     if (g_opt.benchmark) {
-        perf_report(time_now_s() - bench_start, cold);
+        if (!matrix) perf_report(time_now_s() - bench_start, cold);
         print_stream_report(cold);
     }
     if (persist) {

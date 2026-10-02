@@ -64,16 +64,18 @@ This flies a fixed path over seed 20240607 for 20 seconds (`--bench-seconds N` t
 ### The full matrix
 
 ```
-tools/perf_matrix.py --presets low,medium,high --sizes 1280x720,1920x1080 --seconds 30 --runs 3
+tools/perf_matrix.py --presets low,medium,high --sizes 1280x720,1920x1080 --seconds 10 --runs 3
 ```
 
-Run it from the repository root with a Release build. It starts one benchmark per preset and window size, repeats each `--runs` times, keeps the run with the median average frame rate, and prints one table. Results are saved as JSON in `perf_results/`. To compare a change with an earlier run:
+Run it from the repository root with a Release build. The whole matrix runs inside one launch of the engine (`--bench-matrix`): between cases the engine switches preset and window size, puts the camera back at the start of the path, resets the day cycle, waits for the world around the start to be built, and discards the first second before recording. It prints one line per case as it goes, then one table, keeping the run with the median average frame rate. Results are saved as JSON in `perf_results/`. The example above is 18 cases and takes about four minutes; `--seconds 5` halves that and is enough on a fast machine. To compare a change with an earlier run:
 
 ```
 tools/perf_matrix.py --presets low --sizes 1280x720 --baseline perf_results/<earlier>.json
 ```
 
-Close other applications first, and leave the machine plugged in with its power profile set to performance. The first run after a build is slower while the driver compiles shaders, which is why three runs are recommended.
+Because the process stays warm, the world and the driver's shader cache are already loaded after the first case. The matrix therefore measures steady-state rendering, which is what preset, size and shader changes affect. It understates streaming cost and says nothing about cold start. For those, add `--isolated`, which launches the engine for every run as the earlier versions of the tool did (about ten times slower), or use a single `--benchmark`.
+
+Some window managers clamp or ignore a resize request; tiling managers do. The table shows the size that was actually rendered. Close other applications first, and leave the machine plugged in with its power profile set to performance. The first case includes driver warm-up, so run at least `--runs 2` when comparing close results.
 
 ### Single run output options
 
@@ -81,6 +83,7 @@ Close other applications first, and leave the machine plugged in with its power 
 |--------|--------|
 | `--bench-json FILE` | Write the summary as JSON. |
 | `--bench-csv FILE` | Write one row per frame: total, CPU, stream, render submit, swap, GPU, per GPU section, render scale, draw calls, vertices, uploads. |
+| `--bench-matrix SPEC`, `--bench-runs N` | Run `preset:WxH,preset:WxH` cases in one launch, repeated N times run after run. `--bench-seconds` then applies per case and `--bench-json` receives an array. |
 | `--bench-label TEXT` | Free text copied into the JSON, for example the machine name. |
 | `--preset NAME`, `--render-distance N`, `--width N`, `--height N` | The configuration under test. |
 | `--render-scale S`, `--dynamic-res` | Fixed render scale from 0.4 to 1, or the dynamic controller. |

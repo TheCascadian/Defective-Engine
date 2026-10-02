@@ -2,11 +2,15 @@
 """Runs dfe --benchmark over presets and window sizes, prints one table and saves the JSON results.
 
 Run from the repository root:
-    tools/perf_matrix.py --presets low,medium --sizes 1280x720,1920x1080 --seconds 30 --runs 3
+    tools/perf_matrix.py --presets low,medium --sizes 1280x720,1920x1080 --seconds 10 --runs 3
+
+By default every case runs inside one launch of the engine (--bench-matrix), which removes the start-up and world
+loading time of a launch per case. The world and driver stay warm, so this measures steady-state rendering. Use
+--isolated to launch the engine for every run instead, which also captures cold start and streaming from nothing.
 Compare with an earlier run:
     tools/perf_matrix.py --baseline perf_results/20240607-120000.json
 """
-import argparse, json, os, statistics, subprocess, sys, tempfile, time
+import argparse, json, os, re, statistics, subprocess, sys, tempfile, time
 
 def run_one(exe, preset, size, seconds, extra, label):
     w, h = size.split("x")
@@ -22,6 +26,30 @@ def run_one(exe, preset, size, seconds, extra, label):
         sys.exit("benchmark produced no result; output tail:\n" + "\n".join((proc.stdout + proc.stderr).splitlines()[-15:]))
     finally:
         os.unlink(out)
+
+def run_fast(exe, presets, sizes, seconds, runs, extra, label):
+    """One launch for the whole matrix. Returns a list of per-case result lists, in case order."""
+    cases = [f"{p}:{s}" for p in presets for s in sizes]
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as t:
+        out = t.name
+    cmd = [exe, "--bench-matrix", ",".join(cases), "--bench-runs", str(runs), "--bench-seconds", str(seconds),
+           "--bench-json", out, "--bench-label", label] + extra
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    tail = []
+    for line in proc.stdout:
+        tail.append(line.rstrip())
+        if re.match(r"\[\d+/\d+\]", line):
+            print("  " + line.rstrip(), flush=True)
+    proc.wait()
+    try:
+        with open(out) as f:
+            flat = json.load(f)
+    except (OSError, ValueError):
+        sys.exit("benchmark produced no result; output tail:\n" + "\n".join(tail[-15:]))
+    finally:
+        os.unlink(out)
+    n = len(cases)
+    return [[flat[r * n + i] for r in range(runs)] for i in range(n)]
 
 def median_result(runs):
     """Picks the run with the median average fps so every number in the row comes from one real run."""
@@ -46,7 +74,8 @@ def main():
     ap.add_argument("--exe", default="build/dfe")
     ap.add_argument("--presets", default="low,medium,high")
     ap.add_argument("--sizes", default="1280x720")
-    ap.add_argument("--seconds", type=int, default=20)
+    ap.add_argument("--seconds", type=int, default=10, help="per case; each case also settles for one second first")
+    ap.add_argument("--isolated", action="store_true", help="launch the engine for every run (slower, includes cold start)")
     ap.add_argument("--runs", type=int, default=1, help="repeat each case and report the median run")
     ap.add_argument("--label", default="")
     ap.add_argument("--baseline", help="JSON file from an earlier run to compare against")
@@ -58,15 +87,26 @@ def main():
         with open(a.baseline) as f:
             base = {(r["preset"], r["width"], r["height"]): r for r in json.load(f)}
     results = []
-    print(HEADER)
-    for preset in a.presets.split(","):
-        for size in a.sizes.split(","):
-            runs = [run_one(a.exe, preset, size, a.seconds, a.extra, a.label) for _ in range(a.runs)]
+    presets, sizes = a.presets.split(","), a.sizes.split(",")
+    if not a.isolated:
+        grouped = run_fast(a.exe, presets, sizes, a.seconds, a.runs, a.extra, a.label)
+        print("\n" + HEADER)
+        for runs in grouped:
             r = median_result(runs)
             if a.runs > 1:
                 r["fps_spread"] = statistics.pstdev([x["fps_avg"] for x in runs])
             results.append(r)
             print(row(r, base.get((r["preset"], r["width"], r["height"]))), flush=True)
+    else:
+        print(HEADER)
+        for preset in presets:
+            for size in sizes:
+                runs = [run_one(a.exe, preset, size, a.seconds, a.extra, a.label) for _ in range(a.runs)]
+                r = median_result(runs)
+                if a.runs > 1:
+                    r["fps_spread"] = statistics.pstdev([x["fps_avg"] for x in runs])
+                results.append(r)
+                print(row(r, base.get((r["preset"], r["width"], r["height"]))), flush=True)
     print("\n" + results[0]["gl"])
     if a.save:
         os.makedirs(a.save, exist_ok=True)

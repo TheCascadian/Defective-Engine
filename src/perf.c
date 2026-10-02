@@ -200,9 +200,7 @@ static void print_text_report(const Summary *m) {
            verdict(m->hitches == 0), BUDGET_MEMORY_MB, verdict(m->peak_mb < BUDGET_MEMORY_MB), BUDGET_COLD_START_S, verdict(m->cold_s < BUDGET_COLD_START_S));
 }
 
-static void write_json(const Summary *m, const char *path) {
-    FILE *f = fopen(path, "w");
-    if (!f) { LOGW("cannot write %s; check that the folder exists and is writable", path); return; }
+static void write_json_object(FILE *f, const Summary *m) {
     fprintf(f, "{\n  \"label\": \"%s\",\n  \"gl\": \"%s\",\n", g_opt.bench_label, gl_info_string());
     fprintf(f, "  \"width\": %d, \"height\": %d, \"preset\": \"%s\", \"render_distance\": %d, \"far_chunks\": %d, \"workers\": %d, \"cores\": %d,\n",
             g_win.fb_width, g_win.fb_height, g_settings.preset, g_scene_cfg.render_distance, g_scene_cfg.far_chunks, jobs_worker_count(), cpu_count());
@@ -212,7 +210,57 @@ static void write_json(const Summary *m, const char *path) {
     fprintf(f, "  \"gpu_available\": %s, \"gpu_ms\": {\"total\": %.3f", P.ok ? "true" : "false", m->gpu_avg);
     for (int k = 0; k < GPU_SECTION_COUNT; k++) fprintf(f, ", \"%s\": %.3f", SECTION_NAME[k], m->section_avg[k]);
     fprintf(f, "},\n  \"peak_memory_mb\": %.1f, \"cold_start_s\": %.3f\n}\n", m->peak_mb, m->cold_s);
+}
+
+static void write_json(const Summary *m, const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { LOGW("cannot write %s; check that the folder exists and is writable", path); return; }
+    write_json_object(f, m);
     fclose(f);
+}
+
+/* ------------------------------------------------------------ matrix mode */
+
+static FILE *g_matrix_json;
+static int g_matrix_written;
+
+void perf_reset_samples(void) { P.count = 0; }
+
+void perf_matrix_begin(void) {
+    g_matrix_written = 0;
+    if (!g_opt.bench_json[0]) return;
+    g_matrix_json = fopen(g_opt.bench_json, "w");
+    if (!g_matrix_json) { LOGW("cannot write %s; check that the folder exists and is writable", g_opt.bench_json); return; }
+    fprintf(g_matrix_json, "[\n");
+}
+
+void perf_matrix_end(void) {
+    if (!g_matrix_json) return;
+    fprintf(g_matrix_json, "]\n");
+    fclose(g_matrix_json);
+    g_matrix_json = NULL;
+}
+
+static const char *largest_section(const Summary *m, double *ms) {
+    int best = 0;
+    for (int k = 1; k < GPU_SECTION_COUNT; k++) if (m->section_avg[k] > m->section_avg[best]) best = k;
+    *ms = m->section_avg[best];
+    return SECTION_NAME[best];
+}
+
+void perf_report_case(const BenchCase *c, int index, int total, double wall_s, double cold_start_s) {
+    if (!P.count) return;
+    Summary m;
+    summarise(&m, wall_s, cold_start_s);
+    double top_ms;
+    const char *top = largest_section(&m, &top_ms);
+    printf("[%d/%d] %-8s %dx%d rd %d  %8.1f fps  1%% low %7.1f  p99 %5.1f ms  max %5.1f ms  hitches %d  gpu %5.2f ms (%s %.2f)\n", index + 1, total, c->preset,
+           g_win.fb_width, g_win.fb_height, g_scene_cfg.render_distance, m.fps_avg, m.fps_low1, m.p99, m.max_ms, m.hitches, m.gpu_avg, top, top_ms);
+    fflush(stdout);
+    if (g_matrix_json) {
+        if (g_matrix_written++) fprintf(g_matrix_json, ",\n");
+        write_json_object(g_matrix_json, &m);
+    }
 }
 
 static void write_csv(const char *path) {

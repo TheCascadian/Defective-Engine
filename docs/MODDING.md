@@ -667,7 +667,7 @@ A reload that has an error does not break the running game: the previous shader 
 The engine targets a 2015 dual-core laptop with an Intel HD 520. A mod is judged by what it costs there.
 
 * Run `dfe --benchmark` with and without your mod (`--mods DIR` selects a mods folder) and compare. The report splits GPU time by pass (`opaque`, `cutout`, `sky`, `water`, `rain`, `ui`, `post`, `entity`), so a shader pack's cost shows in `post` or in the pass it replaced.
-* `tools/perf_matrix.py` runs presets and window sizes and compares against a saved baseline: `tools/perf_matrix.py --baseline perf_results/<earlier>.json -- --mods path/to/mods`.
+* `tools/perf_matrix.py` runs presets and window sizes in one launch and compares against a saved baseline: `tools/perf_matrix.py --baseline perf_results/<earlier>.json -- --mods path/to/mods`.
 * Budgets on the reference machine at the Low preset, 720p, render distance 8: 60 fps average, 1% low above 40, no frame above 25 ms, memory below 1.5 GB, cold start under 10 seconds.
 * Blocks cost vertices. A block with many model elements or a transparent texture costs more than a cube; prefer cubes and cutouts where the look allows it.
 * Entities cost two draw calls each. A few dozen are free; the limit of 256 exists so a runaway script cannot stall the frame.

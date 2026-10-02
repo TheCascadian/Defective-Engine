@@ -130,6 +130,20 @@ void window_set_vsync(bool vsync) {
     glfwSwapInterval(vsync ? 1 : 0);
 }
 
+#define RESIZE_WAIT_S 0.5
+/* Asks for a window size and waits briefly for the framebuffer to follow. A window manager may clamp or ignore the
+ * request (tiling managers do), so callers read g_win.fb_width afterwards instead of assuming the size. */
+void window_resize(int width, int height) {
+    if (g_win.fb_width == width && g_win.fb_height == height) return;
+    glfwSetWindowSize(g_glfw, width, height);
+    double deadline = time_now_s() + RESIZE_WAIT_S;
+    while (time_now_s() < deadline) {
+        window_poll();
+        if (g_win.fb_width == width && g_win.fb_height == height) break;
+        sleep_ms(5);
+    }
+}
+
 void window_set_fullscreen(bool fullscreen) {
     bool is_full = glfwGetWindowMonitor(g_glfw) != NULL;
     if (fullscreen == is_full) return;

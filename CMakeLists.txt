@@ -57,6 +57,13 @@ target_include_directories(dfe_third PUBLIC ${THIRD}/glad/include ${THIRD}/lz4 $
 add_library(dfe_engine STATIC
   src/base.c
   src/render.c
+  src/json.c
+  src/registry.c
+  src/world.c
+  src/light.c
+  src/gen.c
+  src/mesher.c
+  src/scene.c
   src/selftest.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)
 target_compile_options(dfe_engine PRIVATE ${DFE_WARN})

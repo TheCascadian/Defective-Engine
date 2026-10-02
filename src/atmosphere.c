@@ -161,6 +161,30 @@ int registry_load_atmosphere(void) {
     return data_error_count() - errors_before;
 }
 
+/* Re-reads the data file while keeping the running state (time, weather, smoothed values), so an edit shows up
+ * without the sky jumping. On any error the previous data stays in force. */
+int atmosphere_reload_data(void) {
+    Atmosphere old = g_atmo;
+    int errors = registry_load_atmosphere();
+    Atmosphere fresh = g_atmo;
+    if (errors || !fresh.loaded) {
+        g_atmo = old;
+        return errors ? errors : 1;
+    }
+    g_atmo = old;
+    g_atmo.day_length_s = fresh.day_length_s;
+    g_atmo.start_phase = fresh.start_phase;
+    g_atmo.cloud_altitude = fresh.cloud_altitude;
+    g_atmo.cloud_scale = fresh.cloud_scale;
+    g_atmo.cloud_speed = fresh.cloud_speed;
+    g_atmo.weather_min_s = fresh.weather_min_s;
+    g_atmo.weather_max_s = fresh.weather_max_s;
+    g_atmo.rain_share = fresh.rain_share;
+    memcpy(g_atmo.keys, fresh.keys, sizeof g_atmo.keys);
+    g_atmo.key_count = fresh.key_count;
+    return 0;
+}
+
 /* ------------------------------------------------------------- evaluation */
 
 static void sample_keys(const Atmosphere *a, float p, V3 *zenith, V3 *horizon, V3 *sky_light, float *ambient) {
@@ -388,6 +412,21 @@ bool atmosphere_gl_init(void) {
     glGenVertexArrays(1, &G.vao); /* core profile requires a bound VAO even when no attribute is read */
     G.cloud_tex = build_cloud_texture();
     G.ready = true;
+    return true;
+}
+
+bool atmosphere_gl_reload_shaders(void) {
+    Shader sky = {0}, rain = {0};
+    if (!shader_load(&sky, "sky", "assets/dfe/shaders/sky.vert", "assets/dfe/shaders/sky.frag", "#define PASS_SKY 1\n") ||
+        !shader_load(&rain, "rain", "assets/dfe/shaders/sky.vert", "assets/dfe/shaders/sky.frag", "#define PASS_RAIN 1\n")) {
+        if (sky.program) shader_destroy(&sky);
+        if (rain.program) shader_destroy(&rain);
+        return false;
+    }
+    shader_destroy(&G.sky);
+    shader_destroy(&G.rain);
+    G.sky = sky;
+    G.rain = rain;
     return true;
 }
 

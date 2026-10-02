@@ -53,7 +53,7 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--bench-csv") && has_val) snprintf(g_opt.bench_csv, sizeof g_opt.bench_csv, "%s", argv[++i]);
         else if (!strcmp(a, "--bench-label") && has_val) snprintf(g_opt.bench_label, sizeof g_opt.bench_label, "%s", argv[++i]);
         else if (!strcmp(a, "--mods") && has_val) snprintf(g_opt.mods_dir, sizeof g_opt.mods_dir, "%s", argv[++i]);
-        else if (!strcmp(a, "--world") && has_val) snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]);
+        else if (!strcmp(a, "--world") && has_val) { snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]); g_opt.world_set = true; }
         else if (!strcmp(a, "--seed") && has_val) { g_opt.seed = strtoull(argv[++i], NULL, 10); g_opt.seed_set = true; }
         else if (!strcmp(a, "--render-distance") && has_val) g_opt.render_distance = atoi(argv[++i]);
         else if (!strcmp(a, "--render-scale") && has_val) { g_opt.render_scale = (float)atof(argv[++i]); g_opt.render_scale_set = true; }
@@ -191,7 +191,7 @@ static void draw_selection_box(void) {
 /* Reads the keyboard and mouse into the player and mirrors the result into the camera. While a menu has the
  * input, the player still simulates (gravity, water) but receives no commands. */
 static void drive_player(Camera *cam, double dt) {
-    bool menu = console_open() || hud_inventory_open();
+    bool menu = console_open() || hud_inventory_open() || menu_is_open();
     PlayerInput in = {0};
     if (!menu) {
         in.forward = (key_down(GLFW_KEY_W) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -220,6 +220,7 @@ static bool boot_content(bool with_gl) {
     registry_load_worldgen_config();
     registry_load_atmosphere();
     registry_load_presets();
+    registry_load_entities();
     if (data_error_count() > known_errors) {
         LOGE("%d content error(s) found; the first is: %s", data_error_count() - known_errors, data_error_text(known_errors));
         errors_screen("Game content has errors", false);
@@ -314,6 +315,7 @@ static int run_viewer(void) {
         debug_lines_init();
         perf_init();
         if (!post_init()) return 1;
+        if (!entity_gl_init()) return 1;
     }
     /* Mods that failed to resolve are excluded already; the player may continue without them. */
     if (data_error_count() > 0 && !errors_screen("Some mods could not be loaded", mods_find("base") && !mods_find("base")->failed)) return 1;
@@ -329,6 +331,9 @@ static int run_viewer(void) {
     u64 seed = g_opt.seed_set ? g_opt.seed : DEFAULT_SEED;
     /* Benchmarks use a fixed seed and must never read or write a player's world. */
     bool persist = !g_opt.benchmark;
+    /* The title screen is for interactive play only; scripted runs name their world or have no world at all. */
+    bool title = gl && persist && !g_opt.world_set && !g_opt.camera_set && !g_opt.screenshot_path[0] && !g_opt.hidden_window;
+    if (title && !menu_title(g_opt.world_name, sizeof g_opt.world_name, &seed, &g_opt.seed_set)) return 0;
     if (persist) {
         char dir[600];
         snprintf(dir, sizeof dir, "saves/%s", g_opt.world_name);
@@ -336,6 +341,7 @@ static int run_viewer(void) {
         seed = save_seed();
     }
     world_init(seed);
+    entity_world_init(seed);
     if (persist) game_time_set(save_meta()->day_time);
     atmosphere_init_state();
     gfx_apply();
@@ -402,13 +408,15 @@ static int run_viewer(void) {
         if (gl) {
             window_poll();
             console_update();
-            if (play && !console_open() && key_pressed(GLFW_KEY_E)) hud_set_inventory_open(!hud_inventory_open());
+            if (play && !console_open() && !menu_is_open() && key_pressed(GLFW_KEY_E)) hud_set_inventory_open(!hud_inventory_open());
             if (!console_open() && key_pressed(GLFW_KEY_ESCAPE)) {
-                if (hud_inventory_open()) hud_set_inventory_open(false);
+                if (menu_is_open()) menu_back();
+                else if (hud_inventory_open()) hud_set_inventory_open(false);
+                else if (play) menu_set_open(true);
                 else if (g_in.cursor_captured) window_set_cursor_captured(false);
                 else g_win.should_close = true;
             }
-            if (!console_open() && !hud_inventory_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
+            if (!console_open() && !hud_inventory_open() && !menu_is_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
             if (key_pressed(GLFW_KEY_F5)) hot_reload_now();
@@ -424,8 +432,9 @@ static int run_viewer(void) {
         } else if (gl && !console_open()) {
             fly_camera(&cam, dt);
         }
+        if (!menu_is_open()) entity_update((float)dt);
         tick_accumulator = MIN(tick_accumulator + dt, GAME_TICK_DT * MAX_TICKS_PER_FRAME);
-        while (tick_accumulator >= GAME_TICK_DT) { game_tick(); tick_accumulator -= GAME_TICK_DT; }
+        while (tick_accumulator >= GAME_TICK_DT) { if (!menu_is_open()) game_tick(); tick_accumulator -= GAME_TICK_DT; }
         cam.fov_y = g_gfx.fov_deg * DEG2RAD;
         cam.zfar = view_far_plane();
         camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
@@ -443,7 +452,7 @@ static int run_viewer(void) {
         if (gl) {
             perf_gpu_frame_begin();
             g_stats.draw_calls_last = 0;
-            atmosphere_update(dt, cam.pos);
+            atmosphere_update(menu_is_open() ? 0.0 : dt, cam.pos);
             post_begin_scene(&cam);
             glClearColor(g_atmo.fog_color.x, g_atmo.fog_color.y, g_atmo.fog_color.z, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -457,6 +466,7 @@ static int run_viewer(void) {
             ui_begin(g_win.width, g_win.height);
             if (play) hud_draw(g_win.width, g_win.height);
             overlay_draw();
+            menu_draw(g_win.width, g_win.height);
             console_draw(g_win.width, g_win.height);
             ui_end();
             perf_gpu_end();
@@ -510,6 +520,7 @@ static int run_viewer(void) {
     jobs_shutdown();
     if (gl) {
         scene_shutdown();
+        entity_gl_shutdown();
         post_shutdown();
         perf_shutdown();
         hud_shutdown();

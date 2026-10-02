@@ -448,6 +448,12 @@ void scene_render(const Camera *cam, double time_s) {
         if (translucent) {
             /* The sky goes in before blended surfaces so water over the horizon blends with it, and after the
              * opaque ones so the depth test skips every pixel the terrain covers. */
+            perf_gpu_begin(GPU_ENTITY);
+            float fog_start, fog_end;
+            fog_range(rd, &fog_start, &fog_end);
+            atmosphere_adjust_fog(&fog_start, &fog_end);
+            g_scene_stats.draw_calls += entity_draw(cam, fog_start, fog_end);
+            perf_gpu_end();
             perf_gpu_begin(GPU_SKY);
             atmosphere_draw_sky(cam, time_s);
             perf_gpu_end();

@@ -118,6 +118,23 @@ static void cmd_reload(const char *args, void *user) {
     console_print(hot_reload_now() ? "reloaded shaders, atmosphere and presets" : "reload had errors; the previous versions are still running, see the log");
 }
 
+static void cmd_entities(const char *args, void *user) {
+    (void)args; (void)user;
+    console_print("%d entity type(s), %d alive", entity_type_count(), entity_count());
+    for (int i = 0; i < entity_type_count(); i++) console_print("  %s (%s)", entity_type_at(i)->id, entity_type_at(i)->name);
+}
+
+/* Spawns in front of the player, or at the given coordinates. */
+static void cmd_spawn(const char *args, void *user) {
+    (void)user;
+    char type[80];
+    float x, y, z;
+    int n = sscanf(args, "%79s %f %f %f", type, &x, &y, &z);
+    if (n < 1) { console_print("usage: spawn <namespace:type> [x y z]"); return; }
+    V3 at = n >= 4 ? v3(x, y, z) : v3(g_player.pos.x - sinf(g_player.yaw) * 3.0f, g_player.pos.y + 1.0f, g_player.pos.z - cosf(g_player.yaw) * 3.0f);
+    console_print(entity_spawn(type, at) ? "spawned %s" : "could not spawn %s; see the log for the reason", type);
+}
+
 void console_init(void) {
     const dfe_api_t *api = api_get();
     api->register_command("help", "list every command", cmd_help, NULL, "engine");
@@ -125,7 +142,9 @@ void console_init(void) {
     api->register_command("seed", "show the world seed", cmd_seed, NULL, "engine");
     api->register_command("time", "time [set <name or 0..1>]", cmd_time, NULL, "engine");
     api->register_command("weather", "weather <clear|overcast|rain> [now]", cmd_weather, NULL, "engine");
-    api->register_command("reload", "reload shaders, atmosphere and presets without restarting", cmd_reload, NULL, "engine");
+    api->register_command("reload", "reload shaders, atmosphere, presets and entity types without restarting", cmd_reload, NULL, "engine");
+    api->register_command("entities", "list entity types and how many are alive", cmd_entities, NULL, "engine");
+    api->register_command("spawn", "spawn <namespace:type> [x y z]", cmd_spawn, NULL, "engine");
     api->register_command("lua", "run Lua in the console sandbox", cmd_lua, NULL, "engine");
     api->register_command("getblock", "getblock x y z", cmd_getblock, NULL, "engine");
     api->register_command("setblock", "setblock x y z name", cmd_setblock, NULL, "engine");

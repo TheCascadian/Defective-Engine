@@ -295,7 +295,7 @@ typedef struct FrameStats {
 extern FrameStats g_stats;
 
 /* perf.c: GPU pass timers, per-frame recording and the benchmark report. */
-typedef enum { GPU_OPAQUE, GPU_CUTOUT, GPU_SKY, GPU_WATER, GPU_RAIN, GPU_UI, GPU_POST, GPU_SECTION_COUNT } GpuSection;
+typedef enum { GPU_OPAQUE, GPU_CUTOUT, GPU_SKY, GPU_WATER, GPU_RAIN, GPU_UI, GPU_POST, GPU_ENTITY, GPU_SECTION_COUNT } GpuSection;
 typedef struct FrameSample {
     float frame_ms, cpu_ms, stream_ms, render_ms, swap_ms, gpu_ms, scale;
     float gpu_section_ms[GPU_SECTION_COUNT];
@@ -778,6 +778,16 @@ bool settings_save(void);
 /* Recomputes g_gfx from the current preset and settings and pushes it to the scene and atmosphere. */
 void gfx_apply(void);
 
+/* menu.c: title screen, pause menu and settings screen. */
+bool menu_is_open(void);
+bool menu_quit_requested(void);
+void menu_set_open(bool open);
+/* Escape: settings go back to the pause menu, the pause menu resumes the game. */
+void menu_back(void);
+void menu_draw(int width, int height);
+/* Blocking title screen. Returns false when the player quit. The seed is set only for a new world. */
+bool menu_title(char *world_out, size_t cap, u64 *seed_out, bool *seed_set);
+
 /* post.c: offscreen target for dynamic resolution and light shafts. */
 bool post_init(void);
 void post_shutdown(void);
@@ -963,6 +973,7 @@ int script_error_count(void);
 typedef struct PlayerInput {
     float forward, strafe; /* -1..1 along the view direction and across it */
     bool jump, descend, sprint, toggle_fly;
+    float speed_scale;     /* multiplies the walking speed; 0 means 1, entities use it for slow or fast types */
 } PlayerInput;
 
 typedef struct Player {
@@ -970,6 +981,7 @@ typedef struct Player {
     V3 vel;
     float yaw, pitch;
     bool on_ground, in_water, head_in_water, flying, in_lava;
+    float half_width, height; /* collision box; set by player_init, entities override them */
 } Player;
 
 void player_init(Player *p, V3 feet);
@@ -978,9 +990,42 @@ V3 player_eye(const Player *p);
 void player_step(Player *p, const PlayerInput *in, float dt);
 /* True when a player box with its feet at `feet` overlaps a solid block or an unloaded column. */
 bool player_box_blocked(V3 feet);
+/* The same test for a box of any size, used by entities. */
+bool box_blocked(V3 feet, float half_width, float height);
 /* Dry land close to the origin, found from the height function so it works before any chunk exists. */
 V3 player_find_spawn(void);
 extern Player g_player;
+
+/* ---------------------------------------------------------------- entity.c */
+
+#define MAX_ENTITY_TYPES 64
+#define MAX_ENTITIES 256
+typedef struct EntityType {
+    char id[64];             /* namespace:file, for example base:hopper */
+    char name[48];
+    float width, height;     /* collision box in blocks */
+    float color[3], accent[3]; /* body and head colour, 0..1 */
+    float speed;             /* multiplier of the player's walking speed */
+    bool wander;
+    float lifetime;          /* seconds, 0 for unlimited */
+} EntityType;
+
+int registry_load_entities(void);
+int entity_type_count(void);
+const EntityType *entity_type_at(int i);
+/* Returns a handle (>0), or 0 with a warning when the type is unknown or the entity limit is reached. */
+int entity_spawn(const char *type_id, V3 pos);
+bool entity_remove(int id);
+bool entity_position(int id, V3 *out);
+int entity_count(void);
+void entity_clear(void);
+void entity_world_init(u64 seed);
+void entity_update(float dt);
+bool entity_gl_init(void);
+bool entity_reload_shaders(void);
+void entity_gl_shutdown(void);
+/* Draws every entity the fog leaves visible and returns the number of draw calls issued. */
+int entity_draw(const Camera *cam, float fog_start, float fog_end);
 
 /* ----------------------------------------------------------- inventory.c */
 
@@ -1098,6 +1143,7 @@ typedef struct Options {
     char world_name[64];
     u64 seed;
     bool seed_set;
+    bool world_set;          /* --world was given: skip the title screen */
     int render_distance;
     char preset[16];         /* --preset: empty keeps the saved choice */
     char screenshot_path[256];

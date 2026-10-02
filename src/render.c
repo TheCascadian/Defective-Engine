@@ -177,7 +177,7 @@ static bool ss_add_file(ShaderSource *ss, const char *vpath, int depth) {
     const char *owner = "?";
     char *src = (char *)vfs_read(vpath, &size, &owner);
     if (!src) {
-        LOGE("Shader file '%s' was not found in any mod. Create it under a mod's shaders/ folder or remove the #include that references it.", vpath);
+        LOGE("Shader file '%s' was not found in any mod. Create it under a mod's assets/<namespace>/shaders folder or remove the #include that references it.", vpath);
         return false;
     }
     if (ss->file_count >= SHADER_MAX_FILES) { free(src); LOGE("Shader '%s' includes too many files (limit %d).", vpath, SHADER_MAX_FILES); return false; }
@@ -198,7 +198,7 @@ static bool ss_add_file(ShaderSource *ss, const char *vpath, int depth) {
             char *q1 = memchr(p, '"', n);
             char *q2 = q1 ? memchr(q1 + 1, '"', n - (size_t)(q1 - p) - 1) : NULL;
             if (!q1 || !q2 || depth >= SHADER_INCLUDE_DEPTH) {
-                LOGE("%s:%d: malformed or too deeply nested #include. Write it as #include \"shaders/name.glsl\" and keep nesting under %d levels.", label, line, SHADER_INCLUDE_DEPTH);
+                LOGE("%s:%d: malformed or too deeply nested #include. Write it as #include \"assets/dfe/shaders/name.glsl\" and keep nesting under %d levels.", label, line, SHADER_INCLUDE_DEPTH);
                 free(src);
                 return false;
             }
@@ -341,7 +341,7 @@ static struct {
 } g_ui;
 
 bool ui_init(void) {
-    if (!shader_load(&g_ui.shader, "ui", "shaders/ui.vert", "shaders/ui.frag", NULL)) return false;
+    if (!shader_load(&g_ui.shader, "ui", "assets/dfe/shaders/ui.vert", "assets/dfe/shaders/ui.frag", NULL)) return false;
     glGenVertexArrays(1, &g_ui.vao);
     glGenBuffers(1, &g_ui.vbo);
     glBindVertexArray(g_ui.vao);
@@ -367,9 +367,9 @@ void ui_shutdown(void) {
 bool ui_load_font(void) {
     size_t size;
     const char *owner;
-    u8 *ttf = vfs_read("assets/fonts/ui.ttf", &size, &owner);
+    u8 *ttf = vfs_read("assets/dfe/fonts/ui.ttf", &size, &owner);
     if (!ttf) {
-        LOGE("UI font assets/fonts/ui.ttf not found in any mod. Add a TrueType file at that path in a resource mod.");
+        LOGE("UI font assets/dfe/fonts/ui.ttf not found in any mod. Add a TrueType file at that path in a resource mod.");
         return false;
     }
     u8 *bitmap = xcalloc(FONT_ATLAS_SIZE * FONT_ATLAS_SIZE, 1);
@@ -624,7 +624,7 @@ static struct {
 } g_dl;
 
 void debug_lines_init(void) {
-    if (!shader_load(&g_dl.shader, "debug_line", "shaders/debug_line.vert", "shaders/debug_line.frag", NULL)) return;
+    if (!shader_load(&g_dl.shader, "debug_line", "assets/dfe/shaders/debug_line.vert", "assets/dfe/shaders/debug_line.frag", NULL)) return;
     glGenVertexArrays(1, &g_dl.vao);
     glGenBuffers(1, &g_dl.vbo);
     glBindVertexArray(g_dl.vao);

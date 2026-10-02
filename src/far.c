@@ -10,6 +10,13 @@
  * covered fragments. Rejected: a depth offset alone (water planes would paint over the seabed) and a fixed
  * circular cutoff (leaves holes while chunks are still streaming in).
  *
+ * Ocean needs special care. A flat water plane that starts where the chunk ring ends leaves a gap: looking
+ * across the ring edge one sees through the cut end of the water volume, between the sea bed and the plane,
+ * into the sky. Ocean vertices therefore carry the real sea bed height, and the vertex shader raises them to
+ * the surface over WATER_RAMP_BLOCKS beyond the ring, so the surface is continuous from the near sea bed out to
+ * a correct horizon line. Rejected: skirts (the ring edge is inside a tile, not on its border) and drawing the
+ * plane over the ring (it would paint over the near sea bed).
+ *
  * Rejected: several LODs per tile. One resolution keeps the code and the draw count small and the far layer
  * is always fogged by the time its triangles get large on screen. */
 #include "dfe.h"
@@ -25,6 +32,7 @@
 #define RESCAN_FRAMES 20
 #define FAR_DROP_BLOCKS 3.0f
 #define FAR_WATER_DROP_BLOCKS 0.6f
+#define WATER_RAMP_BLOCKS 192.0f /* distance over which the sea bed rises to the surface beyond the chunk ring */
 #define COLOR_JITTER 0.05f
 #define DEEP_WATER_DEPTH 40.0f
 static const float SHALLOW_WATER[3] = {0.16f, 0.38f, 0.58f};
@@ -34,7 +42,7 @@ typedef struct FarVertex {
     i16 height;   /* blocks * HEIGHT_UNITS_PER_BLOCK */
     u8 r, g, b;
     i8 nx, nz;
-    u8 pad;
+    u8 water; /* 255 for ocean vertices: height is then the sea bed and the shader lifts it towards the surface */
 } FarVertex;
 
 typedef struct FarTile {
@@ -139,11 +147,15 @@ static void far_job_run(void *data, int worker) {
             float dz = (h[(z + 2) * SIDE + x + 1] - h[z * SIDE + x + 1]) / (2.0f * CELL_BLOCKS);
             float inv = 1.0f / sqrtf(dx * dx + 1.0f + dz * dz);
             FarVertex *v = &j->verts[z * TILE_VERTS_SIDE + x];
+            v->water = 0;
             float top = hc, r, g, b;
+            bool flat_normal = false; /* water is level, whatever the sea bed does */
             if (hc < (float)sea) {
                 float m = water_depth_mix((float)sea - hc);
                 r = lerpf(SHALLOW_WATER[0], DEEP_WATER[0], m); g = lerpf(SHALLOW_WATER[1], DEEP_WATER[1], m); b = lerpf(SHALLOW_WATER[2], DEEP_WATER[2], m);
-                top = (float)sea - FAR_WATER_DROP_BLOCKS;
+                top = hc - FAR_DROP_BLOCKS;
+                flat_normal = true;
+                v->water = 255;
             } else {
                 u32 col = gen_far_color_at((float)wx, (float)wz, hc);
                 float jitter = 1.0f + (hash_to_unit(hash3(7, wx, 0, wz)) - 0.5f) * 2.0f * COLOR_JITTER;
@@ -156,10 +168,11 @@ static void far_job_run(void *data, int worker) {
             v->r = (u8)CLAMP((int)(r * 255.0f), 0, 255);
             v->g = (u8)CLAMP((int)(g * 255.0f), 0, 255);
             v->b = (u8)CLAMP((int)(b * 255.0f), 0, 255);
-            v->nx = (i8)CLAMP((int)(-dx * inv * 127.0f), -127, 127);
-            v->nz = (i8)CLAMP((int)(-dz * inv * 127.0f), -127, 127);
+            v->nx = flat_normal ? 0 : (i8)CLAMP((int)(-dx * inv * 127.0f), -127, 127);
+            v->nz = flat_normal ? 0 : (i8)CLAMP((int)(-dz * inv * 127.0f), -127, 127);
             if (top < j->ymin) j->ymin = top;
             if (top > j->ymax) j->ymax = top;
+            if (v->water && (float)sea - FAR_WATER_DROP_BLOCKS > j->ymax) j->ymax = (float)sea - FAR_WATER_DROP_BLOCKS;
         }
     free(h);
 }
@@ -184,6 +197,8 @@ static void far_job_complete(void *data) {
         glVertexAttribIPointer(0, 1, GL_SHORT, sizeof(FarVertex), (void *)offsetof(FarVertex, height));
         glVertexAttribPointer(1, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, r));
         glVertexAttribPointer(2, 2, GL_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, nx));
+        glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(FarVertex), (void *)offsetof(FarVertex, water));
+        glEnableVertexAttribArray(3);
         glEnableVertexAttribArray(0);
         glEnableVertexAttribArray(1);
         glEnableVertexAttribArray(2);
@@ -300,6 +315,9 @@ void far_render(const Camera *cam, double time_s, int rd, int far_chunks, const 
     glUniform1f(shader_uniform(sh, "u_height_scale"), 1.0f / HEIGHT_UNITS_PER_BLOCK);
     glUniform1f(shader_uniform(sh, "u_cell"), (float)CELL_BLOCKS);
     glUniform1i(shader_uniform(sh, "u_side"), TILE_VERTS_SIDE);
+    glUniform1f(shader_uniform(sh, "u_sea"), (float)gen_sea_level() - FAR_WATER_DROP_BLOCKS);
+    glUniform1f(shader_uniform(sh, "u_ramp_start"), (float)(rd * CHUNK_SIZE));
+    glUniform1f(shader_uniform(sh, "u_ramp_end"), (float)(rd * CHUNK_SIZE) + WATER_RAMP_BLOCKS);
     glUniform3f(shader_uniform(sh, "u_sun_dir"), fog->sun.x, fog->sun.y, fog->sun.z);
     glUniform3f(shader_uniform(sh, "u_sky_color"), fog->sky.x, fog->sky.y, fog->sky.z);
     glUniform3f(shader_uniform(sh, "u_fog_color"), fog->color.x, fog->color.y, fog->color.z);

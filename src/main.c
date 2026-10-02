@@ -222,6 +222,28 @@ static double load_world_around(const Camera *cam, int rd) {
     return time_now_s() - t0;
 }
 
+static void overlay_world_page(float x, float y) {
+    WorldStats w;
+    world_stats(&w);
+    overlay_text_line(&x, &y, "columns %d (pending %d, missing %d)  chunks %d", w.columns_loaded, w.columns_pending, w.columns_missing, w.chunks_loaded);
+    overlay_text_line(&x, &y, "meshed %d  unmeshed %d  mesh pending %d  light queue %d", w.chunks_meshed, w.chunks_unmeshed, w.mesh_pending, w.light_queue);
+    overlay_text_line(&x, &y, "visible %d  frustum culled %d  drawn O/C/T %d/%d/%d", g_scene_stats.chunks_visible, g_scene_stats.chunks_culled_frustum,
+                      g_scene_stats.chunks_drawn[0], g_scene_stats.chunks_drawn[1], g_scene_stats.chunks_drawn[2]);
+    overlay_text_line(&x, &y, "arena %d page(s) %.1f MB  verts drawn %llu", g_scene_stats.arena_pages, g_scene_stats.arena_used_mb,
+                      (unsigned long long)g_scene_stats.vertices_drawn);
+    overlay_text_line(&x, &y, "uploads this frame %d", g_scene_stats.uploads_this_frame);
+}
+
+static void overlay_jobs_page(float x, float y) {
+    static const char *names[JOB_KIND_COUNT] = {"gen", "light", "mesh", "save", "far", "other"};
+    overlay_text_line(&x, &y, "workers %d  queued %d  in flight %d", jobs_worker_count(), jobs_queued(), jobs_in_flight());
+    for (int k = 0; k < JOB_KIND_COUNT; k++) {
+        JobKindStats st = jobs_stats(k);
+        if (!st.count) continue;
+        overlay_text_line(&x, &y, "%-6s n %llu  avg %.2f ms  max %.2f ms", names[k], (unsigned long long)st.count, st.total_s / (double)st.count * 1000.0, st.max_s * 1000.0);
+    }
+}
+
 static int run_viewer(void) {
     bool gl = !g_opt.no_render;
     if (gl) {
@@ -234,6 +256,10 @@ static int run_viewer(void) {
     if (gl && !scene_init()) return 1;
     u64 seed = g_opt.seed_set ? g_opt.seed : DEFAULT_SEED;
     world_init(seed);
+    if (gl) {
+        overlay_add_page("world", overlay_world_page);
+        overlay_add_page("jobs", overlay_jobs_page);
+    }
     int rd = render_distance_for_preset();
     g_scene_cfg.render_distance = rd;
     g_scene_cfg.wireframe = g_opt.wireframe;

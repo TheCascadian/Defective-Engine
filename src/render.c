@@ -598,9 +598,14 @@ static void overlay_draw_graph(float x, float y, float w, float h) {
 void overlay_draw(void) {
     if (!g_ov.page) return;
     float x = 8, y = 6;
-    ui_rect(0, 0, 440, g_ov.page >= 3 ? 8 + OVERLAY_FONT_PX * 1.15f * 40 : 190, rgba(0, 0, 0, g_ov.page >= 3 ? 150 : 90));
+    ui_rect(0, 0, 440, g_ov.page >= 3 ? 8 + OVERLAY_FONT_PX * 1.15f * 40 : 205, rgba(0, 0, 0, g_ov.page >= 3 ? 150 : 90));
     overlay_text_line(&x, &y, "%.0f fps  frame %.2f ms  cpu %.2f ms", g_ov.fps_value, g_ov.frame_ms_last, g_ov.cpu_ms_last);
     overlay_text_line(&x, &y, "mem %.0f MB (peak %.0f MB)  draws %d", mem_current_rss_bytes() / 1048576.0, mem_peak_rss_bytes() / 1048576.0, g_stats.draw_calls_last);
+    if (perf_gpu_available()) {
+        float gpu = 0;
+        for (int k = 0; k < GPU_SECTION_COUNT; k++) gpu += perf_gpu_latest_ms((GpuSection)k);
+        overlay_text_line(&x, &y, "gpu %.2f ms  opaque %.2f cutout %.2f sky %.2f water %.2f", gpu, perf_gpu_latest_ms(GPU_OPAQUE), perf_gpu_latest_ms(GPU_CUTOUT), perf_gpu_latest_ms(GPU_SKY), perf_gpu_latest_ms(GPU_WATER));
+    }
     overlay_text_line(&x, &y, "jobs queued %d in flight %d workers %d", jobs_queued(), jobs_in_flight(), jobs_worker_count());
     overlay_text_line(&x, &y, "F3 cycles pages  [page %d/%d]", g_ov.page, 2 + g_ov.page_count);
     if (g_ov.page >= 2) {
@@ -658,13 +663,6 @@ void debug_lines_flush(const Camera *cam) {
 }
 
 /* ----------------------------------------------------------------- stats */
-
-void stats_record_frame(double dt_ms, double cpu_ms) {
-    if (g_stats.count >= (int)ARRAY_LEN(g_stats.frame_ms)) return;
-    g_stats.frame_ms[g_stats.count] = dt_ms;
-    g_stats.cpu_ms[g_stats.count] = cpu_ms;
-    g_stats.count++;
-}
 
 /* Developer aid used by automated visual checks: dumps the back buffer as a binary PPM. */
 bool screenshot_save_ppm(const char *path) {

@@ -448,24 +448,30 @@ void scene_render(const Camera *cam, double time_s) {
         if (translucent) {
             /* The sky goes in before blended surfaces so water over the horizon blends with it, and after the
              * opaque ones so the depth test skips every pixel the terrain covers. */
+            perf_gpu_begin(GPU_SKY);
             atmosphere_draw_sky(cam, time_s);
+            perf_gpu_end();
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(GL_FALSE);
         }
         /* Opaque surfaces go near to far so the depth test rejects hidden distant fragments early; blended ones
          * go far to near, and the distant tiles are all behind the real chunks. */
+        perf_gpu_begin(l == LAYER_OPAQUE ? GPU_OPAQUE : l == LAYER_CUTOUT ? GPU_CUTOUT : GPU_WATER);
         if (translucent) draw_lod_layer(cam, time_s, rd, l, true);
         set_pass_uniforms(&S.shader[l], cam, time_s, rd);
         draw_layer(l, translucent);
         if (!translucent) draw_lod_layer(cam, time_s, rd, l, false);
+        perf_gpu_end();
         if (translucent) {
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);
         }
     }
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    perf_gpu_begin(GPU_RAIN);
     atmosphere_draw_rain(cam, time_s);
+    perf_gpu_end();
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE0);
     g_scene_stats.arena_pages = S.page_count;

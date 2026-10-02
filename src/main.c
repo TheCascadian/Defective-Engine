@@ -10,6 +10,9 @@ static void print_usage(void) {
          "  --benchmark          fly the fixed camera path and print frame statistics\n"
          "  --selftest           run the engine self-tests and exit\n"
          "  --bench-seconds N    benchmark duration (default 20)\n"
+         "  --bench-json FILE    write the benchmark summary as JSON\n"
+         "  --bench-csv FILE     write one row per benchmark frame\n"
+         "  --bench-label TEXT   free text stored in the JSON, to tell runs apart\n"
          "  --no-render          benchmark simulation and streaming without a GL context\n"
          "  --mods DIR           mods directory (default: ./mods or next to the executable)\n"
          "  --world NAME         world to create or load\n"
@@ -44,6 +47,9 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--hidden")) g_opt.hidden_window = true;
         else if (!strcmp(a, "--no-render")) g_opt.no_render = true;
         else if (!strcmp(a, "--bench-seconds") && has_val) g_opt.bench_seconds = atoi(argv[++i]);
+        else if (!strcmp(a, "--bench-json") && has_val) snprintf(g_opt.bench_json, sizeof g_opt.bench_json, "%s", argv[++i]);
+        else if (!strcmp(a, "--bench-csv") && has_val) snprintf(g_opt.bench_csv, sizeof g_opt.bench_csv, "%s", argv[++i]);
+        else if (!strcmp(a, "--bench-label") && has_val) snprintf(g_opt.bench_label, sizeof g_opt.bench_label, "%s", argv[++i]);
         else if (!strcmp(a, "--mods") && has_val) snprintf(g_opt.mods_dir, sizeof g_opt.mods_dir, "%s", argv[++i]);
         else if (!strcmp(a, "--world") && has_val) snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]);
         else if (!strcmp(a, "--seed") && has_val) { g_opt.seed = strtoull(argv[++i], NULL, 10); g_opt.seed_set = true; }
@@ -127,6 +133,8 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define UPLOAD_BUDGET_S 0.003
 #define MAX_TICKS_PER_FRAME 5
 #define AUTOSAVE_INTERVAL_S 30.0
+/* The first frames pay for shader and driver warm-up, which is not what a player sees in steady state. */
+#define BENCH_WARMUP_FRAMES 2
 #define PRESET_RD_LOW 8
 #define PRESET_RD_MEDIUM 12
 #define PRESET_RD_HIGH 16
@@ -220,39 +228,6 @@ static void drive_player(Camera *cam, double dt) {
     server_set_focus(g_player.pos);
 }
 
-static void print_benchmark_report(double wall_s) {
-    int n = g_stats.count;
-    double *sorted = xmalloc((size_t)n * sizeof(double));
-    memcpy(sorted, g_stats.frame_ms, (size_t)n * sizeof(double));
-    double sum = 0;
-    for (int i = 0; i < n; i++) sum += sorted[i];
-    double avg_ms = n ? sum / n : 0;
-    /* One percent low is the mean fps of the slowest one percent of frames, the common definition. */
-    int worst_count = MAX(1, n / 100);
-    double worst_sum = 0;
-    double *tmp = xmalloc((size_t)n * sizeof(double));
-    memcpy(tmp, sorted, (size_t)n * sizeof(double));
-    for (int k = 0; k < worst_count; k++) {
-        int idx = 0;
-        for (int i = 1; i < n; i++) if (tmp[i] > tmp[idx]) idx = i;
-        worst_sum += tmp[idx];
-        tmp[idx] = -1;
-    }
-    double low1_fps = 1000.0 / (worst_sum / worst_count);
-    printf("\n=== benchmark ===\n");
-    printf("gl: %s\n", gl_info_string());
-    printf("frames: %d in %.2f s\n", n, wall_s);
-    printf("fps avg: %.1f   1%% low: %.1f\n", n / wall_s, low1_fps);
-    printf("frame ms  avg %.2f  p50 %.2f  p95 %.2f  p99 %.2f  max %.2f\n", avg_ms,
-           percentile_of(g_stats.frame_ms, n, 50), percentile_of(g_stats.frame_ms, n, 95),
-           percentile_of(g_stats.frame_ms, n, 99), percentile_of(g_stats.frame_ms, n, 100));
-    printf("cpu ms    avg %.2f  p99 %.2f\n", n ? sum / n : 0, percentile_of(g_stats.cpu_ms, n, 99));
-    printf("draw calls (last frame): %d\n", g_stats.draw_calls_last);
-    printf("peak memory: %.1f MB\n", mem_peak_rss_bytes() / 1048576.0);
-    free(sorted);
-    free(tmp);
-}
-
 static bool boot_content(bool with_gl) {
     registry_reset();
     int known_errors = data_error_count();
@@ -328,6 +303,7 @@ static int run_viewer(void) {
         if (!window_create("Defective Engine", g_opt.width, g_opt.height, !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
         if (!ui_init()) return 1;
         debug_lines_init();
+        perf_init();
     }
     /* Mods that failed to resolve are excluded already; the player may continue without them. */
     if (data_error_count() > 0 && !errors_screen("Some mods could not be loaded", mods_find("base") && !mods_find("base")->failed)) return 1;
@@ -441,13 +417,17 @@ static int run_viewer(void) {
         camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
 
         g_scene_stats.uploads_this_frame = 0;
+        double stream_start = time_now_s();
         world_stream(cam.pos, cam.forward, rd, false);
         jobs_pump(UPLOAD_BUDGET_S);
+        double stream_ms = (time_now_s() - stream_start) * 1000.0;
         if (persist && frame_start - last_autosave > AUTOSAVE_INTERVAL_S) {
             world_save_dirty();
             last_autosave = frame_start;
         }
+        double render_start = time_now_s();
         if (gl) {
+            perf_gpu_frame_begin();
             g_stats.draw_calls_last = 0;
             glViewport(0, 0, g_win.fb_width, g_win.fb_height);
             atmosphere_update(dt, cam.pos);
@@ -456,13 +436,16 @@ static int run_viewer(void) {
             scene_render(&cam, time_now_s() - bench_start);
             g_stats.draw_calls_last = g_scene_stats.draw_calls;
             if (play) { draw_selection_box(); debug_lines_flush(&cam); }
+            perf_gpu_begin(GPU_UI);
             ui_begin(g_win.width, g_win.height);
             if (play) hud_draw(g_win.width, g_win.height);
             overlay_draw();
             console_draw(g_win.width, g_win.height);
             ui_end();
+            perf_gpu_end();
         }
-        double cpu_ms = (time_now_s() - frame_start) * 1000.0;
+        double cpu_end = time_now_s();
+        double cpu_ms = (cpu_end - frame_start) * 1000.0;
         if (gl && g_opt.screenshot_path[0] && frame == g_opt.screenshot_frame) {
             screenshot_save_ppm(g_opt.screenshot_path);
             g_win.should_close = true;
@@ -470,12 +453,18 @@ static int run_viewer(void) {
         if (gl) window_swap();
         double frame_ms = (time_now_s() - frame_start) * 1000.0;
         if (gl) overlay_frame(frame_ms / 1000.0, cpu_ms);
-        if (g_opt.benchmark && frame > 2) stats_record_frame(frame_ms, cpu_ms);
+        if (g_opt.benchmark && frame > BENCH_WARMUP_FRAMES) {
+            FrameSample fs = {.frame_ms = (float)frame_ms, .cpu_ms = (float)cpu_ms, .stream_ms = (float)stream_ms,
+                              .render_ms = (float)((cpu_end - render_start) * 1000.0), .swap_ms = (float)(frame_ms - cpu_ms),
+                              .draw_calls = g_scene_stats.draw_calls, .uploads = g_scene_stats.uploads_this_frame,
+                              .vertices = (u32)g_scene_stats.vertices_drawn};
+            perf_record_frame(&fs);
+        }
         if (!gl) sleep_ms(1);
         frame++;
     }
     if (g_opt.benchmark) {
-        if (g_stats.count) print_benchmark_report(time_now_s() - bench_start);
+        perf_report(time_now_s() - bench_start, cold);
         print_stream_report(cold);
     }
     if (persist) {
@@ -503,6 +492,7 @@ static int run_viewer(void) {
     jobs_shutdown();
     if (gl) {
         scene_shutdown();
+        perf_shutdown();
         hud_shutdown();
         textures_destroy();
         ui_shutdown();

@@ -408,6 +408,172 @@ static void test_world_and_mesh(void) {
     test_light_column(stone);
 }
 
+
+/* ---------------------------------------------------------------- mods and scripting */
+
+#define MODS_ROOT "selftest_mods"
+static char g_made_files[64][300], g_made_dirs[64][300];
+static int g_made_file_n, g_made_dir_n;
+
+static void put_file(const char *mod, const char *rel, const char *text) {
+    char dir[260], path[300];
+    snprintf(dir, sizeof dir, "%s/%s", MODS_ROOT, mod);
+    char sub[200];
+    snprintf(sub, sizeof sub, "%s", rel);
+    char *slash = strrchr(sub, '/');
+    if (slash) { *slash = '\0'; snprintf(dir, sizeof dir, "%s/%s/%s", MODS_ROOT, mod, sub); }
+    dir_make_all(dir);
+    if (g_made_dir_n < 64) snprintf(g_made_dirs[g_made_dir_n++], 300, "%s", dir);
+    snprintf(path, sizeof path, "%s/%s/%s", MODS_ROOT, mod, rel);
+    file_write_atomic(path, text, strlen(text));
+    if (g_made_file_n < 64) snprintf(g_made_files[g_made_file_n++], 300, "%s", path);
+}
+
+static void put_manifest(const char *mod, const char *body) {
+    char text[600];
+    snprintf(text, sizeof text, "{\"id\": \"%s\", \"version\": \"1.0.0\", %s}", mod, body);
+    put_file(mod, "mod.json", text);
+}
+
+static void remove_made(void) {
+    for (int i = 0; i < g_made_file_n; i++) remove(g_made_files[i]);
+    for (int i = g_made_dir_n - 1; i >= 0; i--) remove(g_made_dirs[i]);
+    StrList l = {0};
+    dir_list(MODS_ROOT, &l);
+    for (int i = 0; i < l.n; i++) { char d[300]; snprintf(d, sizeof d, "%s/%s", MODS_ROOT, l.d[i]); remove(d); }
+    strlist_free(&l);
+    remove(MODS_ROOT);
+    g_made_file_n = g_made_dir_n = 0;
+}
+
+static int order_of(const char *id) { const ModInfo *m = mods_find(id); return m ? m->order : -2; }
+
+static bool last_log_contains(const char *needle) {
+    int n = log_history_count();
+    for (int i = n - 1; i >= 0 && i >= n - 6; i--) if (strstr(log_history_line(i, NULL), needle)) return true;
+    return false;
+}
+
+static void test_mod_resolution(void) {
+    put_manifest("base", "\"name\": \"B\"");
+    put_manifest("alpha", "\"depends\": [\"base>=1.0\"]");
+    put_manifest("beta", "\"depends\": [\"alpha^1.0\"]");
+    put_manifest("aardvark", "\"depends\": [\"base\"]");
+    put_manifest("gamma", "\"depends\": [\"alpha>=2.0\"]");
+    put_manifest("delta", "\"depends\": [\"nothing_here\"]");
+    put_manifest("epsilon", "\"depends\": [\"base\", \"?absent\"]");
+    put_manifest("cyc_a", "\"depends\": [\"cyc_b\"]");
+    put_manifest("cyc_b", "\"depends\": [\"cyc_a\"]");
+    put_manifest("late", "\"load_after\": [\"epsilon\"]");
+    put_manifest("dependsondelta", "\"depends\": [\"delta\"]");
+    put_manifest("futuristic", "\"api\": 99");
+    put_file("broken", "mod.json", "{\"id\": \"broken\", ");
+    put_file("off_mod", "mod.json", "{\"id\": \"off_mod\", \"version\": \"1.0.0\"}");
+    put_file(".", "mods.json", "{\"disabled\": [\"off_mod\"]}");
+    data_error_reset();
+    mods_reset();
+    mods_discover(MODS_ROOT);
+    mods_resolve();
+    CHECK(order_of("base") == 0);
+    CHECK(order_of("aardvark") > 0 && order_of("alpha") > 0 && order_of("beta") > order_of("alpha"));
+    CHECK(order_of("aardvark") < order_of("alpha"));      /* ties are broken by id */
+    CHECK(mods_find("off_mod")->disabled && order_of("off_mod") == -1);   /* mods.json switches it off */
+    CHECK(order_of("late") > order_of("epsilon"));         /* load_after is honoured */
+    CHECK(order_of("gamma") == -1 && mods_find("gamma")->failed);          /* version too old */
+    CHECK(order_of("delta") == -1 && mods_find("delta")->failed);          /* missing dependency */
+    CHECK(mods_find("dependsondelta")->failed);            /* failure cascades */
+    CHECK(mods_find("cyc_a")->failed && mods_find("cyc_b")->failed);       /* cycle is reported, not looped on */
+    CHECK(!mods_find("epsilon")->failed);                  /* optional dependency may be absent */
+    CHECK(mods_find("futuristic") == NULL);                /* wrong api never registers */
+    CHECK(data_error_count() >= 7);
+    bool named = false;
+    for (int i = 0; i < data_error_count(); i++) if (strstr(data_error_text(i), "[mod gamma]") && strstr(data_error_text(i), "mod.json")) named = true;
+    CHECK(named);
+    /* The same inputs give the same order on a second run. */
+    int first[16], n = mods_loaded_count();
+    for (int i = 0; i < n && i < 16; i++) first[i] = order_of(mods_loaded_at(i)->id);
+    mods_reset();
+    data_error_reset();
+    mods_discover(MODS_ROOT);
+    mods_resolve();
+    bool same = mods_loaded_count() == n;
+    for (int i = 0; same && i < n && i < 16; i++) same = order_of(mods_loaded_at(i)->id) == first[i];
+    CHECK(same);
+}
+
+static int g_tick_hits;
+static int native_tick(const dfe_event_t *ev, void *user) { (void)ev; (void)user; g_tick_hits++; return 0; }
+
+static void test_scripting(void) {
+    remove_made();
+    registry_reset();
+    put_manifest("base", "\"script\": \"scripts/main.lua\"");
+    put_file("base", "scripts/main.lua",
+             "local util = require('util')\n"
+             "if os or io or load or loadstring or dofile or require_missing or package or debug or ffi or jit or collectgarbage then error('sandbox leak') end\n"
+             "dfe.command('ping', 'test command', function(args) dfe.console('pong ' .. args .. util.suffix) end)\n"
+             "dfe.on('block_place', function(ev) return ev.x == 5 end)\n"
+             "ticks = 0\n"
+             "dfe.on('tick', function(ev) ticks = ticks + 1; if ticks == 2 then error('boom') end end)\n");
+    put_file("base", "scripts/util.lua", "return {suffix = '!'}\n");
+    put_manifest("looper", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("looper", "scripts/main.lua", "dfe.on('tick', function() end)\nwhile true do end\n");
+    put_manifest("syntax", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("syntax", "scripts/main.lua", "local x = = 1\n");
+    put_manifest("isolated", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("isolated", "scripts/main.lua", "if ticks ~= nil then error('globals leaked between mods') end\n");
+    put_manifest("memory", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("memory", "scripts/main.lua", "local s = 'x' for i = 1, 40 do s = s .. s end\n");
+    data_error_reset();
+    mods_reset();
+    events_clear_all();
+    mods_discover(MODS_ROOT);
+    mods_resolve();
+    CHECK(script_init());
+    int errors = script_load_mods();
+    CHECK(errors == 3); /* looper, syntax and memory fail; base and isolated load */
+    bool loop_named = false, syntax_named = false;
+    for (int i = 0; i < data_error_count(); i++) {
+        if (strstr(data_error_text(i), "[mod looper]") && strstr(data_error_text(i), "scripts/main.lua:2") && strstr(data_error_text(i), "instructions")) loop_named = true;
+        if (strstr(data_error_text(i), "[mod syntax]") && strstr(data_error_text(i), "scripts/main.lua:1")) syntax_named = true;
+    }
+    CHECK(loop_named && syntax_named);
+    command_run("ping hello");
+    CHECK(last_log_contains("pong hello!"));
+    dfe_event_t place = {.name = "block_place", .x = 5}, other = {.name = "block_place", .x = 6};
+    CHECK(event_fire(&place));
+    CHECK(!event_fire(&other));
+    /* A failing handler is reported once, then switched off. */
+    int before = script_error_count();
+    dfe_event_t tick = {.name = "tick", .dt = 0.05};
+    for (int i = 0; i < 5; i++) event_fire(&tick);
+    CHECK(script_error_count() == before + 1);
+    /* The looping mod's handler was removed with its failed script, so only native subscribers remain. */
+    g_tick_hits = 0;
+    api_get()->subscribe("tick", native_tick, NULL, "native_test");
+    event_fire(&tick);
+    CHECK(g_tick_hits == 1);
+    CHECK(api_get()->subscribe("no_such_event", native_tick, NULL, "native_test") == 0);
+    script_eval("1 + 2");
+    CHECK(last_log_contains("3"));
+    script_eval("os.exit(1)");
+    CHECK(last_log_contains("attempt"));
+    script_eval("while true do end");
+    CHECK(last_log_contains("instructions"));
+    script_shutdown();
+    events_clear_all();
+    mods_reset();
+    data_error_reset();
+    remove_made();
+}
+
+static void test_mods_and_scripts(void) {
+    remove_made();
+    test_mod_resolution();
+    remove_made();
+    test_scripting();
+}
+
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
@@ -417,6 +583,7 @@ int selftest_run(void) {
         {"registry", test_registry},
         {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
+        {"mods-scripts", test_mods_and_scripts},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {
         int before = g_failures;

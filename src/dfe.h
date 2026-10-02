@@ -721,7 +721,7 @@ typedef struct ModDep {
 } ModDep;
 
 typedef struct ModInfo {
-    char id[32], name[64], version[16], dir[512], manifest[560];
+    char id[32], name[64], version[16], dir[1100], manifest[1200];
     int ver[3];
     ModDep deps[MOD_MAX_DEPS];
     int dep_count;
@@ -763,7 +763,18 @@ int command_count(void);
 const char *command_name(int i);
 const char *command_help(int i);
 
+#define GAME_TICK_DT 0.05
+#define GAME_TICK_HZ 20
+double game_time_get(void);
+void game_time_set(double seconds);
+/* Advances simulated time by one fixed step and fires the "tick" event. */
+void game_tick(void);
+
 /* ------------------------------------------------------------ console.c */
+
+/* Shows the data error list until the player quits or, when can_continue, presses Enter. Without a window the
+ * list goes to stderr. Returns true when the game should go on. */
+bool errors_screen(const char *title, bool can_continue);
 
 void console_init(void);
 void console_print(const char *fmt, ...);

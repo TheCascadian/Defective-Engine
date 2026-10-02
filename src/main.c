@@ -19,6 +19,7 @@ static void print_usage(void) {
          "  --width W --height H window size\n"
          "  --workers N          worker thread count (default: cores minus one, at most 6)\n"
          "  --wireframe          draw chunk geometry as lines (also F4)\n"
+         "  --allow-native       load native plugins declared by mods (they run unsandboxed)\n"
          "  --camera X,Y,Z,YAW,PITCH  pin the start pose in degrees and freeze the benchmark path\n"
          "  --no-vsync           disable vertical sync\n"
          "  --hidden             create the window hidden\n"
@@ -51,6 +52,7 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--screenshot") && has_val) snprintf(g_opt.screenshot_path, sizeof g_opt.screenshot_path, "%s", argv[++i]);
         else if (!strcmp(a, "--screenshot-frame") && has_val) g_opt.screenshot_frame = atoi(argv[++i]);
         else if (!strcmp(a, "--wireframe")) g_opt.wireframe = true;
+        else if (!strcmp(a, "--allow-native")) g_opt.allow_native = true;
         else if (!strcmp(a, "--workers") && has_val) g_opt.workers = atoi(argv[++i]);
         else if (!strcmp(a, "--camera") && has_val) {
             float *c = g_opt.camera;
@@ -96,10 +98,12 @@ static bool setup_vfs(void) {
     snprintf(g_opt.mods_dir, sizeof g_opt.mods_dir, "%s", mods);
     vfs_reset();
     vfs_add_root(engine_assets, "dfe");
-    /* Milestone 1 mounts only the base mod directly; the mod loader replaces this. */
-    char base[600];
-    snprintf(base, sizeof base, "%s/base", mods);
-    vfs_add_root(base, "base");
+    /* Problems found here are kept in the data error list and shown once a window exists. */
+    data_error_reset();
+    mods_reset();
+    mods_discover(mods);
+    mods_resolve();
+    mods_mount();
     return true;
 }
 
@@ -109,6 +113,7 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define SPAWN_CLEARANCE 14.0f
 #define BENCH_SPEED 16.0f
 #define UPLOAD_BUDGET_S 0.003
+#define MAX_TICKS_PER_FRAME 5
 #define AUTOSAVE_INTERVAL_S 30.0
 #define PRESET_RD_LOW 8
 #define PRESET_RD_MEDIUM 12
@@ -197,11 +202,12 @@ static void print_benchmark_report(double wall_s) {
 
 static bool boot_content(bool with_gl) {
     registry_reset();
-    data_error_reset();
+    int known_errors = data_error_count();
     registry_load_blocks();
     registry_load_worldgen_config();
-    if (data_error_count() > 0) {
-        LOGE("%d content error(s) found; the first is: %s", data_error_count(), data_error_text(0));
+    if (data_error_count() > known_errors) {
+        LOGE("%d content error(s) found; the first is: %s", data_error_count() - known_errors, data_error_text(known_errors));
+        errors_screen("Game content has errors", false);
         return false;
     }
     if (with_gl && !textures_build()) return false;
@@ -269,8 +275,16 @@ static int run_viewer(void) {
         if (!ui_init()) return 1;
         debug_lines_init();
     }
+    /* Mods that failed to resolve are excluded already; the player may continue without them. */
+    if (data_error_count() > 0 && !errors_screen("Some mods could not be loaded", mods_find("base") && !mods_find("base")->failed)) return 1;
     jobs_init(worker_count_for_machine());
     if (!boot_content(gl)) return 1;
+    console_init();
+    mods_load_plugins(g_opt.allow_native);
+    script_init();
+    int before_scripts = data_error_count();
+    script_load_mods();
+    if (data_error_count() > before_scripts && !errors_screen("Some mod scripts failed", true)) return 1;
     if (gl && !scene_init()) return 1;
     u64 seed = g_opt.seed_set ? g_opt.seed : DEFAULT_SEED;
     /* Benchmarks use a fixed seed and must never read or write a player's world. */
@@ -282,6 +296,8 @@ static int run_viewer(void) {
         seed = save_seed();
     }
     world_init(seed);
+    if (persist) game_time_set(save_meta()->day_time);
+    { dfe_event_t ev = {.name = "world_load"}; event_fire(&ev); }
     if (gl) {
         overlay_add_page("world", overlay_world_page);
         overlay_add_page("jobs", overlay_jobs_page);
@@ -311,27 +327,30 @@ static int run_viewer(void) {
     for (int i = 0; i < g_opt.overlay_page; i++) overlay_cycle();
     double last = time_now_s(), bench_start = last;
     int frame = 0;
-    double last_autosave = last;
+    double last_autosave = last, tick_accumulator = 0;
     while (gl ? !g_win.should_close : (time_now_s() - bench_start < g_opt.bench_seconds)) {
         double frame_start = time_now_s();
         double dt = frame_start - last;
         last = frame_start;
         if (gl) {
             window_poll();
-            if (key_pressed(GLFW_KEY_ESCAPE)) {
+            console_update();
+            if (!console_open() && key_pressed(GLFW_KEY_ESCAPE)) {
                 if (g_in.cursor_captured) window_set_cursor_captured(false);
                 else g_win.should_close = true;
             }
-            if (g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
+            if (!console_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);
             if (gl && frame_start - bench_start >= g_opt.bench_seconds) g_win.should_close = true;
-        } else if (gl) {
+        } else if (gl && !console_open()) {
             fly_camera(&cam, dt);
         }
+        tick_accumulator = MIN(tick_accumulator + dt, GAME_TICK_DT * MAX_TICKS_PER_FRAME);
+        while (tick_accumulator >= GAME_TICK_DT) { game_tick(); tick_accumulator -= GAME_TICK_DT; }
         camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
 
         g_scene_stats.uploads_this_frame = 0;
@@ -350,6 +369,7 @@ static int run_viewer(void) {
             g_stats.draw_calls_last = g_scene_stats.draw_calls;
             ui_begin(g_win.width, g_win.height);
             overlay_draw();
+            console_draw(g_win.width, g_win.height);
             ui_end();
         }
         double cpu_ms = (time_now_s() - frame_start) * 1000.0;
@@ -373,9 +393,14 @@ static int run_viewer(void) {
         m->has_player = true;
         m->x = cam.pos.x; m->y = cam.pos.y; m->z = cam.pos.z;
         m->yaw = cam.yaw; m->pitch = cam.pitch;
+        m->day_time = game_time_get();
     }
+    { dfe_event_t ev = {.name = "world_unload"}; event_fire(&ev); }
     world_shutdown();
     save_close();
+    mods_unload_plugins();
+    script_shutdown();
+    events_clear_all();
     jobs_shutdown();
     if (gl) {
         scene_shutdown();

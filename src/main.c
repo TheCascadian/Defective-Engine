@@ -107,6 +107,15 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 #define PRESET_RD_LOW 8
 #define PRESET_RD_MEDIUM 12
 #define PRESET_RD_HIGH 16
+#define PRESET_FAR_LOW 14
+#define PRESET_FAR_MEDIUM 24
+#define PRESET_FAR_HIGH 40
+
+static int far_chunks_for_preset(void) {
+    if (!strcmp(g_opt.preset, "high")) return PRESET_FAR_HIGH;
+    if (!strcmp(g_opt.preset, "medium")) return PRESET_FAR_MEDIUM;
+    return PRESET_FAR_LOW;
+}
 
 static int render_distance_for_preset(void) {
     if (g_opt.render_distance > 0) return g_opt.render_distance;
@@ -274,8 +283,9 @@ static int run_viewer(void) {
     int rd = render_distance_for_preset();
     g_scene_cfg.render_distance = rd;
     g_scene_cfg.wireframe = g_opt.wireframe;
+    g_scene_cfg.far_chunks = gl ? far_chunks_for_preset() : 0;
 
-    Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2) * 32.0f};
+    Camera cam = {.pos = v3(0, 80, 0), .yaw = -1.5707963f, .pitch = -0.2f, .fov_y = 75.0f * DEG2RAD, .znear = 0.1f, .zfar = (float)(rd + 2 + (gl ? far_chunks_for_preset() : 0)) * 32.0f};
     if (g_opt.benchmark) benchmark_camera(&cam, 0);
     else if (persist && save_meta()->has_player) {
         const SaveMeta *m = save_meta();

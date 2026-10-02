@@ -529,6 +529,8 @@ void world_mark_neighbours_dirty(int cx, int cy, int cz);
 void world_stats(WorldStats *out);
 /* True once every column and mesh inside the render distance is built and lighting has settled. */
 bool world_ready(void);
+/* True when the column is generated and every chunk in it has been meshed at least once. */
+bool world_column_meshed(int cx, int cz);
 /* Materialises a chunk that currently only exists virtually so it can be edited. */
 Chunk *world_chunk_materialize(int cx, int cy, int cz);
 void world_each_chunk(void (*fn)(Chunk *c, void *user), void *user);
@@ -647,6 +649,7 @@ typedef struct SceneConfig {
     float fov_deg;
     bool occlusion_culling;
     bool wireframe;          /* debug view */
+    int far_chunks;          /* heightmap terrain beyond the render distance, in chunks, 0 disables */
 } SceneConfig;
 extern SceneConfig g_scene_cfg;
 
@@ -658,6 +661,7 @@ typedef struct SceneStats {
     int arena_pages;
     double arena_used_mb;
     int chunks_in_range, chunks_culled_frustum, chunks_culled_occlusion;
+    int far_tiles_drawn, far_tiles_total;
 } SceneStats;
 extern SceneStats g_scene_stats;
 
@@ -670,6 +674,17 @@ void scene_free_chunk(Chunk *c);
 void scene_render(const Camera *cam, double time_s);
 bool scene_reload_shaders(void);
 void scene_mesh_job_complete_hook(void);
+
+/* ------------------------------------------------------------------ far.c */
+
+typedef struct FarFog {
+    V3 sun, sky, color;   /* sun direction (towards the sun), sky light colour, fog colour */
+    float start, end;
+} FarFog;
+bool far_init(void);
+void far_shutdown(void);
+bool far_reload_shader(void);
+void far_render(const Camera *cam, double time_s, int rd, int far_chunks, const FarFog *fog);
 
 /* ------------------------------------------------------------ selftest.c */
 

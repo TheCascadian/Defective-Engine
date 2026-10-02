@@ -1,0 +1,11 @@
+{
+  "name": "High",
+  "render_distance": 16,
+  "far_chunks": 40,
+  "clouds": true,
+  "stars": true,
+  "light_shafts": true,
+  "dynamic_resolution": false,
+  "min_scale": 0.8,
+  "target_fps": 60
+}

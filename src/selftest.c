@@ -822,6 +822,35 @@ static double seconds_at_phase(const Atmosphere *a, float phase) {
     return (into - floor(into)) * a->day_length_s;
 }
 
+static void test_presets(void) {
+    data_error_reset();
+    CHECK(registry_load_presets() == 0);
+    CHECK(preset_count() >= 3);
+    const Preset *low = preset_find("low"), *high = preset_find("high");
+    CHECK(low && high && !preset_find("no_such_preset"));
+    if (!low || !high) return;
+    CHECK(low->render_distance < high->render_distance && low->far_chunks < high->far_chunks);
+    CHECK(!low->light_shafts && high->light_shafts);
+
+    /* The preset supplies the values; a setting overrides only its own field; an unknown preset falls back. */
+    bool no_render = g_opt.no_render;
+    g_opt.no_render = false;
+    settings_defaults();
+    snprintf(g_settings.preset, sizeof g_settings.preset, "high");
+    gfx_apply();
+    CHECK(g_gfx.render_distance == high->render_distance && g_gfx.light_shafts);
+    g_settings.render_distance = 5;
+    g_settings.dynamic_resolution = 1;
+    gfx_apply();
+    CHECK(g_gfx.render_distance == 5 && g_gfx.far_chunks == high->far_chunks && g_gfx.dynamic_resolution);
+    snprintf(g_settings.preset, sizeof g_settings.preset, "no_such_preset");
+    gfx_apply();
+    CHECK(!strcmp(g_settings.preset, "low") && g_gfx.far_chunks == low->far_chunks);
+    CHECK(g_gfx.target_ms > 10.0f && g_gfx.target_ms < 40.0f);
+    g_opt.no_render = no_render;
+    settings_defaults();
+}
+
 static void test_atmosphere(void) {
     data_error_reset();
     registry_load_atmosphere();
@@ -941,6 +970,7 @@ int selftest_run(void) {
         {"mods-scripts", test_mods_and_scripts},
         {"examples", test_example_mods},
         {"gameplay", test_gameplay},
+        {"presets", test_presets},
         {"atmosphere", test_atmosphere},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {

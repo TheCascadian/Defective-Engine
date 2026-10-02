@@ -59,6 +59,8 @@ add_library(dfe_engine STATIC
   src/base.c
   src/render.c
   src/perf.c
+  src/settings.c
+  src/post.c
   src/json.c
   src/registry.c
   src/world.c

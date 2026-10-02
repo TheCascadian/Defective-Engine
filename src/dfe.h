@@ -605,9 +605,20 @@ u16 gen_deep_state(void);
 /* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
 void gen_column(GenScratch *s, int cx, int cz, u16 *states);
 int gen_sea_level(void);
-/* Cheap analytic queries used by the far terrain layer. */
+/* Cheap analytic height, used by the distant-terrain tiles and the benchmark camera. */
 float gen_height_at(float x, float z);
-u32 gen_far_color_at(float x, float z, float height);
+
+/* Distant voxel tiles (lod.c): one 32 x 32 column of voxels, each 2^shift blocks wide, padded by one voxel on
+ * every side so the mesher can cull and shade borders without neighbour data. */
+#define LOD_PAD 34
+typedef struct GenLodGrid {
+    int top[LOD_PAD * LOD_PAD];      /* voxel index of the surface voxel */
+    u16 surf[LOD_PAD * LOD_PAD], sub[LOD_PAD * LOD_PAD];
+    int vmin, vmax;                  /* voxel index range inside the tile that holds any surface or water */
+} GenLodGrid;
+void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g);
+/* Fills a padded 34^3 state cube for vertical chunk cy of the tile, index ((y+1)*34 + (z+1))*34 + (x+1). */
+void gen_lod_fill(int shift, int cy, const GenLodGrid *g, u16 *states);
 
 /* -------------------------------------------------------------- mesher.c */
 
@@ -649,7 +660,7 @@ typedef struct SceneConfig {
     float fov_deg;
     bool occlusion_culling;
     bool wireframe;          /* debug view */
-    int far_chunks;          /* heightmap terrain beyond the render distance, in chunks, 0 disables */
+    int far_chunks;          /* voxel LOD terrain beyond the render distance, in chunks, 0 disables */
 } SceneConfig;
 extern SceneConfig g_scene_cfg;
 
@@ -661,7 +672,7 @@ typedef struct SceneStats {
     int arena_pages;
     double arena_used_mb;
     int chunks_in_range, chunks_culled_frustum, chunks_culled_occlusion;
-    int far_tiles_drawn, far_tiles_total;
+    int lod_tiles_drawn, lod_tiles_total;
 } SceneStats;
 extern SceneStats g_scene_stats;
 
@@ -671,20 +682,22 @@ void scene_resize(int w, int h);
 /* Uploads a finished mesh into the arena and swaps it with the previous one. */
 void scene_upload_mesh(Chunk *c, MeshOutput *out);
 void scene_free_chunk(Chunk *c);
+/* Arena access for other mesh owners. origin is {x, y, z, scale shift} in blocks. Slots must start with page -1. */
+void scene_upload_slots(MeshSlot slots[LAYER_COUNT], MeshOutput *out, const i32 origin[4]);
+void scene_release_slots(MeshSlot slots[LAYER_COUNT]);
 void scene_render(const Camera *cam, double time_s);
 bool scene_reload_shaders(void);
 void scene_mesh_job_complete_hook(void);
 
-/* ------------------------------------------------------------------ far.c */
+/* ------------------------------------------------------------------ lod.c */
 
-typedef struct FarFog {
-    V3 sun, sky, color;   /* sun direction (towards the sun), sky light colour, fog colour */
-    float start, end;
-} FarFog;
-bool far_init(void);
-void far_shutdown(void);
-bool far_reload_shader(void);
-void far_render(const Camera *cam, double time_s, int rd, int far_chunks, const FarFog *fog);
+bool lod_init(void);
+void lod_shutdown(void);
+/* Schedules tile builds, rebuilds the coverage texture and the per-layer draw lists (nearest tile first). */
+void lod_update(const Camera *cam, int rd, int far_chunks);
+const MeshSlot *const *lod_draw_list(int layer, int *count);
+/* Sets the coverage and sea-level uniforms of a chunk shader built with LOD defined. */
+void lod_set_uniforms(Shader *sh);
 
 /* ------------------------------------------------------------ selftest.c */
 

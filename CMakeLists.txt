@@ -65,7 +65,7 @@ add_library(dfe_engine STATIC
   src/save.c
   src/mesher.c
   src/scene.c
-  src/far.c
+  src/lod.c
   src/selftest.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)
 target_compile_options(dfe_engine PRIVATE ${DFE_WARN})

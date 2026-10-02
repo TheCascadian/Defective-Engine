@@ -28,7 +28,6 @@ typedef struct GenConfig {
     bool loaded;
     int sea_level, deep_level;
     u16 stone, deep, dirt, grass, sand, sandstone, gravel, snow, mud, water;
-    u32 far_color[BIOME_COUNT];
 } GenConfig;
 
 static GenConfig C;
@@ -57,14 +56,6 @@ static u16 role_block(const Json *roles, const char *role, const char *file, con
         return STATE_MISSING;
     }
     return b->default_state;
-}
-
-static u32 parse_color(const Json *v, u32 fallback) {
-    if (!v || v->type != JSON_ARRAY || json_len(v) < 3) return fallback;
-    u32 r = (u32)CLAMP((int)json_as_num(json_at(v, 0), 0), 0, 255);
-    u32 g = (u32)CLAMP((int)json_as_num(json_at(v, 1), 0), 0, 255);
-    u32 b = (u32)CLAMP((int)json_as_num(json_at(v, 2), 0), 0, 255);
-    return 0xFF000000u | (b << 16) | (g << 8) | r;
 }
 
 int registry_load_worldgen_config(void) {
@@ -115,9 +106,6 @@ int registry_load_worldgen_config(void) {
         C.mud = role_block(roles, "mud", rel, owner);
         C.water = role_block(roles, "water", rel, owner);
     }
-    static const char *const names[BIOME_COUNT] = {"ocean", "beach", "desert", "tundra", "swamp", "forest", "plains", "mountain"};
-    const Json *colors = json_get(root, "far_colors");
-    for (int i = 0; i < BIOME_COUNT; i++) C.far_color[i] = parse_color(colors ? json_get(colors, names[i]) : NULL, 0xFF808080u);
     C.loaded = data_error_count() == errors_before;
     json_free(root);
     return data_error_count() - errors_before;
@@ -244,17 +232,9 @@ static float cave_at(const GenScratch *s, int x, int ly, int z) {
 static float treeline_at(float x, float z) { return TREELINE + fnlGetNoise2D(&N.hills, x, z) * LINE_WOBBLE; }
 static float snowline_at(float x, float z) { return SNOWLINE + fnlGetNoise2D(&N.hills, x + 4096.0f, z - 4096.0f) * LINE_WOBBLE; }
 
-u32 gen_far_color_at(float x, float z, float height) {
-    Biome b = biome_at(x, z, height);
-    if (b != BIOME_MOUNTAIN) return C.far_color[b];
-    if (height > snowline_at(x, z)) return C.far_color[BIOME_TUNDRA];
-    if (height > treeline_at(x, z)) return C.far_color[BIOME_MOUNTAIN];
-    return C.far_color[BIOME_PLAINS];
-}
-
 /* Mountains are meadow below the tree line, rock above it and snow on the upper slopes; any biome shows bare
  * rock where the ground is steep, which is what makes cliffs and ridges read as mountain rather than as a
- * green heap. The same rules drive the far-terrain colour, apart from slope, so the two layers agree. */
+ * green heap. Distant voxel tiles use the same rules, so near and far terrain are made of the same blocks. */
 static u16 surface_block(Biome b, int y, float detail, bool steep, float treeline, float snowline) {
     if (steep && b != BIOME_OCEAN && b != BIOME_BEACH && b != BIOME_DESERT) return C.stone;
     switch (b) {
@@ -315,4 +295,69 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                 states[((size_t)ly << 10) | col] = st;
             }
         }
+}
+
+/* ------------------------------------------------------- distant voxel tiles */
+
+/* A tile of the distant-terrain LOD is one 32 x 32 column of voxels that are 2^shift blocks wide. Heights are the
+ * minimum over the voxel footprint, rounded down and then lowered by one voxel, so a tile never rises above the
+ * real terrain it overlaps: where the near and far layers overlap, the near one always wins and no far block
+ * pokes through. Caves, ores and plants are left out; they are invisible at these distances. */
+static void lod_sample_column(int shift, int vx, int vz, float *min_h, float *cx_out, float *cz_out) {
+    float s = (float)(1 << shift), lo = 1e9f;
+    static const float OFF[2] = {0.25f, 0.75f};
+    for (int a = 0; a < 2; a++)
+        for (int b = 0; b < 2; b++) lo = MIN(lo, gen_height_at(((float)vx + OFF[a]) * s, ((float)vz + OFF[b]) * s));
+    *min_h = lo;
+    *cx_out = ((float)vx + 0.5f) * s;
+    *cz_out = ((float)vz + 0.5f) * s;
+}
+
+void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
+    int s = 1 << shift, sea_top = (int)floorf((float)C.sea_level / (float)s);
+    float min_h[LOD_PAD * LOD_PAD];
+    Biome biome[LOD_PAD * LOD_PAD];
+    float wx[LOD_PAD * LOD_PAD], wz[LOD_PAD * LOD_PAD];
+    g->vmin = INT_MAX;
+    g->vmax = sea_top;
+    for (int zp = 0; zp < LOD_PAD; zp++)
+        for (int xp = 0; xp < LOD_PAD; xp++) {
+            int i = zp * LOD_PAD + xp;
+            lod_sample_column(shift, cx * CHUNK_SIZE + xp - 1, cz * CHUNK_SIZE + zp - 1, &min_h[i], &wx[i], &wz[i]);
+            biome[i] = biome_at(wx[i], wz[i], min_h[i]);
+            g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
+            if (xp >= 1 && xp <= CHUNK_SIZE && zp >= 1 && zp <= CHUNK_SIZE) {
+                g->vmin = MIN(g->vmin, g->top[i]);
+                g->vmax = MAX(g->vmax, g->top[i]);
+            }
+        }
+    for (int zp = 0; zp < LOD_PAD; zp++)
+        for (int xp = 0; xp < LOD_PAD; xp++) {
+            int i = zp * LOD_PAD + xp, step = 0;
+            for (int k = 0; k < 4; k++) {
+                int nx = CLAMP(xp + (k == 0) - (k == 1), 0, LOD_PAD - 1), nz = CLAMP(zp + (k == 2) - (k == 3), 0, LOD_PAD - 1);
+                step = MAX(step, abs(g->top[nz * LOD_PAD + nx] - g->top[i]));
+            }
+            float detail = fnlGetNoise2D(&N.detail, wx[i] * 3.1f, wz[i] * 3.1f);
+            float y = (float)((g->top[i] + 1) * s);
+            g->surf[i] = surface_block(biome[i], (int)y, detail, step >= STEEP_SLOPE, treeline_at(wx[i], wz[i]), snowline_at(wx[i], wz[i]));
+            g->sub[i] = subsurface_block(biome[i]);
+        }
+}
+
+void gen_lod_fill(int shift, int cy, const GenLodGrid *g, u16 *states) {
+    int s = 1 << shift, sea_top = (int)floorf((float)C.sea_level / (float)s);
+    for (int py = 0; py < LOD_PAD; py++) {
+        int vy = cy * CHUNK_SIZE + py - 1;
+        for (int zp = 0; zp < LOD_PAD; zp++)
+            for (int xp = 0; xp < LOD_PAD; xp++) {
+                int i = zp * LOD_PAD + xp, top = g->top[i];
+                u16 st;
+                if (vy > top) st = vy <= sea_top ? C.water : STATE_AIR;
+                else if (vy == top) st = g->surf[i];
+                else if (vy >= top - 1) st = g->sub[i];
+                else st = vy * s < C.deep_level ? C.deep : C.stone;
+                states[(py * LOD_PAD + zp) * LOD_PAD + xp] = st;
+            }
+    }
 }

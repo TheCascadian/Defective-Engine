@@ -28,6 +28,7 @@ static struct {
     int page_count;
     GLuint ibo;
     Shader shader[LAYER_COUNT];
+    Shader lod_shader[LAYER_COUNT];
     bool ready;
     u32 frame;
     u64 resident_granules;
@@ -38,6 +39,8 @@ static struct {
     Chunk **cell_chunk;
     u8 *cell_entry;
     size_t cell_cap;
+    const MeshSlot **slot_list;
+    int slot_cap;
     GLsizei *draw_count;
     const void **draw_index;
     GLint *draw_base;
@@ -129,17 +132,20 @@ static void slot_release(MeshSlot *slot) {
     slot->granules = 0;
 }
 
-void scene_free_chunk(Chunk *c) {
+void scene_release_slots(MeshSlot slots[LAYER_COUNT]) {
     if (!S.ready) return;
-    for (int l = 0; l < LAYER_COUNT; l++) slot_release(&c->mesh[l]);
+    for (int l = 0; l < LAYER_COUNT; l++) slot_release(&slots[l]);
+}
+
+void scene_free_chunk(Chunk *c) {
+    scene_release_slots(c->mesh);
     c->flags &= ~CF_HAS_MESH;
 }
 
-void scene_upload_mesh(Chunk *c, MeshOutput *out) {
+void scene_upload_slots(MeshSlot slots[LAYER_COUNT], MeshOutput *out, const i32 origin[4]) {
     if (!S.ready) return;
-    bool any = false;
     for (int l = 0; l < LAYER_COUNT; l++) {
-        MeshSlot old = c->mesh[l];
+        MeshSlot old = slots[l];
         MeshSlot fresh = {.page = -1};
         u32 n = out->count[l];
         if (n) {
@@ -149,21 +155,23 @@ void scene_upload_mesh(Chunk *c, MeshOutput *out) {
                 Page *p = &S.pages[fresh.page];
                 glBindBuffer(GL_ARRAY_BUFFER, p->vbo);
                 glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)fresh.first * sizeof(MeshVertex), (GLsizeiptr)n * sizeof(MeshVertex), out->verts[l]);
-                i32 origin[4] = {c->cx * CHUNK_SIZE, c->cy * CHUNK_SIZE, c->cz * CHUNK_SIZE, 0};
                 glBindBuffer(GL_TEXTURE_BUFFER, p->origin_buf);
                 for (u32 g = 0; g < granules; g++)
-                    glBufferSubData(GL_TEXTURE_BUFFER, (GLintptr)((fresh.first / MESH_GRANULE + g) * 4 * sizeof(i32)), sizeof origin, origin);
+                    glBufferSubData(GL_TEXTURE_BUFFER, (GLintptr)((fresh.first / MESH_GRANULE + g) * 4 * sizeof(i32)), 4 * sizeof(i32), origin);
                 g_scene_stats.upload_bytes_total += (u64)n * sizeof(MeshVertex);
-                any = true;
             }
         }
-        /* The old mesh is released only after the new one is resident, so a chunk never flickers empty. */
+        /* The old mesh is released only after the new one is resident, so nothing flickers empty. */
         slot_release(&old);
-        c->mesh[l] = fresh;
+        slots[l] = fresh;
     }
     g_scene_stats.uploads_this_frame++;
+}
+
+void scene_upload_mesh(Chunk *c, MeshOutput *out) {
+    i32 origin[4] = {c->cx * CHUNK_SIZE, c->cy * CHUNK_SIZE, c->cz * CHUNK_SIZE, 0};
+    scene_upload_slots(c->mesh, out, origin);
     c->flags |= CF_HAS_MESH;
-    (void)any;
 }
 
 /* ------------------------------------------------------------------ set up */
@@ -182,43 +190,51 @@ static bool build_index_buffer(void) {
     return true;
 }
 
-static bool load_shaders(Shader out[LAYER_COUNT]) {
+static bool load_shaders(Shader out[LAYER_COUNT], bool lod) {
     static const char *const defs[LAYER_COUNT] = {"#define PASS_OPAQUE 1\n", "#define PASS_CUTOUT 1\n", "#define PASS_TRANSLUCENT 1\n"};
     static const char *const names[LAYER_COUNT] = {"chunk_opaque", "chunk_cutout", "chunk_translucent"};
-    for (int l = 0; l < LAYER_COUNT; l++)
-        if (!shader_load(&out[l], names[l], "assets/dfe/shaders/chunk.vert", "assets/dfe/shaders/chunk.frag", defs[l])) return false;
+    static const char *const lod_names[LAYER_COUNT] = {"lod_opaque", "lod_cutout", "lod_translucent"};
+    for (int l = 0; l < LAYER_COUNT; l++) {
+        char d[96];
+        snprintf(d, sizeof d, "%s%s", defs[l], lod ? "#define LOD 1\n" : "");
+        if (!shader_load(&out[l], lod ? lod_names[l] : names[l], "assets/dfe/shaders/chunk.vert", "assets/dfe/shaders/chunk.frag", d)) return false;
+    }
     return true;
 }
 
 bool scene_init(void) {
     memset(&S, 0, sizeof S);
     if (!build_index_buffer()) return false;
-    if (!load_shaders(S.shader)) return false;
+    if (!load_shaders(S.shader, false) || !load_shaders(S.lod_shader, true)) return false;
     page_init(&S.pages[S.page_count++]);
-    if (!far_init()) return false;
+    if (!lod_init()) return false;
     S.ready = true;
     return true;
 }
 
 bool scene_reload_shaders(void) {
-    Shader fresh[LAYER_COUNT];
+    Shader fresh[2][LAYER_COUNT];
     memset(fresh, 0, sizeof fresh);
-    if (!load_shaders(fresh)) {
-        for (int l = 0; l < LAYER_COUNT; l++) if (fresh[l].program) shader_destroy(&fresh[l]);
+    if (!load_shaders(fresh[0], false) || !load_shaders(fresh[1], true)) {
+        for (int v = 0; v < 2; v++)
+            for (int l = 0; l < LAYER_COUNT; l++) if (fresh[v][l].program) shader_destroy(&fresh[v][l]);
         return false;
     }
-    for (int l = 0; l < LAYER_COUNT; l++) { shader_destroy(&S.shader[l]); S.shader[l] = fresh[l]; }
-    return far_reload_shader();
+    for (int l = 0; l < LAYER_COUNT; l++) {
+        shader_destroy(&S.shader[l]); S.shader[l] = fresh[0][l];
+        shader_destroy(&S.lod_shader[l]); S.lod_shader[l] = fresh[1][l];
+    }
+    return true;
 }
 
 void scene_shutdown(void) {
     if (!S.ready) return;
     for (int i = 0; i < S.page_count; i++) page_destroy(&S.pages[i]);
-    for (int l = 0; l < LAYER_COUNT; l++) shader_destroy(&S.shader[l]);
-    far_shutdown();
+    for (int l = 0; l < LAYER_COUNT; l++) { shader_destroy(&S.shader[l]); shader_destroy(&S.lod_shader[l]); }
+    lod_shutdown();
     glDeleteBuffers(1, &S.ibo);
     free(S.visible); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
-    free(S.draw_count); free(S.draw_index); free(S.draw_base);
+    free(S.slot_list); free(S.draw_count); free(S.draw_index); free(S.draw_base);
     memset(&S, 0, sizeof S);
 }
 
@@ -316,6 +332,12 @@ static void walk_visibility(const Camera *cam, int rd) {
 
 /* -------------------------------------------------------------------- draw */
 
+static void ensure_slot_list(int n) {
+    if (n <= S.slot_cap) return;
+    S.slot_cap = n * 2;
+    S.slot_list = xrealloc(S.slot_list, (size_t)S.slot_cap * sizeof(*S.slot_list));
+}
+
 static void ensure_draws(int n) {
     if (n <= S.draw_cap) return;
     S.draw_cap = n * 2;
@@ -324,12 +346,12 @@ static void ensure_draws(int n) {
     S.draw_base = xrealloc(S.draw_base, (size_t)S.draw_cap * sizeof(GLint));
 }
 
-static void draw_layer(int layer, bool reverse) {
+/* Draws a list of mesh slots of one layer, one multi-draw per arena page. */
+static void draw_slots(const MeshSlot *const *list, int count, int layer, bool reverse) {
     for (int pg = 0; pg < S.page_count; pg++) {
         int n = 0;
-        for (int k = 0; k < S.visible_n; k++) {
-            Chunk *c = S.visible[reverse ? S.visible_n - 1 - k : k];
-            const MeshSlot *m = &c->mesh[layer];
+        for (int k = 0; k < count; k++) {
+            const MeshSlot *m = list[reverse ? count - 1 - k : k];
             if (m->page != pg || m->count == 0) continue;
             u32 quads = m->count / 4, done = 0;
             ensure_draws(n + (int)(quads / INDEX_QUADS) + 1);
@@ -352,6 +374,23 @@ static void draw_layer(int layer, bool reverse) {
         glMultiDrawElementsBaseVertex(GL_TRIANGLES, S.draw_count, GL_UNSIGNED_SHORT, S.draw_index, n, S.draw_base);
         g_scene_stats.draw_calls++;
     }
+}
+
+static void draw_layer(int layer, bool reverse) {
+    ensure_slot_list(S.visible_n);
+    int n = 0;
+    for (int k = 0; k < S.visible_n; k++) S.slot_list[n++] = &S.visible[k]->mesh[layer];
+    draw_slots(S.slot_list, n, layer, reverse);
+}
+
+static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int rd);
+static void draw_lod_layer(const Camera *cam, double time_s, int rd, int layer, bool reverse) {
+    int n;
+    const MeshSlot *const *list = lod_draw_list(layer, &n);
+    if (!n) return;
+    set_pass_uniforms(&S.lod_shader[layer], cam, time_s, rd);
+    lod_set_uniforms(&S.lod_shader[layer]);
+    draw_slots(list, n, layer, reverse);
 }
 
 /* Fog reaches full density just inside the last drawn geometry, whichever layer that is, so edges never show. */
@@ -385,13 +424,6 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     glUniform1f(shader_uniform(sh, "u_fog_end"), fog_end);
 }
 
-static void draw_far_layer(const Camera *cam, double time_s, int rd) {
-    FarFog fog = {.sun = v3(0.45f, 0.80f, 0.35f), .sky = v3(1, 1, 1), .color = v3(0.62f, 0.76f, 0.95f)};
-    fog_range(rd, &fog.start, &fog.end);
-    far_render(cam, time_s, rd, g_scene_cfg.far_chunks, &fog);
-    glActiveTexture(GL_TEXTURE0);
-}
-
 void scene_render(const Camera *cam, double time_s) {
     if (!S.ready) return;
     int rd = g_scene_cfg.render_distance;
@@ -399,6 +431,7 @@ void scene_render(const Camera *cam, double time_s) {
     g_scene_stats.vertices_drawn = 0;
     memset(g_scene_stats.chunks_drawn, 0, sizeof g_scene_stats.chunks_drawn);
     walk_visibility(cam, rd);
+    lod_update(cam, rd, g_scene_cfg.far_chunks);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_array);
@@ -411,14 +444,17 @@ void scene_render(const Camera *cam, double time_s) {
     glFrontFace(GL_CCW);
     for (int l = 0; l < LAYER_COUNT; l++) {
         bool translucent = l == LAYER_TRANSLUCENT;
-        if (translucent) draw_far_layer(cam, time_s, rd);
         if (translucent) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(GL_FALSE);
         }
+        /* Opaque surfaces go near to far so the depth test rejects hidden distant fragments early; blended ones
+         * go far to near, and the distant tiles are all behind the real chunks. */
+        if (translucent) draw_lod_layer(cam, time_s, rd, l, true);
         set_pass_uniforms(&S.shader[l], cam, time_s, rd);
         draw_layer(l, translucent);
+        if (!translucent) draw_lod_layer(cam, time_s, rd, l, false);
         if (translucent) {
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);

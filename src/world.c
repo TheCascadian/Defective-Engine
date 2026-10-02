@@ -620,6 +620,7 @@ static void snapshot_copy_neighbour(u16 *dst_states, u16 *dst_light, int cx, int
 
 void mesh_snapshot(MeshInput *in, int cx, int cy, int cz) {
     in->cx = cx; in->cy = cy; in->cz = cz;
+    in->scale_shift = 0;
     in->states = xmalloc(MESH_PAD_VOL * sizeof(u16));
     in->light = xmalloc(MESH_PAD_VOL * sizeof(u16));
     Chunk *c = world_chunk(cx, cy, cz);
@@ -758,7 +759,7 @@ void world_stream(V3 focus, V3 fwd, int rd, bool first_load) {
     Candidate meshes[64];
     int nm = 0, want_m = MIN(MAX(mesh_cap - W.mesh_inflight, 0), 64);
     int draw_r2 = rd * rd;
-    int chunks_total = 0, chunks_meshed = 0, unmeshed = 0;
+    int chunks_meshed = 0, unmeshed = 0;
     for (int i = 0; i < W.offset_count && W.offsets[i].dist2 <= (float)draw_r2; i++) {
         int cx = W.fcx + W.offsets[i].dx, cz = W.fcz + W.offsets[i].dz;
         Column *col = world_column(cx, cz);
@@ -767,7 +768,6 @@ void world_stream(V3 focus, V3 fwd, int rd, bool first_load) {
         for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
             Chunk *c = world_chunk(cx, cy, cz);
             if (!c) continue;
-            chunks_total++;
             if (c->flags & CF_HAS_MESH) chunks_meshed++;
             if (!(c->flags & CF_MESHED_ONCE)) unmeshed++;
             if (c->flags & CF_MESH_PENDING) continue;

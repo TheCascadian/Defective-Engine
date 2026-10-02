@@ -5,7 +5,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_TGA
+/* The vendored header defines helpers for formats this build disables; silence only that, only here. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "stb_image.h"
+#pragma GCC diagnostic pop
 
 const int DIR_VEC[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
 
@@ -197,8 +201,17 @@ static int enum_index(const char *v, const char *const *names, int n, int def) {
 
 static bool parse_block_file(const char *ns, const char *stem, const char *rel, const char *mod, const Json *root) {
     BlockDef d = {0};
-    snprintf(d.name, sizeof d.name, "%s:%s", ns, stem);
-    snprintf(d.mod, sizeof d.mod, "%s", mod);
+    if (strlen(ns) + strlen(stem) + 2 > sizeof d.name || strlen(rel) + 1 > sizeof d.file) {
+        data_error(mod, rel, 1, "the block id '%s:%s' or its path is too long (ids are limited to %d characters, paths to %d). "
+                   "Shorten the folder or file name.", ns, stem, (int)sizeof d.name - 1, (int)sizeof d.file - 1);
+        return false;
+    }
+    /* The length check above guarantees this fits, so the pieces are copied directly. */
+    size_t ns_len = strlen(ns);
+    memcpy(d.name, ns, ns_len);
+    d.name[ns_len] = ':';
+    memcpy(d.name + ns_len + 1, stem, strlen(stem) + 1);
+    snprintf(d.mod, sizeof d.mod, "%.*s", (int)sizeof d.mod - 1, mod); /* mod ids are validated shorter, truncation is only a safety net */
     snprintf(d.file, sizeof d.file, "%s", rel);
     static const char *const shapes[] = {"none", "cube", "cross", "fluid", "model"};
     static const char *const layers[] = {"opaque", "cutout", "translucent"};
@@ -378,8 +391,11 @@ static bool load_texture_source(TexSource *t, const char *res, const char *owner
     t->w = w;
     t->frames = h / w;
     t->fps = 4.0f;
+    /* Only texels below the alpha-test threshold make a texture a cutout. A uniformly translucent one such as
+     * water must not be treated as one: the coverage rescale would then drag its alpha toward the threshold
+     * on every mip level and the sea would turn half transparent and dark. */
     t->has_alpha = false;
-    for (int i = 0; i < w * h; i++) if (px[i * 4 + 3] < 255) { t->has_alpha = true; break; }
+    for (int i = 0; i < w * h; i++) if (px[i * 4 + 3] < 128) { t->has_alpha = true; break; }
     char jpath[200];
     snprintf(jpath, sizeof jpath, "%.*s.json", (int)(strlen(path) - 4), path);
     size_t jsize;

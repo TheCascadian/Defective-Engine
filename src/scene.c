@@ -411,7 +411,7 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     glUniform1f(shader_uniform(sh, "u_time"), (float)time_s);
     static const float tints[12] = {1, 1, 1, 0.55f, 0.78f, 0.35f, 0.42f, 0.66f, 0.30f, 0.16f, 0.38f, 0.58f};
     glUniform3fv(shader_uniform(sh, "u_tint"), 4, tints);
-    glUniform3f(shader_uniform(sh, "u_water_deep"), 0.07f, 0.20f, 0.40f);
+    glUniform3f(shader_uniform(sh, "u_water_deep"), 0.11f, 0.31f, 0.52f);
     glUniform1i(shader_uniform(sh, "u_origins"), 1);
     glUniform1i(shader_uniform(sh, "u_tex"), 0);
     glUniform1i(shader_uniform(sh, "u_anim"), 2);

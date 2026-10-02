@@ -80,6 +80,9 @@ static int fluid_depth_bucket(const MeshInput *in, int x, int y, int z) {
         if (g_state_block[in->states[pidx(x, yy, z)]] != block) break;
         depth++;
     }
+    /* Depth is measured in blocks, not voxels, so a coarse LOD ocean is as deep as the real one at the seam;
+     * counting voxels made far water read as shallow and let the sea bed show through it. */
+    depth <<= in->scale_shift;
     return depth >= 6 ? 3 : depth >= 3 ? 2 : depth >= 1 ? 1 : 0;
 }
 

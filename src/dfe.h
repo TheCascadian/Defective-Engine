@@ -619,6 +619,7 @@ typedef struct GenLodGrid {
 void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g);
 /* Fills a padded 34^3 state cube for vertical chunk cy of the tile, index ((y+1)*34 + (z+1))*34 + (x+1). */
 void gen_lod_fill(int shift, int cy, const GenLodGrid *g, u16 *states);
+void gen_lod_light(int shift, int cy, const GenLodGrid *g, u16 *light);
 
 /* -------------------------------------------------------------- mesher.c */
 
@@ -634,6 +635,7 @@ typedef struct MeshInput {
     u32 version;
     u16 *states; /* MESH_PAD_VOL entries, index ((y+1)*34 + (z+1))*34 + (x+1) */
     u16 *light;
+    int scale_shift; /* voxels are 2^shift blocks wide: 0 for real chunks, 1..4 for distant LOD tiles */
 } MeshInput;
 
 typedef struct MeshOutput {

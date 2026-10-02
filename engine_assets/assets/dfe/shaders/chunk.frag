@@ -5,6 +5,7 @@ in vec4 v_light;
 in float v_shade;
 in vec3 v_tint;
 in float v_dist;
+in float v_view_cos;
 in float v_water_depth;
 
 uniform sampler2DArray u_tex;
@@ -52,6 +53,12 @@ void main() {
         albedo = v_tint * (0.9 + 0.5 * ripple);
     }
     vec3 rgb = albedo * light * v_shade;
+    if (v_water_depth >= 0.0) {
+        // Schlick-style reflection: water seen at a grazing angle mirrors the sky, which keeps a wide ocean from
+        // reading as a black sheet and fades it into the horizon haze instead of ending at a hard edge.
+        float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(v_view_cos, 0.0, 1.0), 5.0);
+        rgb = mix(rgb, u_fog_color * max(u_sky_color.g, 0.15), min(fresnel * 1.2, 0.85));
+    }
     float fog = smoothstep(u_fog_start, u_fog_end, v_dist);
     rgb = mix(rgb, u_fog_color, fog);
 #ifdef PASS_TRANSLUCENT

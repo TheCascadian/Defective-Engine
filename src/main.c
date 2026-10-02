@@ -17,6 +17,7 @@ static void print_usage(void) {
          "  --render-distance N  chunks (default from preset)\n"
          "  --preset low|medium|high\n"
          "  --width W --height H window size\n"
+         "  --workers N          worker thread count (default: cores minus one, at most 6)\n"
          "  --wireframe          draw chunk geometry as lines (also F4)\n"
          "  --no-vsync           disable vertical sync\n"
          "  --hidden             create the window hidden\n"
@@ -49,6 +50,7 @@ static bool parse_args(int argc, char **argv) {
         else if (!strcmp(a, "--screenshot") && has_val) snprintf(g_opt.screenshot_path, sizeof g_opt.screenshot_path, "%s", argv[++i]);
         else if (!strcmp(a, "--screenshot-frame") && has_val) g_opt.screenshot_frame = atoi(argv[++i]);
         else if (!strcmp(a, "--wireframe")) g_opt.wireframe = true;
+        else if (!strcmp(a, "--workers") && has_val) g_opt.workers = atoi(argv[++i]);
         else if (!strcmp(a, "--overlay") && has_val) g_opt.overlay_page = atoi(argv[++i]);
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { print_usage(); return false; }
         else {
@@ -95,7 +97,7 @@ static bool setup_vfs(void) {
     return true;
 }
 
-static int worker_count_for_machine(void) { return CLAMP(cpu_count() - 1, 1, 6); }
+static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_opt.workers, 1, 16) : CLAMP(cpu_count() - 1, 1, 6); }
 
 #define DEFAULT_SEED 20240607ull
 #define SPAWN_CLEARANCE 14.0f

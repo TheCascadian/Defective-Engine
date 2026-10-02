@@ -65,7 +65,9 @@ bool window_create(const char *title, int width, int height, bool vsync, bool vi
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_DEPTH_BITS, 0); /* the scene renders into its own FBO */
+    /* The scene currently renders into the default framebuffer, so it needs a depth buffer. Mesa supplies one
+     * regardless of this hint, but NVIDIA honours it, which left the world without depth testing. */
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);
     glfwWindowHint(GLFW_VISIBLE, visible ? GLFW_TRUE : GLFW_FALSE);
     g_glfw = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!g_glfw) {

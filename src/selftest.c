@@ -294,6 +294,15 @@ static void test_light_column(const BlockDef *stone) {
 }
 
 /* Needs the real base content: generation, incremental light, edits. */
+static bool open_sky_spot(int x, int z) {
+    int ground = ifloor(gen_height_at((float)x, (float)z));
+    for (int dz = -3; dz <= 3; dz++)
+        for (int dx = -3; dx <= 3; dx++)
+            for (int y = ifloor(gen_height_at((float)(x + dx), (float)(z + dz))) + 2; y <= ground + 16; y++)
+                if (world_get_state(x + dx, y, z + dz) != STATE_AIR) return false;
+    return true;
+}
+
 static void test_world_light(void) {
     registry_reset();
     data_error_reset();
@@ -307,8 +316,11 @@ static void test_world_light(void) {
     world_init(4242);
     world_flush_generation(0, 0, 2);
 
+    /* Trees and plants are generated, so pick a spot whose surroundings are open air for the whole test. */
     int x = 8, z = 8;
+    for (int k = 0; k < 40 && !open_sky_spot(x, z); k++) { x = 8 + 5 * (k % 6); z = 8 + 5 * (k / 6); }
     int ground = ifloor(gen_height_at((float)x, (float)z));
+    CHECK(open_sky_spot(x, z));
     CHECK(world_get_state(x, ground, z) != STATE_AIR);
     CHECK(LIGHT_SKY(world_get_light(x, ground + 6, z)) == 15);
     CHECK(LIGHT_SKY(world_get_light(x, ground - 8, z)) == 0);

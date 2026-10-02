@@ -28,11 +28,14 @@ typedef struct GenConfig {
     bool loaded;
     int sea_level, deep_level;
     u16 stone, deep, dirt, grass, sand, sandstone, gravel, snow, mud, water;
+    /* Decoration roles are optional: a world generation file that omits one simply has none of that feature. */
+    u16 log, leaves, tall_grass, flower_red, flower_yellow, mushroom, dead_bush, coal, iron, gold, diamond;
 } GenConfig;
 
 static GenConfig C;
 static struct {
     fnl_state cont, mount, ridge, hills, detail, temp, humid, cave_a, cave_b, cheese;
+    i64 seed;
     bool ready;
 } N;
 
@@ -56,6 +59,11 @@ static u16 role_block(const Json *roles, const char *role, const char *file, con
         return STATE_MISSING;
     }
     return b->default_state;
+}
+
+static u16 optional_role_block(const Json *roles, const char *role, const char *file, const char *mod) {
+    if (!json_str(roles, role, NULL)) return STATE_AIR;
+    return role_block(roles, role, file, mod);
 }
 
 int registry_load_worldgen_config(void) {
@@ -105,6 +113,17 @@ int registry_load_worldgen_config(void) {
         C.snow = role_block(roles, "snow", rel, owner);
         C.mud = role_block(roles, "mud", rel, owner);
         C.water = role_block(roles, "water", rel, owner);
+        C.log = optional_role_block(roles, "log", rel, owner);
+        C.leaves = optional_role_block(roles, "leaves", rel, owner);
+        C.tall_grass = optional_role_block(roles, "tall_grass", rel, owner);
+        C.flower_red = optional_role_block(roles, "flower_red", rel, owner);
+        C.flower_yellow = optional_role_block(roles, "flower_yellow", rel, owner);
+        C.mushroom = optional_role_block(roles, "mushroom", rel, owner);
+        C.dead_bush = optional_role_block(roles, "dead_bush", rel, owner);
+        C.coal = optional_role_block(roles, "coal_ore", rel, owner);
+        C.iron = optional_role_block(roles, "iron_ore", rel, owner);
+        C.gold = optional_role_block(roles, "gold_ore", rel, owner);
+        C.diamond = optional_role_block(roles, "diamond_ore", rel, owner);
     }
     C.loaded = data_error_count() == errors_before;
     json_free(root);
@@ -129,6 +148,7 @@ static fnl_state make_noise(int seed, float freq, int octaves) {
 
 void gen_init(u64 seed) {
     int s = (int)(hash64(seed) & 0x7FFFFFFF);
+    N.seed = (i64)(hash64(seed ^ 0xDEC0DEull) & 0x7FFFFFFFFFFFull);
     N.cont = make_noise(s + 1, 0.0009f, 3);
     N.mount = make_noise(s + 2, 0.0014f, 2);
     N.ridge = make_noise(s + 3, 0.0042f, 3);
@@ -260,6 +280,135 @@ static u16 subsurface_block(Biome b) {
     }
 }
 
+/* ------------------------------------------------------------ decoration */
+
+/* Everything below is a pure function of (seed, x, y, z), so a feature that crosses a column border is built
+ * identically by both columns and no generation order or neighbour data is needed. */
+#define SALT_ORE 0x0befull
+#define SALT_PLANT 0x91a7ull
+#define SALT_TREE 0x7ee5ull
+#define ORE_CELL_SHIFT 1           /* ore appears in 2x2x2 clumps; each clump block is kept with 3 in 4 odds */
+#define ORE_RANGE 65536u
+#define COAL_ODDS 1100u            /* out of ORE_RANGE per clump */
+#define IRON_ODDS 700u
+#define GOLD_ODDS 300u
+#define DIAMOND_ODDS 130u
+#define COAL_MAX_Y 140
+#define IRON_MAX_Y 90
+#define GOLD_MAX_Y 40
+#define DIAMOND_MAX_Y 24
+#define ORE_MIN_DEPTH 3
+#define TREE_LATTICE_ODDS 28       /* one candidate per this many columns, thinned further by biome */
+#define TREE_MARGIN 2              /* canopy radius, so trees rooted in a neighbour column still reach this one */
+#define TREE_MIN_TRUNK 4
+#define TREE_TRUNK_RANGE 3
+#define TREE_CANOPY_RADIUS 2
+#define TREE_TREELINE_MARGIN 4.0f
+#define PLANT_GRASS_PERCENT 14
+#define PLANT_FLOWER_PERCENT 1
+#define PLANT_MUSHROOM_PERCENT 2
+#define PLANT_DEAD_BUSH_PERCENT 2
+
+static u16 ore_at(int wx, int y, int wz, int depth) {
+    if (depth < ORE_MIN_DEPTH) return STATE_AIR;
+    u64 hh = hash3(N.seed ^ SALT_ORE, wx >> ORE_CELL_SHIFT, y >> ORE_CELL_SHIFT, wz >> ORE_CELL_SHIFT);
+    unsigned roll = (unsigned)(hh & (ORE_RANGE - 1));
+    if (((hh >> 16) & 3) == 0) return STATE_AIR;
+    unsigned edge = 0;
+    if (C.diamond && y < DIAMOND_MAX_Y && roll < (edge += DIAMOND_ODDS)) return C.diamond;
+    if (C.gold && y < GOLD_MAX_Y && roll < (edge += GOLD_ODDS)) return C.gold;
+    if (C.iron && y < IRON_MAX_Y && roll < (edge += IRON_ODDS)) return C.iron;
+    if (C.coal && y < COAL_MAX_Y && roll < (edge += COAL_ODDS)) return C.coal;
+    return STATE_AIR;
+}
+
+static u16 plant_for(Biome b, u64 roll) {
+    unsigned pct = (unsigned)(roll % 100);
+    switch (b) {
+    case BIOME_PLAINS: case BIOME_FOREST: case BIOME_MOUNTAIN:
+        if (pct < PLANT_FLOWER_PERCENT) return C.flower_red;
+        if (pct < 2 * PLANT_FLOWER_PERCENT) return C.flower_yellow;
+        if (b == BIOME_FOREST && pct < 2 * PLANT_FLOWER_PERCENT + PLANT_MUSHROOM_PERCENT) return C.mushroom;
+        return pct < 2 * PLANT_FLOWER_PERCENT + PLANT_GRASS_PERCENT ? C.tall_grass : STATE_AIR;
+    case BIOME_SWAMP: return pct < PLANT_MUSHROOM_PERCENT * 3 ? C.mushroom : (pct < 40 ? C.tall_grass : STATE_AIR);
+    case BIOME_DESERT: return pct < PLANT_DEAD_BUSH_PERCENT ? C.dead_bush : STATE_AIR;
+    default: return STATE_AIR;
+    }
+}
+
+static void place_plants(const GenScratch *s, u16 *states, int cx, int cz) {
+    int y0 = BAND_LO * CHUNK_SIZE, H = (BAND_HI - BAND_LO + 1) * CHUNK_SIZE;
+    for (int z = 0; z < CHUNK_SIZE; z++)
+        for (int x = 0; x < CHUNK_SIZE; x++) {
+            int col = (z << 5) | x, h = s->height[col], ly = h + 1 - y0;
+            if (h <= C.sea_level || ly < 1 || ly >= H) continue;
+            size_t at = ((size_t)ly << 10) | col, below = ((size_t)(ly - 1) << 10) | col;
+            if (states[at] != STATE_AIR) continue;
+            Biome b = (Biome)s->biome[col];
+            bool sandy = states[below] == C.sand;
+            if (states[below] != C.grass && !(b == BIOME_DESERT && sandy)) continue;
+            u16 plant = plant_for(b, hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z));
+            if (plant != STATE_AIR) states[at] = plant;
+        }
+}
+
+static void put_if_air(u16 *states, int cx, int cz, int wx, int y, int wz, u16 state) {
+    int x = wx - cx * CHUNK_SIZE, z = wz - cz * CHUNK_SIZE, ly = y - BAND_LO * CHUNK_SIZE;
+    if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || ly < 0 || ly >= (BAND_HI - BAND_LO + 1) * CHUNK_SIZE) return;
+    size_t at = ((size_t)ly << 10) | (size_t)((z << 5) | x);
+    if (states[at] == STATE_AIR) states[at] = state;
+}
+
+static int tree_percent(Biome b) {
+    switch (b) {
+    case BIOME_FOREST: return 100;
+    case BIOME_PLAINS: return 8;
+    case BIOME_SWAMP: return 35;
+    case BIOME_MOUNTAIN: return 30;
+    default: return 0;
+    }
+}
+
+static bool tree_ground_ok(int wx, int wz, float h, Biome b) {
+    if (h <= (float)C.sea_level + 1.0f) return false;
+    if (b == BIOME_MOUNTAIN && h > treeline_at((float)wx, (float)wz) - TREE_TREELINE_MARGIN) return false;
+    int fh = (int)floorf(h);
+    static const int off[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (int k = 0; k < 4; k++)
+        if (abs((int)floorf(gen_height_at((float)(wx + off[k][0]), (float)(wz + off[k][1]))) - fh) >= STEEP_SLOPE) return false;
+    return true;
+}
+
+static void build_tree(u16 *states, int cx, int cz, int wx, int wz, int base_y, u64 roll) {
+    int trunk = TREE_MIN_TRUNK + (int)((roll >> 8) % TREE_TRUNK_RANGE), top = base_y + trunk;
+    for (int y = base_y; y < top; y++) put_if_air(states, cx, cz, wx, y, wz, C.log);
+    for (int dy = -2; dy <= 1; dy++) {
+        int r = dy <= -1 ? TREE_CANOPY_RADIUS : (dy == 0 ? 1 : 1);
+        if (dy == 1) r = 1;
+        for (int dz = -r; dz <= r; dz++)
+            for (int dx = -r; dx <= r; dx++) {
+                bool corner = abs(dx) == r && abs(dz) == r;
+                if (corner && r == TREE_CANOPY_RADIUS && ((roll >> (12 + (dx > 0) + 2 * (dz > 0) + 4 * (dy + 2))) & 1)) continue;
+                if (dy == 1 && corner) continue;
+                put_if_air(states, cx, cz, wx + dx, top + dy, wz + dz, C.leaves);
+            }
+    }
+}
+
+static void place_trees(u16 *states, int cx, int cz) {
+    if (C.log == STATE_AIR || C.leaves == STATE_AIR) return;
+    int x0 = cx * CHUNK_SIZE - TREE_MARGIN, z0 = cz * CHUNK_SIZE - TREE_MARGIN, span = CHUNK_SIZE + 2 * TREE_MARGIN;
+    for (int wz = z0; wz < z0 + span; wz++)
+        for (int wx = x0; wx < x0 + span; wx++) {
+            u64 roll = hash3(N.seed ^ SALT_TREE, wx, 0, wz);
+            if (roll % TREE_LATTICE_ODDS) continue;
+            float h = gen_height_at((float)wx, (float)wz);
+            Biome b = biome_at((float)wx, (float)wz, h);
+            if ((int)((roll >> 32) % 100) >= tree_percent(b) || !tree_ground_ok(wx, wz, h, b)) continue;
+            build_tree(states, cx, cz, wx, wz, (int)floorf(h) + 1, roll);
+        }
+}
+
 void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
     int layers = BAND_HI - BAND_LO + 1, y0 = BAND_LO * CHUNK_SIZE, H = layers * CHUNK_SIZE;
     int max_h;
@@ -289,12 +438,18 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                     if (depth == 0) st = surface_block(bi, y, detail, steep, treeline, snowline);
                     else if (depth <= SUBSURFACE_DEPTH) st = subsurface_block(bi);
                     else st = y < C.deep_level ? C.deep : C.stone;
+                    if (st == C.stone) {
+                        u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth);
+                        if (ore != STATE_AIR) st = ore;
+                    }
                     /* No carving near the surface or on the band floor keeps caves sealed from the sky and from the filler below. */
                     if (depth >= CAVE_MIN_DEPTH && ly > 2 && cave_at(s, x, ly, z) > 0.0f) st = STATE_AIR;
                 }
                 states[((size_t)ly << 10) | col] = st;
             }
         }
+    place_plants(s, states, cx, cz);
+    place_trees(states, cx, cz);
 }
 
 /* ------------------------------------------------------- distant voxel tiles */

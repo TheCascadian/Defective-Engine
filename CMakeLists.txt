@@ -11,7 +11,8 @@ endif()
 
 # The reference CPU is a 2015 laptop part, so no -march=native: the binary must run on baseline x86-64.
 if(NOT MSVC)
-  set(DFE_WARN -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+  set(DFE_WARN -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fwrapv)
+  # Noise hashing relies on wrapping integer multiplication; without this GCC treats the overflow as undefined.
   set(CMAKE_C_FLAGS_RELEASE "-O2 -fno-strict-aliasing -DNDEBUG")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g -fno-strict-aliasing")
 else()

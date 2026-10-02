@@ -299,6 +299,9 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
 
 /* ------------------------------------------------------- distant voxel tiles */
 
+#define LOD_SEA_SKY_LIGHT 15
+#define LOD_WATER_OPACITY 2 /* matches opacity in base:water */
+
 /* A tile of the distant-terrain LOD is one 32 x 32 column of voxels that are 2^shift blocks wide. Heights are the
  * minimum over the voxel footprint, rounded down and then lowered by one voxel, so a tile never rises above the
  * real terrain it overlaps: where the near and far layers overlap, the near one always wins and no far block
@@ -358,6 +361,23 @@ void gen_lod_fill(int shift, int cy, const GenLodGrid *g, u16 *states) {
                 else if (vy >= top - 1) st = g->sub[i];
                 else st = vy * s < C.deep_level ? C.deep : C.stone;
                 states[(py * LOD_PAD + zp) * LOD_PAD + xp] = st;
+            }
+    }
+}
+
+/* Sky light for a LOD cube: open everywhere except under the sea, where it falls by the water's light opacity per
+ * block exactly as the real flood fill does. Without this the far sea bed was fully lit and showed through the
+ * translucent water, so the far ocean came out lighter than the near one with a visible seam between them. */
+void gen_lod_light(int shift, int cy, const GenLodGrid *g, u16 *light) {
+    int s = 1 << shift;
+    for (int py = 0; py < LOD_PAD; py++) {
+        int vy = cy * CHUNK_SIZE + py - 1;
+        int depth_blocks = C.sea_level - (vy * s + s / 2);
+        for (int zp = 0; zp < LOD_PAD; zp++)
+            for (int xp = 0; xp < LOD_PAD; xp++) {
+                bool wet = vy > g->top[zp * LOD_PAD + xp] && depth_blocks > 0;
+                int sky = wet ? CLAMP(LOD_SEA_SKY_LIGHT - depth_blocks * LOD_WATER_OPACITY, 0, 15) : 15;
+                light[(py * LOD_PAD + zp) * LOD_PAD + xp] = LIGHT_PACK(sky, 0, 0, 0);
             }
     }
 }

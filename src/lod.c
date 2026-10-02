@@ -109,11 +109,11 @@ static void lod_job_run(void *data, int worker) {
     j->cy = xmalloc((size_t)j->n * sizeof(int));
     j->out = xcalloc((size_t)j->n, sizeof(MeshOutput));
     u16 *states = xmalloc(MESH_PAD_VOL * sizeof(u16)), *light = xmalloc(MESH_PAD_VOL * sizeof(u16));
-    for (int i = 0; i < MESH_PAD_VOL; i++) light[i] = LIGHT_FULL_SKY; /* no caves or roofs, so every voxel sees the sky */
     for (int k = 0; k < j->n; k++) {
         j->cy[k] = lo + k;
         gen_lod_fill(j->level, lo + k, g, states);
-        MeshInput in = {.cx = j->tx, .cy = lo + k, .cz = j->tz, .states = states, .light = light};
+        gen_lod_light(j->level, lo + k, g, light); /* no caves or roofs: open sky, dimmed only under the sea */
+        MeshInput in = {.cx = j->tx, .cy = lo + k, .cz = j->tz, .states = states, .light = light, .scale_shift = j->level};
         mesh_build(&in, &j->out[k]);
     }
     free(states); free(light); free(g);

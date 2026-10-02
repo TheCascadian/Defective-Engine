@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/cobblestone"
+  },
+  "hardness": 2.0,
+  "tool": "pick",
+  "sound": "stone"
+}

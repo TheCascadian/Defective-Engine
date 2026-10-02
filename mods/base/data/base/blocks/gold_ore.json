@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/gold_ore"
+  },
+  "hardness": 3.0,
+  "tool": "pick",
+  "sound": "stone"
+}

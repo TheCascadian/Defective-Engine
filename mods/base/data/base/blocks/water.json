@@ -1,0 +1,19 @@
+{
+  "shape": "fluid",
+  "layer": "translucent",
+  "tint": "water",
+  "textures": {
+    "all": "base:block/water"
+  },
+  "solid": false,
+  "hardness": -1,
+  "light": {
+    "opacity": 2
+  },
+  "fluid": {
+    "viscosity": 5,
+    "group": "water"
+  },
+  "item": false,
+  "sound": "water"
+}

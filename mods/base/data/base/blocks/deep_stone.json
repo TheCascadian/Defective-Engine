@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/deep_stone"
+  },
+  "hardness": 3.0,
+  "tool": "pick",
+  "sound": "stone"
+}

@@ -1,0 +1,10 @@
+{
+  "textures": {
+    "up": "base:block/sandstone_top",
+    "down": "base:block/sandstone_top",
+    "side": "base:block/sandstone_side"
+  },
+  "hardness": 0.8,
+  "tool": "pick",
+  "sound": "stone"
+}

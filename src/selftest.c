@@ -788,6 +788,7 @@ static void test_player_physics(u16 stone) {
     PlayerInput none = {0};
     for (int i = 0; i < 300; i++) player_step(&p, &none, 1.0f / 60.0f);
     CHECK(p.on_ground && fabsf(p.pos.y - (float)(SLAB_Y + 1)) < 0.01f);
+    CHECK(p.health < PLAYER_MAX_HEALTH);
     /* Result must not depend on the frame rate. */
     Player q;
     player_init(&q, v3(8.5f, 210.0f, 8.5f));
@@ -828,6 +829,24 @@ static void test_player_physics(u16 stone) {
     world_set_state(mover_x, SLAB_Y + 1, mover_z, STATE_AIR);
     player_step(&mover, &none, 1.0f / 60.0f);
     CHECK(!mover.crouched && fabsf(mover.height - PLAYER_HEIGHT) < 1e-6f);
+    Player survivor;
+    player_init(&survivor, v3(8.5f, (float)(SLAB_Y + 1), 8.5f));
+    player_hurt(&survivor, 4.0f);
+    CHECK(survivor.health == 16.0f && survivor.hurt_timer > 0.0f);
+    player_hurt(&survivor, 4.0f);
+    CHECK(survivor.health == 16.0f);
+    CHECK(!player_teleport(&survivor, v3(8.5f, (float)SLAB_Y + 0.5f, 8.5f)));
+    survivor.vel = v3(3.0f, 4.0f, 5.0f);
+    CHECK(player_teleport(&survivor, v3(9.5f, (float)(SLAB_Y + 1), 8.5f)));
+    CHECK(survivor.pos.x == 9.5f && survivor.vel.x == 0.0f && survivor.vel.y == 0.0f && survivor.vel.z == 0.0f);
+    for (int i = 0; i < 45; i++) player_step(&survivor, &none, 1.0f / 60.0f);
+    player_hurt(&survivor, 100.0f);
+    CHECK(survivor.dead && survivor.health == 0.0f);
+    V3 death_pos = survivor.pos;
+    player_step(&survivor, &forward, 1.0f / 60.0f);
+    CHECK(survivor.pos.x == death_pos.x && survivor.pos.z == death_pos.z);
+    player_respawn(&survivor, v3(9.5f, (float)(SLAB_Y + 1), 8.5f));
+    CHECK(!survivor.dead && survivor.health == PLAYER_MAX_HEALTH && survivor.pos.x == 9.5f);
     /* A wall stops a walking player and a one block ledge is stepped over only when 0.6 or lower. */
     for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, stone);
     PlayerInput fwd = {.strafe = 1.0f};

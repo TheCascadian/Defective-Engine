@@ -141,6 +141,8 @@ static bool meta_read(void) {
         S.meta.x = json_num(p, "x", 0); S.meta.y = json_num(p, "y", 0); S.meta.z = json_num(p, "z", 0);
         S.meta.yaw = (float)json_num(p, "yaw", 0); S.meta.pitch = (float)json_num(p, "pitch", 0);
         S.meta.flying = json_bool(p, "flying", false);
+        S.meta.health = (float)json_num(p, "health", PLAYER_MAX_HEALTH);
+        S.meta.dead = json_bool(p, "dead", false);
     }
     const Json *inv = json_get(j, "inventory");
     if (inv) {
@@ -177,6 +179,8 @@ static bool meta_write(void) {
         jw_key(&w, "yaw"); jw_num(&w, S.meta.yaw);
         jw_key(&w, "pitch"); jw_num(&w, S.meta.pitch);
         jw_key(&w, "flying"); jw_bool(&w, S.meta.flying);
+        jw_key(&w, "health"); jw_num(&w, S.meta.health);
+        jw_key(&w, "dead"); jw_bool(&w, S.meta.dead);
         jw_end_obj(&w);
     }
     if (S.meta.has_inventory) {

@@ -113,6 +113,14 @@ static void cmd_give(const char *args, void *user) {
     console_print("gave %d x %s%s", count - left, name, left ? " (inventory full)" : "");
 }
 
+static void cmd_teleport(const char *args, void *user) {
+    (void)user;
+    float x, y, z;
+    if (sscanf(args, "%f %f %f", &x, &y, &z) != 3) { console_print("usage: tp <x> <y> <z>"); return; }
+    if (!player_teleport(&g_player, v3(x, y, z))) { console_print("destination is obstructed, unloaded or invalid"); return; }
+    console_print("teleported to %.2f %.2f %.2f", x, y, z);
+}
+
 static void cmd_reload(const char *args, void *user) {
     (void)args; (void)user;
     console_print(hot_reload_now() ? "reloaded shaders, atmosphere and presets" : "reload had errors; the previous versions are still running, see the log");
@@ -150,6 +158,8 @@ void console_init(void) {
     api->register_command("setblock", "setblock x y z name", cmd_setblock, NULL, "engine");
     api->register_command("gamemode", "gamemode creative|survival", cmd_gamemode, NULL, "engine");
     api->register_command("give", "give name [count]", cmd_give, NULL, "engine");
+    api->register_command("tp", "tp <x> <y> <z>", cmd_teleport, NULL, "engine");
+    api->register_command("teleport", "teleport <x> <y> <z>", cmd_teleport, NULL, "engine");
 }
 
 /* ---------------------------------------------------------------- input */

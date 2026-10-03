@@ -278,6 +278,39 @@ static void draw_crosshair(int width, int height) {
     }
 }
 
+static void draw_hurt_cracks(int width, int height) {
+    float amount = CLAMP(g_player.hurt_timer / 0.8f, 0.0f, 1.0f);
+    if (amount <= 0.0f || g_player.dead) return;
+    static const float paths[][8] = {
+        {0.00f, 0.12f, 0.16f, 0.24f, 0.20f, 0.38f, 0.32f, 0.44f},
+        {0.00f, 0.12f, 0.11f, 0.08f, 0.20f, 0.00f, 0.27f, 0.09f},
+        {1.00f, 0.18f, 0.84f, 0.25f, 0.79f, 0.40f, 0.68f, 0.47f},
+        {1.00f, 0.18f, 0.88f, 0.08f, 0.78f, 0.00f, 0.72f, 0.10f},
+        {0.00f, 0.85f, 0.16f, 0.76f, 0.22f, 0.61f, 0.33f, 0.55f},
+        {1.00f, 0.88f, 0.85f, 0.78f, 0.79f, 0.64f, 0.67f, 0.57f},
+    };
+    u32 color = rgba(235, 242, 245, (int)(190.0f * amount));
+    for (int i = 0; i < ARRAY_LEN(paths); i++)
+        for (int j = 0; j < 3; j++)
+            ui_line(paths[i][j * 2] * width, paths[i][j * 2 + 1] * height,
+                    paths[i][j * 2 + 2] * width, paths[i][j * 2 + 3] * height, 1.5f, color);
+}
+
+static void draw_health(int width) {
+    float ratio = CLAMP(g_player.health / PLAYER_MAX_HEALTH, 0.0f, 1.0f);
+    float x = ((float)width - 160.0f) * 0.5f;
+    ui_rect(x, 14.0f, 160.0f, 8.0f, rgba(10, 10, 12, 180));
+    ui_rect(x, 14.0f, 160.0f * ratio, 8.0f, rgba(196, 54, 47, 230));
+}
+
+static void draw_death(int width, int height) {
+    ui_rect(0, 0, (float)width, (float)height, rgba(48, 8, 10, 190));
+    const char *title = "You died";
+    const char *hint = "Press Space to respawn";
+    ui_text(((float)width - ui_text_width(36.0f, title)) * 0.5f, (float)height * 0.43f, 36.0f, rgba(255, 235, 230, 255), title);
+    ui_text(((float)width - ui_text_width(TEXT_SIZE, hint)) * 0.5f, (float)height * 0.52f, TEXT_SIZE, rgba(245, 220, 215, 255), hint);
+}
+
 static void draw_hotbar(int width, int height) {
     float left = ((float)width - row_width(INV_HOTBAR)) * 0.5f, top = (float)height - SLOT_PX - HOTBAR_MARGIN;
     for (int i = 0; i < INV_HOTBAR; i++) {
@@ -299,6 +332,9 @@ static void draw_hotbar(int width, int height) {
 
 void hud_draw(int width, int height) {
     if (!H.ready) return;
+    if (g_player.dead) { draw_death(width, height); return; }
+    draw_hurt_cracks(width, height);
+    draw_health(width);
     draw_crosshair(width, height);
     draw_hotbar(width, height);
     if (H.inventory_open) draw_inventory(width, height);

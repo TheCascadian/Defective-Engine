@@ -203,7 +203,9 @@ static void draw_selection_box(void) {
 static void drive_player(Camera *cam, double dt) {
     bool menu = console_open() || hud_inventory_open() || menu_is_open();
     PlayerInput in = {0};
-    if (!menu) {
+    if (!menu && g_player.dead) {
+        if (key_pressed(GLFW_KEY_SPACE)) player_respawn(&g_player, player_find_spawn());
+    } else if (!menu) {
         in.forward = (key_down(GLFW_KEY_W) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_S) ? 1.0f : 0.0f);
         in.strafe = (key_down(GLFW_KEY_D) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_A) ? 1.0f : 0.0f);
         in.jump = key_down(GLFW_KEY_SPACE);
@@ -221,7 +223,7 @@ static void drive_player(Camera *cam, double dt) {
     cam->pos = player_eye_render(&g_player);
     cam->yaw = g_player.yaw;
     cam->pitch = g_player.pitch;
-    interact_update(&g_player, (float)dt, !menu && g_in.cursor_captured);
+    interact_update(&g_player, (float)dt, !menu && !g_player.dead && g_in.cursor_captured);
     server_set_focus(g_player.pos);
 }
 
@@ -412,6 +414,8 @@ static int run_viewer(void) {
             g_player.yaw = m->yaw;
             g_player.pitch = m->pitch;
             g_player.flying = m->flying && g_creative;
+            g_player.health = CLAMP(m->health, 0.0f, PLAYER_MAX_HEALTH);
+            g_player.dead = m->dead || g_player.health <= 0.0f;
         } else {
             player_init(&g_player, player_find_spawn());
             g_player.yaw = cam.yaw;
@@ -554,6 +558,8 @@ static int run_viewer(void) {
             m->x = g_player.pos.x; m->y = g_player.pos.y; m->z = g_player.pos.z;
             m->yaw = g_player.yaw; m->pitch = g_player.pitch;
             m->flying = g_player.flying;
+            m->health = g_player.health;
+            m->dead = g_player.dead;
             hud_set_inventory_open(false);
             inventory_store(&g_inv, g_creative, m);
         } else {

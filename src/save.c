@@ -573,6 +573,7 @@ int save_jobs_inflight(void) { return S.jobs_inflight; }
 
 void save_close(void) {
     if (!S.open) return;
+    world_save_all(); /* a no-op once the world is shut down, which saves everything itself */
     while (S.jobs_inflight > 0) {
         jobs_pump(0.05);
         sleep_ms(1);

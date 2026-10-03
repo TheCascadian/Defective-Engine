@@ -555,8 +555,13 @@ typedef struct WorldStats {
 
 void world_init(u64 seed);
 void world_shutdown(void);
-/* Writes every edited column. Called periodically and on exit. */
+/* Serialises at most SAVE_COLUMNS_PER_CALL edited columns so the main thread never spends a frame on a large backlog;
+ * the rest stay dirty for the next call. Called periodically. */
 void world_save_dirty(void);
+/* Writes every edited column by repeating world_save_dirty until nothing more can be saved. Called on exit. */
+void world_save_all(void);
+/* Number of ready columns with unsaved edits. */
+int world_dirty_columns(void);
 u64 world_seed(void);
 Chunk *world_chunk(int cx, int cy, int cz);
 Column *world_column(int cx, int cz);

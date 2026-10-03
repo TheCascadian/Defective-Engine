@@ -679,6 +679,41 @@ bool path_is_dir(const char *path) {
     return stat(path, &st) == 0 && (st.st_mode & S_IFDIR);
 }
 
+/* Symlinks are never followed, so deleting a world cannot reach outside its own folder. */
+static bool is_real_dir(const char *path) {
+#ifdef _WIN32
+    return path_is_dir(path);
+#else
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+bool dir_remove_all(const char *path) {
+    if (!is_real_dir(path)) return remove(path) == 0;
+    StrList l = {0};
+    dir_list(path, &l);
+    bool ok = true;
+    for (int i = 0; i < l.n; i++) {
+        char child[1100];
+        snprintf(child, sizeof child, "%s/%s", path, l.d[i]);
+        if (!dir_remove_all(child)) ok = false;
+    }
+    strlist_free(&l);
+#ifdef _WIN32
+    return ok && _rmdir(path) == 0;
+#else
+    return ok && rmdir(path) == 0;
+#endif
+}
+
+bool path_rename(const char *from, const char *to) { return rename(from, to) == 0; }
+
+i64 path_mtime(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (i64)st.st_mtime : -1;
+}
+
 void strlist_free(StrList *l) {
     for (int i = 0; i < l->n; i++) free(l->d[i]);
     vec_free(*l);

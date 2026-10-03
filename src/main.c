@@ -340,7 +340,7 @@ static int run_viewer(void) {
     bool gl = !g_opt.no_render;
     load_settings_for_run();
     if (gl) {
-        if (!window_create("Defective Engine", g_opt.width, g_opt.height, g_settings.vsync && !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
+        if (!window_create("Unbound", g_opt.width, g_opt.height, g_settings.vsync && !g_opt.no_vsync && !g_opt.benchmark, !g_opt.hidden_window)) return 1;
         if (!ui_init()) return 1;
         debug_lines_init();
         perf_init();

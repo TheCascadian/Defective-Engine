@@ -116,6 +116,12 @@ void window_poll(void) {
     g_win.should_close = glfwWindowShouldClose(g_glfw) != 0;
 }
 
+/* window_poll rereads GLFW's flag every frame, so a plain write to g_win.should_close would be lost. */
+void window_request_close(void) {
+    glfwSetWindowShouldClose(g_glfw, GLFW_TRUE);
+    g_win.should_close = true;
+}
+
 void window_swap(void) { glfwSwapBuffers(g_glfw); }
 
 void window_set_cursor_captured(bool captured) {
@@ -536,6 +542,13 @@ void ui_text(float x, float y, float size, u32 color, const char *text) {
     ui_set_texture(g_ui.font_tex, 0);
     u32 shadow = (color & 0x00FFFFFFu) | ((((color >> 24) * 160u) / 255u) << 24);
     ui_text_pass(x + size * 0.07f, y + size * 0.07f, size, shadow & 0xFF000000u, text);
+    ui_text_pass(x, y, size, color, text);
+}
+
+/* No built-in shadow, for callers that draw their own. */
+void ui_text_plain(float x, float y, float size, u32 color, const char *text) {
+    if (!g_ui.font_ready) return;
+    ui_set_texture(g_ui.font_tex, 0);
     ui_text_pass(x, y, size, color, text);
 }
 

@@ -171,6 +171,10 @@ bool path_is_dir(const char *path);
 typedef VEC(char *) StrList;
 void strlist_free(StrList *l);
 void dir_list(const char *path, StrList *out);
+/* Deletes a file or a whole folder tree without following symlinks. */
+bool dir_remove_all(const char *path);
+bool path_rename(const char *from, const char *to);
+i64 path_mtime(const char *path); /* seconds since the epoch, -1 when missing */
 void path_exe_dir(char *out, size_t cap);
 
 void vfs_reset(void);
@@ -220,6 +224,7 @@ extern Input g_in;
 bool window_create(const char *title, int width, int height, bool vsync, bool visible);
 void window_destroy(void);
 void window_poll(void);
+void window_request_close(void);
 void window_swap(void);
 void window_set_cursor_captured(bool captured);
 void window_set_vsync(bool vsync);
@@ -266,6 +271,7 @@ void ui_rect(float x, float y, float w, float h, u32 rgba);
 void ui_rect_gradient(float x, float y, float w, float h, u32 top_rgba, u32 bottom_rgba);
 void ui_line(float x0, float y0, float x1, float y1, float thickness, u32 rgba);
 void ui_text(float x, float y, float size, u32 rgba, const char *text);
+void ui_text_plain(float x, float y, float size, u32 rgba, const char *text);
 float ui_text_width(float size, const char *text);
 void ui_image(GLuint tex, float x, float y, float w, float h, float u0, float v0, float u1, float v1, u32 rgba);
 void ui_flush(void);

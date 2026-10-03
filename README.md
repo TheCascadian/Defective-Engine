@@ -25,7 +25,7 @@ Starting `dfe` with no world option opens the title screen. It lists the folders
 
 | Input | Action |
 |-------|--------|
-| W A S D, Space, Left Shift, Left Ctrl | Move, jump or swim up, descend, sprint |
+| W A S D, Space, Left Alt, Left Shift, Left Ctrl | Move, jump or swim up, crouch, descend, sprint |
 | F | Toggle flight (creative mode) |
 | Left, right, middle mouse | Break, place, pick block |
 | E | Inventory |

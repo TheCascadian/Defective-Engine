@@ -22,8 +22,12 @@
 #define SWIM_UP_SPEED 3.6f
 #define WATER_SINK_SPEED 2.2f
 #define LAVA_SPEED_SCALE 0.4f
-#define GROUND_RESPONSE 14.0f   /* per second, how fast horizontal velocity follows the wish */
-#define AIR_RESPONSE 3.0f
+#define GROUND_ACCEL 12.0f
+#define GROUND_BRAKE 10.0f
+#define AIR_ACCEL 2.0f
+#define AIR_DRAG 0.2f
+#define SWIM_RESPONSE 7.0f
+#define CLIMB_RESPONSE 14.0f
 #define FLY_RESPONSE 8.0f
 #define STEP_HEIGHT 0.6f
 #define CLIMB_SPEED 3.0f
@@ -38,9 +42,11 @@ void player_init(Player *p, V3 feet) {
     p->pos = feet;
     p->half_width = HALF_WIDTH;
     p->height = PLAYER_HEIGHT;
+    p->render_eye_height = PLAYER_EYE;
 }
 
-V3 player_eye(const Player *p) { return v3(p->pos.x, p->pos.y + PLAYER_EYE, p->pos.z); }
+V3 player_eye(const Player *p) { return v3(p->pos.x, p->pos.y + (p->crouched ? PLAYER_CROUCH_EYE : PLAYER_EYE), p->pos.z); }
+V3 player_eye_render(const Player *p) { return v3(p->pos.x, p->pos.y + p->render_eye_height, p->pos.z); }
 
 static bool cell_blocks(int x, int y, int z) {
     u16 s = world_get_state(x, y, z);
@@ -104,6 +110,17 @@ static void approach(float *v, float target, float rate, float dt) {
     *v += (target - *v) * k;
 }
 
+static void approach_accel(float *v, float target, float acceleration, float dt) {
+    float delta = target - *v;
+    *v += CLAMP(delta, -acceleration * dt, acceleration * dt);
+}
+
+static float ground_friction(const Player *p) {
+    u16 state = world_get_state(ifloor(p->pos.x), ifloor(p->pos.y - 0.05f), ifloor(p->pos.z));
+    const BlockDef *b = state == STATE_UNLOADED ? NULL : block_of_state(state);
+    return b ? CLAMP(b->friction, 0.05f, 2.0f) : 1.0f;
+}
+
 static void horizontal_wish(const Player *p, const PlayerInput *in, float speed, float *wx, float *wz) {
     float fx = -sinf(p->yaw), fz = -cosf(p->yaw); /* yaw 0 looks down -Z, see Camera */
     float rx = cosf(p->yaw), rz = -sinf(p->yaw);
@@ -152,8 +169,8 @@ static void step_fly(Player *p, const PlayerInput *in, float dt) {
 static void step_swim(Player *p, const PlayerInput *in, float dt) {
     float wx, wz, scale = p->in_lava ? LAVA_SPEED_SCALE : 1.0f;
     horizontal_wish(p, in, SWIM_SPEED * scale, &wx, &wz);
-    approach(&p->vel.x, wx, GROUND_RESPONSE * 0.5f, dt);
-    approach(&p->vel.z, wz, GROUND_RESPONSE * 0.5f, dt);
+    approach(&p->vel.x, wx, SWIM_RESPONSE, dt);
+    approach(&p->vel.z, wz, SWIM_RESPONSE, dt);
     float wy = in->jump ? SWIM_UP_SPEED * scale : (in->descend ? -SWIM_UP_SPEED * scale : -WATER_SINK_SPEED * scale);
     approach(&p->vel.y, wy, 5.0f, dt);
 }
@@ -161,22 +178,41 @@ static void step_swim(Player *p, const PlayerInput *in, float dt) {
 static void step_climb(Player *p, const PlayerInput *in, float dt) {
     float wx, wz;
     horizontal_wish(p, in, WALK_SPEED * 0.5f, &wx, &wz);
-    approach(&p->vel.x, wx, GROUND_RESPONSE, dt);
-    approach(&p->vel.z, wz, GROUND_RESPONSE, dt);
+    approach(&p->vel.x, wx, CLIMB_RESPONSE, dt);
+    approach(&p->vel.z, wz, CLIMB_RESPONSE, dt);
     p->vel.y = in->jump || in->forward > 0 ? CLIMB_SPEED : (in->descend ? -CLIMB_SPEED : 0.0f);
 }
 
 static void step_walk(Player *p, const PlayerInput *in, float dt) {
     float wx, wz, speed = (in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED) * (in->speed_scale > 0 ? in->speed_scale : 1.0f);
     horizontal_wish(p, in, speed, &wx, &wz);
-    float rate = p->on_ground ? GROUND_RESPONSE : AIR_RESPONSE;
-    approach(&p->vel.x, wx, rate, dt);
-    approach(&p->vel.z, wz, rate, dt);
-    if (in->jump && p->on_ground) { p->vel.y = JUMP_SPEED; p->on_ground = false; }
+    bool has_wish = fabsf(wx) + fabsf(wz) > 1e-4f;
+    if (p->on_ground) {
+        float accel = has_wish ? GROUND_ACCEL : GROUND_BRAKE * ground_friction(p);
+        approach_accel(&p->vel.x, wx, accel, dt);
+        approach_accel(&p->vel.z, wz, accel, dt);
+    } else {
+        float accel = has_wish ? AIR_ACCEL : AIR_DRAG;
+        approach_accel(&p->vel.x, wx, accel, dt);
+        approach_accel(&p->vel.z, wz, accel, dt);
+    }
+    if (p->jump_buffer > 0.0f && p->on_ground) {
+        p->vel.y = JUMP_SPEED;
+        p->on_ground = false;
+        p->jump_buffer = 0.0f;
+    }
     p->vel.y = MAX(p->vel.y - GRAVITY * dt, -TERMINAL_SPEED);
 }
 
 static void physics_step(Player *p, const PlayerInput *in, float dt) {
+    if (in->crouch) {
+        p->crouched = true;
+        p->height = PLAYER_CROUCH_HEIGHT;
+    } else if (p->crouched && !box_blocked(p->pos, p->half_width, PLAYER_HEIGHT)) {
+        p->crouched = false;
+        p->height = PLAYER_HEIGHT;
+    }
+    approach(&p->render_eye_height, p->crouched ? PLAYER_CROUCH_EYE : PLAYER_EYE, 10.0f, dt);
     sample_medium(p);
     if (p->flying) step_fly(p, in, dt);
     else if (p->in_water) step_swim(p, in, dt);
@@ -184,6 +220,7 @@ static void physics_step(Player *p, const PlayerInput *in, float dt) {
     else step_walk(p, in, dt);
     collide_and_move(p, dt);
     if (p->flying && p->on_ground) p->flying = false; /* landing ends flight, as the player expects */
+    p->jump_buffer = MAX(p->jump_buffer - dt, 0.0f);
 }
 
 void player_step(Player *p, const PlayerInput *in, float dt) {
@@ -191,6 +228,7 @@ void player_step(Player *p, const PlayerInput *in, float dt) {
         p->flying = !p->flying;
         p->vel.y = 0;
     }
+    if (in->jump_pressed) p->jump_buffer = 0.12f;
     while (dt > 1e-6f) {
         float h = MIN(dt, PHYSICS_STEP);
         physics_step(p, in, h);

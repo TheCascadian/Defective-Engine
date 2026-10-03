@@ -61,9 +61,8 @@ static bool within_reach(int x, int y, int z) {
 
 static bool cell_overlaps_player(int x, int y, int z) {
     const Player *p = &g_player;
-    float h = PLAYER_WIDTH * 0.5f;
-    return (float)x < p->pos.x + h && (float)(x + 1) > p->pos.x - h && (float)y < p->pos.y + PLAYER_HEIGHT &&
-           (float)(y + 1) > p->pos.y && (float)z < p->pos.z + h && (float)(z + 1) > p->pos.z - h;
+    return (float)x < p->pos.x + p->half_width && (float)(x + 1) > p->pos.x - p->half_width && (float)y < p->pos.y + p->height &&
+           (float)(y + 1) > p->pos.y && (float)z < p->pos.z + p->half_width && (float)(z + 1) > p->pos.z - p->half_width;
 }
 
 static bool apply_break(const ServerMsg *m) {

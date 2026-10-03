@@ -207,6 +207,8 @@ static void drive_player(Camera *cam, double dt) {
         in.forward = (key_down(GLFW_KEY_W) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_S) ? 1.0f : 0.0f);
         in.strafe = (key_down(GLFW_KEY_D) ? 1.0f : 0.0f) - (key_down(GLFW_KEY_A) ? 1.0f : 0.0f);
         in.jump = key_down(GLFW_KEY_SPACE);
+        in.jump_pressed = key_pressed(GLFW_KEY_SPACE);
+        in.crouch = key_down(GLFW_KEY_LEFT_ALT);
         in.descend = key_down(GLFW_KEY_LEFT_SHIFT);
         in.sprint = key_down(GLFW_KEY_LEFT_CONTROL);
         in.toggle_fly = g_creative && key_pressed(GLFW_KEY_F);
@@ -216,7 +218,7 @@ static void drive_player(Camera *cam, double dt) {
         }
     }
     player_step(&g_player, &in, (float)dt);
-    cam->pos = player_eye(&g_player);
+    cam->pos = player_eye_render(&g_player);
     cam->yaw = g_player.yaw;
     cam->pitch = g_player.pitch;
     interact_update(&g_player, (float)dt, !menu && g_in.cursor_captured);

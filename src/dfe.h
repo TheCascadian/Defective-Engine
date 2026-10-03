@@ -991,10 +991,12 @@ int script_error_count(void);
 #define PLAYER_WIDTH 0.6f
 #define PLAYER_HEIGHT 1.8f
 #define PLAYER_EYE 1.62f
+#define PLAYER_CROUCH_HEIGHT 1.0f
+#define PLAYER_CROUCH_EYE 0.9f
 
 typedef struct PlayerInput {
     float forward, strafe; /* -1..1 along the view direction and across it */
-    bool jump, descend, sprint, toggle_fly;
+    bool jump, jump_pressed, crouch, descend, sprint, toggle_fly;
     float speed_scale;     /* multiplies the walking speed; 0 means 1, entities use it for slow or fast types */
 } PlayerInput;
 
@@ -1002,12 +1004,14 @@ typedef struct Player {
     V3 pos; /* centre of the feet */
     V3 vel;
     float yaw, pitch;
-    bool on_ground, in_water, head_in_water, flying, in_lava;
+    float render_eye_height, jump_buffer;
+    bool on_ground, in_water, head_in_water, flying, in_lava, crouched;
     float half_width, height; /* collision box; set by player_init, entities override them */
 } Player;
 
 void player_init(Player *p, V3 feet);
 V3 player_eye(const Player *p);
+V3 player_eye_render(const Player *p);
 /* Advances the player by dt seconds (at most one physics step of 1/60 s per call is exact; larger dt is split). */
 void player_step(Player *p, const PlayerInput *in, float dt);
 /* True when a player box with its feet at `feet` overlaps a solid block or an unloaded column. */

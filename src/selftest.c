@@ -803,8 +803,11 @@ static void test_player_physics(u16 stone) {
     player_init(&mover, v3(8.5f, (float)(SLAB_Y + 1), 8.5f));
     for (int i = 0; i < 2; i++) player_step(&mover, &none, 1.0f / 60.0f);
     PlayerInput forward = {.forward = 1.0f};
-    for (int i = 0; i < 6; i++) player_step(&mover, &forward, 1.0f / 60.0f);
-    CHECK(mover.vel.z < 0.0f && fabsf(mover.vel.z) < 2.0f);
+    for (int i = 0; i < 20; i++) player_step(&mover, &forward, 1.0f / 60.0f);
+    CHECK(mover.vel.z < 0.0f && fabsf(mover.vel.z) > 3.5f);
+    float stop_z = mover.pos.z;
+    for (int i = 0; i < 12; i++) player_step(&mover, &none, 1.0f / 60.0f);
+    CHECK(fabsf(mover.vel.z) < 0.1f && fabsf(mover.pos.z - stop_z) < 0.5f);
     PlayerInput held_jump = {.jump = true};
     for (int i = 0; i < 60; i++) player_step(&mover, &held_jump, 1.0f / 60.0f);
     CHECK(mover.on_ground);
@@ -817,10 +820,11 @@ static void test_player_physics(u16 stone) {
     CHECK(mover.crouched && fabsf(mover.height - PLAYER_CROUCH_HEIGHT) < 1e-6f);
     CHECK(fabsf(player_eye(&mover).y - mover.pos.y - PLAYER_CROUCH_EYE) < 1e-5f);
     CHECK(player_eye_render(&mover).y < mover.pos.y + PLAYER_EYE && player_eye_render(&mover).y > player_eye(&mover).y);
-    world_set_state(8, SLAB_Y + 1, 8, stone);
+    int mover_x = ifloor(mover.pos.x), mover_z = ifloor(mover.pos.z);
+    world_set_state(mover_x, SLAB_Y + 1, mover_z, stone);
     player_step(&mover, &none, 1.0f / 60.0f);
     CHECK(mover.crouched && fabsf(mover.height - PLAYER_CROUCH_HEIGHT) < 1e-6f);
-    world_set_state(8, SLAB_Y + 1, 8, STATE_AIR);
+    world_set_state(mover_x, SLAB_Y + 1, mover_z, STATE_AIR);
     player_step(&mover, &none, 1.0f / 60.0f);
     CHECK(!mover.crouched && fabsf(mover.height - PLAYER_HEIGHT) < 1e-6f);
     /* A wall stops a walking player and a one block ledge is stepped over only when 0.6 or lower. */

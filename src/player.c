@@ -23,7 +23,7 @@
 #define WATER_SINK_SPEED 2.2f
 #define LAVA_SPEED_SCALE 0.4f
 #define GROUND_ACCEL 12.0f
-#define GROUND_BRAKE 10.0f
+#define GROUND_BRAKE 24.0f
 #define AIR_ACCEL 2.0f
 #define AIR_DRAG 0.2f
 #define SWIM_RESPONSE 7.0f

@@ -27,18 +27,18 @@ def run_one(exe, preset, size, seconds, extra, label):
     finally:
         os.unlink(out)
 
-def run_fast(exe, presets, sizes, seconds, runs, extra, label):
+def run_fast(exe, presets, sizes, seconds, runs, extra, label, visible):
     """One launch for the whole matrix. Returns a list of per-case result lists, in case order."""
     cases = [f"{p}:{s}" for p in presets for s in sizes]
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as t:
         out = t.name
     cmd = [exe, "--bench-matrix", ",".join(cases), "--bench-runs", str(runs), "--bench-seconds", str(seconds),
-           "--bench-json", out, "--bench-label", label] + extra
+           "--bench-json", out, "--bench-label", label] + ([] if visible else ["--hidden"]) + extra
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     tail = []
     for line in proc.stdout:
         tail.append(line.rstrip())
-        if re.match(r"\[\d+/\d+\]", line):
+        if re.match(r"\[\d+/\d+\]|warning:", line):
             print("  " + line.rstrip(), flush=True)
     proc.wait()
     try:
@@ -55,16 +55,21 @@ def median_result(runs):
     """Picks the run with the median average fps so every number in the row comes from one real run."""
     return sorted(runs, key=lambda r: r["fps_avg"])[len(runs) // 2]
 
-def verdict(r):
-    ok = r["fps_avg"] >= 60 and r["fps_low1"] >= 40 and r["hitches"] == 0 and r["peak_memory_mb"] < 1536 and r["cold_start_s"] < 10
+def verdict(r, fast=False):
+    """Memory and cold start are process-wide, so a one-launch matrix cannot judge them; only --isolated does."""
+    ok = r["fps_avg"] >= 60 and r["fps_low1"] >= 40 and r["hitches"] == 0
+    if not fast:
+        ok = ok and r["peak_memory_mb"] < 1536 and r["cold_start_s"] < 10
     return "pass" if ok else "fail"
 
-HEADER = f"{'preset':8}{'size':11}{'rd':>4}{'fps':>8}{'1%low':>8}{'p99ms':>8}{'maxms':>8}{'hitch':>7}{'cpu':>7}{'swap':>7}{'gpu':>7}{'opaque':>8}{'mem MB':>8}{'cold s':>8}  budget"
+HEADER = f"{'preset':8}{'size':11}{'rd':>4}{'fps':>8}{'1%low':>8}{'p99ms':>8}{'maxms':>8}{'hitch':>7}{'cpu':>7}{'swap':>7}{'gpu':>7}{'opaque':>8}{'post':>7}{'mem MB':>8}{'cold s':>8}  budget"
 
-def row(r, base):
+def row(r, base, fast=False):
+    mem = "-" if fast else f"{r['peak_memory_mb']:.0f}"
+    cold = "-" if fast else f"{r['cold_start_s']:.1f}"
     line = (f"{r['preset']:8}{str(r['width']) + 'x' + str(r['height']):11}{r['render_distance']:>4}{r['fps_avg']:>8.1f}{r['fps_low1']:>8.1f}"
             f"{r['frame_ms']['p99']:>8.1f}{r['frame_ms']['max']:>8.1f}{r['hitches']:>7}{r['cpu_ms']['total']:>7.1f}{r['cpu_ms']['swap']:>7.1f}"
-            f"{r['gpu_ms']['total']:>7.1f}{r['gpu_ms']['opaque']:>8.1f}{r['peak_memory_mb']:>8.0f}{r['cold_start_s']:>8.1f}  {verdict(r)}")
+            f"{r['gpu_ms']['total']:>7.2f}{r['gpu_ms']['opaque']:>8.2f}{r['gpu_ms']['post']:>7.2f}{mem:>8}{cold:>8}  {verdict(r, fast)}")
     if base:
         line += f"   (baseline {base['fps_avg']:.1f} fps, {r['fps_avg'] - base['fps_avg']:+.1f})"
     return line
@@ -75,6 +80,7 @@ def main():
     ap.add_argument("--presets", default="low,medium,high")
     ap.add_argument("--sizes", default="1280x720")
     ap.add_argument("--seconds", type=int, default=10, help="per case; each case also settles for one second first")
+    ap.add_argument("--visible", action="store_true", help="show the window; a window manager may then override the requested sizes")
     ap.add_argument("--isolated", action="store_true", help="launch the engine for every run (slower, includes cold start)")
     ap.add_argument("--runs", type=int, default=1, help="repeat each case and report the median run")
     ap.add_argument("--label", default="")
@@ -89,14 +95,15 @@ def main():
     results = []
     presets, sizes = a.presets.split(","), a.sizes.split(",")
     if not a.isolated:
-        grouped = run_fast(a.exe, presets, sizes, a.seconds, a.runs, a.extra, a.label)
+        grouped = run_fast(a.exe, presets, sizes, a.seconds, a.runs, a.extra, a.label, a.visible)
         print("\n" + HEADER)
         for runs in grouped:
             r = median_result(runs)
             if a.runs > 1:
                 r["fps_spread"] = statistics.pstdev([x["fps_avg"] for x in runs])
             results.append(r)
-            print(row(r, base.get((r["preset"], r["width"], r["height"]))), flush=True)
+            print(row(r, base.get((r["preset"], r["width"], r["height"])), True), flush=True)
+        print("\nmem and cold are not shown: they are process-wide in a one-launch matrix. Use --isolated for the memory and cold start budgets.")
     else:
         print(HEADER)
         for preset in presets:

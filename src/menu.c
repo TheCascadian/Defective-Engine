@@ -2,35 +2,24 @@
  *
  * Everything is immediate mode on top of the 2D layer: each frame a widget is drawn and tells the caller whether it
  * was clicked, so there is no widget tree to keep in sync with the data. Settings are applied as they change so the
- * player sees the effect behind the menu, and are written to disk when the screen is left. */
+ * player sees the effect behind the menu, and are written to disk when the screen is left.
+ *
+ * The controls themselves (buttons, cycle rows, sliders, fields, scroll panes, tooltips) live in ui_widgets.c; this
+ * file only says what each setting means. Layout comes from UiBox stacks instead of hand-added y coordinates -
+ * think of it as flexbox: describe the container once, then take cells and let the cursor advance itself. */
 #include "dfe.h"
+#include "ui_widgets.h"
+
 #include <GLFW/glfw3.h>
 
 #define PANEL_W 420.0f
 #define ROW_H 36.0f
-#define ROW_GAP 8.0f
 #define TEXT_SIZE 18.0f
 #define TITLE_SIZE 34.0f
-#define ARROW_W 40.0f
 #define LIST_ROWS 6
 #define FIELD_CAP 40
 #define WORLD_NAME_CAP 40
 #define SCREEN_FRAME_MS 16
-
-#define COL_PANEL rgba(14, 17, 24, 235)
-#define COL_BTN rgba(40, 48, 66, 255)
-#define COL_BTN_HOT rgba(66, 94, 150, 255)
-#define COL_TEXT rgba(232, 235, 242, 255)
-#define COL_DIM rgba(150, 158, 175, 255)
-#define COL_WARN rgba(255, 170, 140, 255)
-#define COL_FIELD rgba(22, 26, 36, 255)
-#define COL_FIELD_ACTIVE rgba(34, 44, 66, 255)
-
-typedef enum MenuScreen { SCREEN_NONE, SCREEN_PAUSE, SCREEN_SETTINGS } MenuScreen;
-
-static MenuScreen g_screen = SCREEN_NONE;
-static bool g_quit_requested;
-static bool g_settings_live; /* true when the world exists, so gfx_apply may push values to the scene */
 
 /* Render distance choices; 0 follows the preset. */
 static const int RD_CHOICES[] = {0, 4, 6, 8, 10, 12, 16, 20, 24, 32};
@@ -42,49 +31,29 @@ static const int DYN_CHOICES[] = {-1, 1, 0}; /* automatic, on, off */
 #define SCALE_MAX 1.0f
 #define SCALE_STEP 0.05f
 
-/* ---------------------------------------------------------------- widgets */
+/* Stable widget IDs: hashing the dotted setting path means scroll/focus memory survives hot reload, and two
+ * screens that show the same setting share its state instead of fighting over it. */
+#define ID_PRESET ui_id("settings.preset")
+#define ID_RDIST ui_id("settings.render_distance")
+#define ID_DYNRES ui_id("settings.dynamic_resolution")
+#define ID_SCALE ui_id("settings.render_scale")
+#define ID_FOV ui_id("settings.fov")
+#define ID_VSYNC ui_id("settings.vsync")
+#define ID_DONE ui_id("settings.done")
+#define ID_HINT ui_id("settings.scale_hint")
+#define ID_SCROLL ui_id("settings.scroll")
 
-static bool hovered(float x, float y, float w, float h) {
-    return g_in.mouse_x >= x && g_in.mouse_x < x + w && g_in.mouse_y >= y && g_in.mouse_y < y + h;
-}
+typedef enum MenuScreen { SCREEN_NONE, SCREEN_PAUSE, SCREEN_SETTINGS } MenuScreen;
 
-static bool clicked(float x, float y, float w, float h, int button) { return g_in.mouse_pressed[button] && hovered(x, y, w, h); }
+static MenuScreen g_screen = SCREEN_NONE;
+static bool g_quit_requested;
+static bool g_settings_live; /* true when the world exists, so gfx_apply may push values to the scene */
 
-static void draw_centered(float x, float y, float w, float h, float size, u32 color, const char *text) {
-    ui_text(x + (w - ui_text_width(size, text)) * 0.5f, y + (h - size) * 0.5f - 2.0f, size, color, text);
-}
-
-static bool button(float x, float y, float w, const char *label) {
-    ui_rect(x, y, w, ROW_H, hovered(x, y, w, ROW_H) ? COL_BTN_HOT : COL_BTN);
-    draw_centered(x, y, w, ROW_H, TEXT_SIZE, COL_TEXT, label);
-    return clicked(x, y, w, ROW_H, GLFW_MOUSE_BUTTON_LEFT);
-}
-
-/* A row with arrows on both sides. Returns -1 or +1 for the arrow that was clicked, 0 otherwise. The whole row
- * also advances on a left click in the middle, so a mouse-only player can cycle with one hand. */
-static int cycle_row(float x, float y, float w, const char *label, const char *value) {
-    int step = 0;
-    char text[96];
-    snprintf(text, sizeof text, "%s: %s", label, value);
-    ui_rect(x, y, w, ROW_H, COL_BTN);
-    if (hovered(x, y, ARROW_W, ROW_H)) ui_rect(x, y, ARROW_W, ROW_H, COL_BTN_HOT);
-    if (hovered(x + w - ARROW_W, y, ARROW_W, ROW_H)) ui_rect(x + w - ARROW_W, y, ARROW_W, ROW_H, COL_BTN_HOT);
-    draw_centered(x, y, ARROW_W, ROW_H, TEXT_SIZE, COL_TEXT, "<");
-    draw_centered(x + w - ARROW_W, y, ARROW_W, ROW_H, TEXT_SIZE, COL_TEXT, ">");
-    draw_centered(x + ARROW_W, y, w - 2 * ARROW_W, ROW_H, TEXT_SIZE, COL_TEXT, text);
-    if (clicked(x, y, ARROW_W, ROW_H, GLFW_MOUSE_BUTTON_LEFT)) step = -1;
-    else if (clicked(x + w - ARROW_W, y, ARROW_W, ROW_H, GLFW_MOUSE_BUTTON_LEFT)) step = 1;
-    else if (clicked(x + ARROW_W, y, w - 2 * ARROW_W, ROW_H, GLFW_MOUSE_BUTTON_LEFT)) step = 1;
-    else if (clicked(x + ARROW_W, y, w - 2 * ARROW_W, ROW_H, GLFW_MOUSE_BUTTON_RIGHT)) step = -1;
-    return step;
-}
-
+static inline int wrap(int i, int count) { return ((i % count) + count) % count; }
 static int index_of_int(const int *list, int count, int value) {
     for (int i = 0; i < count; i++) if (list[i] == value) return i;
     return 0;
 }
-
-static int wrap(int i, int count) { return ((i % count) + count) % count; }
 
 /* ---------------------------------------------------------- settings screen */
 
@@ -111,47 +80,52 @@ static void step_dynamic(int step) {
     g_settings.dynamic_resolution = DYN_CHOICES[wrap(index_of_int(DYN_CHOICES, n, g_settings.dynamic_resolution) + step, n)];
 }
 
-static void step_scale(int step) {
-    g_settings.render_scale = CLAMP(roundf((g_settings.render_scale + (float)step * SCALE_STEP) / SCALE_STEP) * SCALE_STEP, SCALE_MIN, SCALE_MAX);
-}
-
-static void step_fov(int step) { g_settings.fov_deg = (float)CLAMP((int)g_settings.fov_deg + step * FOV_STEP, FOV_MIN, FOV_MAX); }
-
-/* Draws the settings rows at the panel's top-left corner and returns true when Done was pressed. */
-static bool settings_rows(float x, float y) {
+/* Draws the settings panel at the given rect and returns true when Done was pressed. `panel` is a cell taken from
+ * the caller's column, so the same function serves the centered pause overlay and the free-floating title screen.
+ * The row stack sits inside a scroll pane: on a low window where seven rows do not fit, the wheel still reaches
+ * everything and the scrollbar shows where you are - overflow_h is the natural height of the content. */
+static bool settings_rows(UiBox panel, float panel_h) {
     char v[64];
     bool changed = false;
     const Preset *p = preset_find(g_settings.preset);
-    int step;
-    if ((step = cycle_row(x, y, PANEL_W, "Preset", p ? p->name : g_settings.preset))) { step_preset(step); changed = true; }
-    y += ROW_H + ROW_GAP;
+    UiBox col = ui_box(panel.x, panel.y, panel.w, panel_h, UI_STACK_V, g_ui_theme.gap, 0.0f);
+    const float overflow_h = 7.0f * ROW_H + 2.0f * (ROW_H + 10.0f) + 6.0f * g_ui_theme.gap + 24.0f;
+    UiScroll sc = ui_scroll_begin(ID_SCROLL, col, MAX(overflow_h, MIN(col.h, panel_h)));
+    ui_scroll_update(&sc, ID_SCROLL);
+
+    UiStep s;
+    UiCell(preset, &sc.content, ROW_H);
+    if ((s = widget_cycle_row(&preset, ID_PRESET, "Preset", p ? p->name : g_settings.preset))) { step_preset(s == UI_STEP_FWD ? 1 : -1); changed = true; }
     if (g_settings.render_distance > 0) snprintf(v, sizeof v, "%d chunks", g_settings.render_distance);
     else snprintf(v, sizeof v, "preset (%d)", p ? p->render_distance : 0);
-    if ((step = cycle_row(x, y, PANEL_W, "Render distance", v))) { step_render_distance(step); changed = true; }
-    y += ROW_H + ROW_GAP;
+    UiCell(rdist, &sc.content, ROW_H);
+    if ((s = widget_cycle_row(&rdist, ID_RDIST, "Render distance", v))) { step_render_distance(s == UI_STEP_FWD ? 1 : -1); changed = true; }
     snprintf(v, sizeof v, "%s", g_settings.dynamic_resolution < 0 ? "preset" : g_settings.dynamic_resolution ? "on" : "off");
-    if ((step = cycle_row(x, y, PANEL_W, "Dynamic resolution", v))) { step_dynamic(step); changed = true; }
-    y += ROW_H + ROW_GAP;
-    snprintf(v, sizeof v, "%d%%", (int)(g_settings.render_scale * 100.0f + 0.5f));
-    if ((step = cycle_row(x, y, PANEL_W, "Render scale", v))) { step_scale(step); changed = true; }
-    y += ROW_H + ROW_GAP;
-    snprintf(v, sizeof v, "%d", (int)g_settings.fov_deg);
-    if ((step = cycle_row(x, y, PANEL_W, "Field of view", v))) { step_fov(step); changed = true; }
-    y += ROW_H + ROW_GAP;
-    if ((step = cycle_row(x, y, PANEL_W, "Vertical sync", g_settings.vsync ? "on" : "off"))) { g_settings.vsync = !g_settings.vsync; changed = true; }
-    y += ROW_H + ROW_GAP;
-    ui_text(x, y, 14, COL_DIM, "Render scale applies while dynamic resolution is off.");
-    y += 24.0f;
+    UiCell(dynres, &sc.content, ROW_H);
+    if ((s = widget_cycle_row(&dynres, ID_DYNRES, "Dynamic resolution", v))) { step_dynamic(s == UI_STEP_FWD ? 1 : -1); changed = true; }
+    /* The two continuous settings use the generic slider instead of cycling through fixed steps: dragging to a
+     * value is one motion where cycling took up to ten clicks, which matters on a slow laptop at 30 fps. */
+    UiCell(scale, &sc.content, ROW_H + 10.0f);
+    if (widget_slider(&scale, ID_SCALE, "Render scale", &g_settings.render_scale, SCALE_MIN, SCALE_MAX, SCALE_STEP)) changed = true;
+    UiCell(fov, &sc.content, ROW_H + 10.0f);
+    if (widget_slider(&fov, ID_FOV, "Field of view", &g_settings.fov_deg, FOV_MIN, FOV_MAX, FOV_STEP)) changed = true;
+    UiCell(vsync, &sc.content, ROW_H);
+    if ((s = widget_cycle_row(&vsync, ID_VSYNC, "Vertical sync", g_settings.vsync ? "on" : "off"))) { g_settings.vsync = !g_settings.vsync; changed = true; }
+    UiBox hint = layout_next(&sc.content, 20.0f);
+    ui_text(hint.x, hint.y, 14, g_ui_theme.col_dim, "Render scale applies while dynamic resolution is off.");
+    ui_scroll_end(&sc);
+
+    UiCell(done_cell, &col, ROW_H);
+    bool done = widget_button(&done_cell, ID_DONE, "Done");
+    ui_tooltip_anchor(ID_HINT, &hint, "Only used when Dynamic resolution is off.");
     if (changed) settings_changed();
-    return button(x, y, PANEL_W, "Done");
+    return done;
 }
 
 static void leave_settings(void) {
     /* Benchmarks never reach a menu, but the guard keeps a script from overwriting a player's file by accident. */
     if (!g_opt.benchmark) settings_save();
 }
-
-#define SETTINGS_PANEL_H 420.0f
 
 /* ------------------------------------------------------------- pause menu */
 
@@ -163,32 +137,38 @@ void menu_set_open(bool open) {
     if (open == menu_is_open()) return;
     g_screen = open ? SCREEN_PAUSE : SCREEN_NONE;
     g_settings_live = true;
+    ui_clear_focus(); /* stale hover focus must not fire a widget on the next screen */
     window_set_cursor_captured(!open);
 }
 
 /* Escape steps back one level: settings to pause, pause to the game. */
 void menu_back(void) {
-    if (g_screen == SCREEN_SETTINGS) { leave_settings(); g_screen = SCREEN_PAUSE; }
+    if (g_screen == SCREEN_SETTINGS) { leave_settings(); g_screen = SCREEN_PAUSE; ui_clear_focus(); }
     else menu_set_open(false);
 }
 
 void menu_draw(int width, int height) {
     if (!menu_is_open()) return;
-    float cx = ((float)width - PANEL_W) * 0.5f;
     ui_rect(0, 0, (float)width, (float)height, rgba(0, 0, 0, 120));
+    UiBox outer = ui_box(0, 0, (float)width, (float)height, UI_STACK_V, 0.0f, 0.0f);
+    UiBox panel = ui_center_in(&outer, PANEL_W, (float)height * 0.8f); /* margin:auto: the block sits dead center */
+    UiBox col = ui_box(panel.x, panel.y, panel.w, panel.h, UI_STACK_V, g_ui_theme.gap, 0.0f);
     if (g_screen == SCREEN_PAUSE) {
-        float y = (float)height * 0.5f - 130.0f;
-        draw_centered(cx, y - 60, PANEL_W, 40, TITLE_SIZE, COL_TEXT, "Paused");
-        if (button(cx, y, PANEL_W, "Resume")) menu_set_open(false);
-        y += ROW_H + ROW_GAP;
-        if (button(cx, y, PANEL_W, "Settings")) g_screen = SCREEN_SETTINGS;
-        y += ROW_H + ROW_GAP;
-        if (button(cx, y, PANEL_W, "Save and quit")) { g_quit_requested = true; g_win.should_close = true; }
+        UiBox head = layout_next_extent(&col, 56.0f, 56.0f + 60.0f); /* the title reserves 60px of space above it */
+        ui_center_text(head.x, head.y, head.w, 40.0f, TITLE_SIZE, g_ui_theme.col_text, "Paused");
+        UiCell(btn0, &col, ROW_H);
+        if (widget_button(&btn0, ui_id("pause.resume"), "Resume")) menu_set_open(false);
+        UiCell(btn1, &col, ROW_H);
+        if (widget_button(&btn1, ui_id("pause.settings"), "Settings")) { g_screen = SCREEN_SETTINGS; ui_clear_focus(); }
+        UiCell(btn2, &col, ROW_H);
+        if (widget_button(&btn2, ui_id("pause.quit"), "Save and quit")) { g_quit_requested = true; g_win.should_close = true; }
     } else {
-        float top = ((float)height - SETTINGS_PANEL_H) * 0.5f;
-        draw_centered(cx, top - 56, PANEL_W, 40, TITLE_SIZE, COL_TEXT, "Settings");
-        if (settings_rows(cx, top)) { leave_settings(); g_screen = SCREEN_PAUSE; }
+        UiBox head = layout_next_extent(&col, 56.0f, 56.0f + 60.0f);
+        ui_center_text(head.x, head.y, head.w, 40.0f, TITLE_SIZE, g_ui_theme.col_text, "Settings");
+        if (settings_rows(col, col.h)) { leave_settings(); g_screen = SCREEN_PAUSE; ui_clear_focus(); }
     }
+    ui_tooltips_tick(); /* dwell timer, fed by the dt measured in ui_frame_begin() */
+    ui_tooltips_draw();
 }
 
 /* -------------------------------------------------------------- title menu */
@@ -239,28 +219,29 @@ static u64 seed_from_text(const char *s) {
     return h;
 }
 
-static void text_field(float x, float y, float w, const char *label, const char *value, bool active) {
-    ui_text(x, y - 20, 14, COL_DIM, label);
-    ui_rect(x, y, w, ROW_H, active ? COL_FIELD_ACTIVE : COL_FIELD);
-    char shown[FIELD_CAP + 2];
-    snprintf(shown, sizeof shown, "%s%s", value, active && ((int)(time_now_s() * 2.0) & 1) ? "_" : "");
-    ui_text(x + 10, y + 8, TEXT_SIZE, COL_TEXT, shown);
-}
-
-/* Returns true when a world was chosen; the choice is written to world_out and seed_out. */
-static bool title_create_form(TitleState *t, float cx, float y, char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
-    text_field(cx, y + 20, PANEL_W, "World name", t->name, t->field == 0);
-    if (clicked(cx, y + 20, PANEL_W, ROW_H, GLFW_MOUSE_BUTTON_LEFT)) t->field = 0;
-    y += 20 + ROW_H + 40;
-    text_field(cx, y, PANEL_W, "Seed (empty for random, any text is accepted)", t->seed, t->field == 1);
-    if (clicked(cx, y, PANEL_W, ROW_H, GLFW_MOUSE_BUTTON_LEFT)) t->field = 1;
-    y += ROW_H + ROW_GAP + 10;
+/* Returns true when a world was chosen; the choice is written to world_out and seed_out. The fields are widgets,
+ * but which one is active stays app logic (Tab switches name/seed), so `active` is passed in and the returned
+ * cell is tested with ui_clicked() to take selection from the mouse. */
+static bool title_create_form(TitleState *t, UiBox col, char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
+    UiBox f0 = layout_next(&col, ROW_H + 20.0f);
+    widget_text_field(&f0, "World name", t->name, FIELD_CAP, t->field == 0);
+    if (ui_clicked(f0.x, f0.y, f0.w, f0.h, GLFW_MOUSE_BUTTON_LEFT)) t->field = 0;
+    UiBox f1 = layout_next(&col, ROW_H + 20.0f);
+    widget_text_field(&f1, "Seed (empty for random, any text is accepted)", t->seed, FIELD_CAP, t->field == 1);
+    if (ui_clicked(f1.x, f1.y, f1.w, f1.h, GLFW_MOUSE_BUTTON_LEFT)) t->field = 1;
     if (key_pressed(GLFW_KEY_TAB)) t->field ^= 1;
     edit_field(t->field == 0 ? t->name : t->seed, FIELD_CAP, t->field == 0);
-    bool create = button(cx, y, PANEL_W, "Create world") || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
-    y += ROW_H + ROW_GAP;
-    if (button(cx, y, PANEL_W, "Back") || key_pressed(GLFW_KEY_ESCAPE)) { t->creating = false; t->message[0] = 0; }
-    if (t->message[0]) ui_text(cx, y + ROW_H + 12, 14, COL_WARN, t->message);
+    UiCell(btn3, &col, ROW_H);
+    bool create = widget_button(&btn3, ui_id("title.create"), "Create world") ||
+                  key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
+    UiCell(btn4, &col, ROW_H);
+    if (widget_button(&btn4, ui_id("title.back"), "Back") || key_pressed(GLFW_KEY_ESCAPE)) {
+        t->creating = false; t->message[0] = 0;
+    }
+    if (t->message[0]) {
+        UiBox msg = layout_next(&col, 20.0f);
+        ui_text(msg.x, msg.y, 14, g_ui_theme.col_warn, t->message);
+    }
     if (!create) return false;
     if (!t->name[0]) { snprintf(t->message, sizeof t->message, "Enter a name for the world."); return false; }
     char path[300];
@@ -272,22 +253,40 @@ static bool title_create_form(TitleState *t, float cx, float y, char *world_out,
     return true;
 }
 
-static bool title_world_list(TitleState *t, float cx, float y, char *world_out, size_t cap) {
-    int shown = MIN(LIST_ROWS, t->worlds.n);
-    t->scroll = CLAMP(t->scroll - (int)g_in.scroll, 0, MAX(0, t->worlds.n - LIST_ROWS));
-    for (int i = 0; i < shown; i++) {
-        const char *name = t->worlds.d[t->scroll + i];
-        if (button(cx, y, PANEL_W, name)) { snprintf(world_out, cap, "%s", name); return true; }
-        y += ROW_H + ROW_GAP;
+/* The world list is a scroll pane whose children are addressed like grid cells: one column, LIST_ROWS visible,
+ * and the integer scroll offset simply shifts the starting index. That keeps the old clamped int semantics
+ * (selection code outside this function still thinks in rows) while the wheel, thumb and clipping come free -
+ * the pane's own state slot holds the pixel offset, so the bar and the drag work without extra app code. */
+static bool title_world_list(TitleState *t, UiBox col, char *world_out, size_t cap) {
+    UiBox list_area = layout_next(&col, (float)LIST_ROWS * (ROW_H + g_ui_theme.gap));
+    int max_top = MAX(t->worlds.n - LIST_ROWS, 0);
+    float row_pitch = ROW_H + g_ui_theme.gap;
+    UiScroll sc = ui_scroll_begin(ui_id("title.worlds"), list_area, (float)t->worlds.n * row_pitch);
+    ui_scroll_update(&sc, ui_id("title.worlds")); /* wheel + thumb write the shared state slot */
+    t->scroll = CLAMP((int)(sc.scroll / row_pitch + 0.5f), 0, max_top); /* back to whole rows for the indexing below */
+    sc.content.y = list_area.y - (float)t->scroll * row_pitch;          /* keep the drawn text on exact row lines */
+    for (int i = 0; i < LIST_ROWS; i++) {
+        int idx = t->scroll + i;
+        if (idx >= t->worlds.n) break;
+        UiBox cell = layout_grid_cell(&sc.content, 1, LIST_ROWS, g_ui_theme.gap, i);
+        if (widget_button(&cell, ui_id_of(t->worlds.d[idx]), t->worlds.d[idx])) {
+            snprintf(world_out, cap, "%s", t->worlds.d[idx]);
+            ui_scroll_end(&sc);
+            return true;
+        }
     }
-    if (!t->worlds.n) { ui_text(cx, y + 6, TEXT_SIZE, COL_DIM, "No worlds yet. Create one to begin."); y += ROW_H; }
-    else if (t->worlds.n > LIST_ROWS) { ui_text(cx, y, 14, COL_DIM, "Scroll the wheel for more worlds."); y += 24; }
-    y = MAX(y, 0) + 8;
-    if (button(cx, y, PANEL_W, "New world")) { t->creating = true; t->field = 0; t->name[0] = t->seed[0] = 0; }
-    y += ROW_H + ROW_GAP;
-    if (button(cx, y, PANEL_W, "Settings")) t->settings = true;
-    y += ROW_H + ROW_GAP;
-    if (button(cx, y, PANEL_W, "Quit")) g_win.should_close = true;
+    if (!t->worlds.n) {
+        UiBox empty = layout_grid_cell(&sc.content, 1, LIST_ROWS, g_ui_theme.gap, 0);
+        ui_text(empty.x, empty.y + 6, TEXT_SIZE, g_ui_theme.col_dim, "No worlds yet. Create one to begin.");
+    }
+    ui_scroll_end(&sc);
+    if (t->worlds.n > LIST_ROWS) ui_tooltip_anchor(ui_id("title.worlds.hint"), &list_area, "Scroll the wheel for more worlds.");
+    UiCell(btn5, &col, ROW_H);
+    if (widget_button(&btn5, ui_id("title.new"), "New world")) { t->creating = true; t->field = 0; t->name[0] = t->seed[0] = 0; }
+    UiCell(btn6, &col, ROW_H);
+    if (widget_button(&btn6, ui_id("title.settings"), "Settings")) t->settings = true;
+    UiCell(btn7, &col, ROW_H);
+    if (widget_button(&btn7, ui_id("title.quit"), "Quit")) g_win.should_close = true;
     return false;
 }
 
@@ -303,15 +302,20 @@ bool menu_title(char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
         glViewport(0, 0, g_win.fb_width, g_win.fb_height);
         glClearColor(0.07f, 0.09f, 0.13f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        ui_begin(g_win.width, g_win.height);
-        float cx = ((float)g_win.width - PANEL_W) * 0.5f, top = MAX(90.0f, (float)g_win.height * 0.5f - 200.0f);
+        ui_begin(g_win.width, g_win.height); /* also runs ui_frame_begin(): timers reset for this pass */
+        UiBox screen = ui_box(0, 0, (float)g_win.width, (float)g_win.height, UI_STACK_V, 0.0f, 0.0f);
+        UiBox panel = ui_center_in(&screen, PANEL_W, MIN((float)g_win.height * 0.85f, 560.0f));
         ui_rect_gradient(0, 0, (float)g_win.width, (float)g_win.height, rgba(24, 34, 58, 255), rgba(8, 10, 16, 255));
-        draw_centered(cx, top - 70, PANEL_W, 50, TITLE_SIZE + 6, COL_TEXT, "Defective Engine");
+        UiBox col = ui_box(panel.x, panel.y, panel.w, panel.h, UI_STACK_V, g_ui_theme.gap, 0.0f);
+        UiBox title = layout_next(&col, 56.0f);
+        ui_center_text(title.x, title.y, title.w, 50.0f, TITLE_SIZE + 6, g_ui_theme.col_text, "Defective Engine");
         if (t.settings) {
-            if (settings_rows(cx, top)) { leave_settings(); t.settings = false; }
+            if (settings_rows(col, col.h)) { leave_settings(); t.settings = false; }
             if (key_pressed(GLFW_KEY_ESCAPE)) { leave_settings(); t.settings = false; }
-        } else if (t.creating) chosen = title_create_form(&t, cx, top, world_out, cap, seed_out, seed_set);
-        else chosen = title_world_list(&t, cx, top, world_out, cap);
+        } else if (t.creating) chosen = title_create_form(&t, col, world_out, cap, seed_out, seed_set);
+        else chosen = title_world_list(&t, col, world_out, cap);
+        ui_tooltips_tick();
+        ui_tooltips_draw();
         ui_end();
         window_swap();
         sleep_ms(SCREEN_FRAME_MS);

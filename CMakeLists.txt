@@ -60,6 +60,7 @@ target_include_directories(dfe_third PUBLIC ${THIRD}/glad/include ${THIRD}/lz4 $
 add_library(dfe_engine STATIC
   src/base.c
   src/render.c
+  src/ui_widgets.c
   src/perf.c
   src/settings.c
   src/post.c

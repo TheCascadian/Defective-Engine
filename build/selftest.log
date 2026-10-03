@@ -1,0 +1,54 @@
+[info] mod 1: base 1.0.0 (Base Game)
+selftest base           ok
+selftest jobs           ok
+selftest palette        ok
+selftest json           ok
+[error] [mod test] : block 'test:lever' redefines the property layout of an earlier definition from mod 'test'; keep the same properties or use a new name
+selftest registry       ok
+[info] World 'selftest_world' created, seed 99, 33 block names
+[info] World 'selftest_world' loaded, seed 99, 33 block names
+[info] World 'selftest_world_budget' created, seed 7, 33 block names
+selftest world-light-mesh ok
+selftest vfs            ok
+[error] [mod broken] mod.json:1: unterminated object, add a closing }. Fix the JSON syntax at that line.
+[error] [mod futuristic] mod.json:1: targets mod API 99 but this engine provides API 1. Update the mod, or use an engine build that matches.
+[error] [mod delta] mod.json:1: requires mod "nothing_here" which is not installed, is disabled or failed to load. Install it into the mods folder, or remove "delta".
+[error] [mod dependsondelta] mod.json:1: requires mod "delta" which is not installed, is disabled or failed to load. Install it into the mods folder, or remove "dependsondelta".
+[error] [mod gamma] mod.json:1: requires "alpha" >2.0.0 but version 1.0.0 is installed. Update "alpha" or relax the requirement.
+[error] [mod cyc_a] mod.json:1: takes part in or depends on a dependency cycle among: cyc_a, cyc_b. Remove one "depends" or "load_after" entry to break it.
+[error] [mod cyc_b] mod.json:1: takes part in or depends on a dependency cycle among: cyc_a, cyc_b. Remove one "depends" or "load_after" entry to break it.
+[error] [mod broken] mod.json:1: unterminated object, add a closing }. Fix the JSON syntax at that line.
+[error] [mod futuristic] mod.json:1: targets mod API 99 but this engine provides API 1. Update the mod, or use an engine build that matches.
+[error] [mod delta] mod.json:1: requires mod "nothing_here" which is not installed, is disabled or failed to load. Install it into the mods folder, or remove "delta".
+[error] [mod dependsondelta] mod.json:1: requires mod "delta" which is not installed, is disabled or failed to load. Install it into the mods folder, or remove "dependsondelta".
+[error] [mod gamma] mod.json:1: requires "alpha" >2.0.0 but version 1.0.0 is installed. Update "alpha" or relax the requirement.
+[error] [mod cyc_a] mod.json:1: takes part in or depends on a dependency cycle among: cyc_a, cyc_b. Remove one "depends" or "load_after" entry to break it.
+[error] [mod cyc_b] mod.json:1: takes part in or depends on a dependency cycle among: cyc_a, cyc_b. Remove one "depends" or "load_after" entry to break it.
+[error] [mod looper] scripts/main.lua:2: script used more than 30000000 instructions in one call. Remove the endless loop, or spread the work over several ticks
+[warn] [mod looper] its script failed, so its handlers and commands were removed. The rest of the mod still loads.
+[error] [mod memory] scripts/main.lua: not enough memory
+[warn] [mod memory] its script failed, so its handlers and commands were removed. The rest of the mod still loads.
+[error] [mod syntax] scripts/main.lua:1: unexpected symbol near '='
+[warn] [mod syntax] its script failed, so its handlers and commands were removed. The rest of the mod still loads.
+[info] pong hello!
+[error] [mod base] scripts/main.lua:6: boom
+[error] [mod base] handler for tick was switched off after the error above. Fix the script and restart the game.
+[error] [mod native_test] unknown event "no_such_event". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick.
+[info] 3
+[info] console:1: attempt to index global 'os' (a nil value)
+[info] console:1: script used more than 5000000 instructions in one call. Remove the endless loop, or spread the work over several ticks
+selftest mods-scripts   ok
+selftest examples skipped: run from the repository root
+selftest examples       ok
+selftest gameplay skipped: run from the repository root
+selftest gameplay       ok
+[error] [mod ?] data/<namespace>/presets: no quality presets found. Add a file such as data/base/presets/low.json with "render_distance" and "far_chunks"; the base mod ships three.
+  FAIL /workspace/src/selftest.c:984  registry_load_presets() == 0
+  FAIL /workspace/src/selftest.c:985  preset_count() >= 3
+  FAIL /workspace/src/selftest.c:987  low && high && !preset_find("no_such_preset")
+selftest presets        FAILED
+[error] [mod ?] data/<namespace>/atmosphere/default.json: no atmosphere file found. Add one with "keys" listing sky colours over the day; the base mod ships an example.
+  FAIL /workspace/src/selftest.c:1014  data_error_count() == 0
+  FAIL /workspace/src/selftest.c:1015  g_atmo.loaded && g_atmo.key_count >= 2
+selftest atmosphere     FAILED
+selftest total: 123 checks, 5 failures

@@ -1,6 +1,1 @@
-build/
-*.o
-saves/
-examples/mods/*/plugins/
-perf_results/
-settings.json
+(empty)

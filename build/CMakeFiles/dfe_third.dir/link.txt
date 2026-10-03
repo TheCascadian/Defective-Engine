@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdfe_third.a CMakeFiles/dfe_third.dir/third_party/glad/src/gl.c.o CMakeFiles/dfe_third.dir/third_party/lz4/lz4.c.o
+/usr/bin/ranlib libdfe_third.a

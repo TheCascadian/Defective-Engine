@@ -1,8 +1,12 @@
 /* Heads-up display: crosshair, hotbar, break progress and the inventory screen.
  *
  * Item icons are small isometric cubes drawn once on the CPU from the block textures into one atlas, so a mod's
- * block gets an icon with no extra art and the HUD costs one texture bind. */
+ * block gets an icon with no extra art and the HUD costs one texture bind.
+ *
+ * Slot drawing and grid placement come from ui_widgets.c: widget_slot paints frame/icon/count and reports hover,
+ * layout_grid_cell turns (col, row) into a rect - the same seam mods use for custom slot art via UiIconFn. */
 #include "dfe.h"
+#include "ui_widgets.h"
 
 #include <GLFW/glfw3.h>
 
@@ -127,33 +131,21 @@ static void draw_icon(u16 state, float x, float y, float size) {
 
 /* ------------------------------------------------------------------ slots */
 
-static void draw_slot(const ItemStack *s, float x, float y, bool selected) {
-    ui_rect(x, y, SLOT_PX, SLOT_PX, rgba(20, 22, 28, 190));
-    if (selected) {
-        ui_rect(x - 2, y - 2, SLOT_PX + 4, 2, rgba(255, 255, 255, 235));
-        ui_rect(x - 2, y + SLOT_PX, SLOT_PX + 4, 2, rgba(255, 255, 255, 235));
-        ui_rect(x - 2, y, 2, SLOT_PX, rgba(255, 255, 255, 235));
-        ui_rect(x + SLOT_PX, y, 2, SLOT_PX, rgba(255, 255, 255, 235));
-    }
-    if (!s->count) return;
-    float pad = 4.0f;
-    draw_icon(s->state, x + pad, y + pad, SLOT_PX - 2 * pad);
-    if (s->count > 1 || g_creative) {
-        char n[8];
-        snprintf(n, sizeof n, "%d", s->count);
-        float w = ui_text_width(TEXT_SIZE * 0.85f, n);
-        ui_text(x + SLOT_PX - w - 3, y + SLOT_PX - TEXT_SIZE - 1, TEXT_SIZE * 0.85f, rgba(255, 255, 255, 240), n);
-    }
+/* One grid cell of a `cols`-wide slot grid whose natural top-left is (left, top). The widget library only knows
+ * boxes, so the HUD builds an anchor box here and layout_grid_cell does the arithmetic - no hand-added offsets. */
+static UiBox slot_cell(float left, float top, int cols, int col, int row) {
+    UiBox anchor = {left, top, (float)cols * SLOT_PX + (float)(cols - 1) * SLOT_GAP, SLOT_PX, UI_STACK_V, SLOT_GAP, true};
+    return layout_grid_cell(&anchor, cols, 0, SLOT_GAP, row * cols + col);
+}
+
+/* Draws one slot through the generic widget; the local draw_icon above is the icon callback, which is exactly the
+ * seam a mod would replace to paint custom slot art without the widget knowing anything about blocks. */
+static bool show_slot(const ItemStack *s, float left, float top, int cols, int col, int row, bool selected) {
+    UiBox cell = slot_cell(left, top, cols, col, row);
+    return widget_slot(&cell, s->state, s->count, selected, draw_icon);
 }
 
 static float row_width(int cols) { return (float)cols * SLOT_PX + (float)(cols - 1) * SLOT_GAP; }
-static void slot_pos(float left, float top, int col, int row, float *x, float *y) {
-    *x = left + (float)col * (SLOT_PX + SLOT_GAP);
-    *y = top + (float)row * (SLOT_PX + SLOT_GAP);
-}
-static bool mouse_in(float x, float y, float w, float h) {
-    return g_in.mouse_x >= x && g_in.mouse_x < x + w && g_in.mouse_y >= y && g_in.mouse_y < y + h;
-}
 
 /* --------------------------------------------------------- inventory view */
 
@@ -186,24 +178,17 @@ static void draw_inventory(int width, int height) {
         for (int r = 0; r < PALETTE_ROWS; r++)
             for (int c = 0; c < PALETTE_COLS; c++) {
                 int idx = (r + H.palette_scroll) * PALETTE_COLS + c;
-                float x, y;
-                slot_pos(l.left, l.palette_top, c, r, &x, &y);
                 ItemStack st = {idx < total ? item_state_at(idx) : STATE_AIR, idx < total ? 1 : 0};
-                draw_slot(&st, x, y, false);
-                if (st.count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(st.state);
+                if (show_slot(&st, l.left, l.palette_top, PALETTE_COLS, c, r, false) && st.count) hover = item_name(st.state);
             }
     }
     for (int i = INV_HOTBAR; i < INV_SLOTS; i++) {
-        float x, y;
-        slot_pos(l.left, l.main_top, (i - INV_HOTBAR) % INV_HOTBAR, (i - INV_HOTBAR) / INV_HOTBAR, &x, &y);
-        draw_slot(&g_inv.slot[i], x, y, false);
-        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(g_inv.slot[i].state);
+        if (show_slot(&g_inv.slot[i], l.left, l.main_top, INV_HOTBAR, (i - INV_HOTBAR) % INV_HOTBAR, (i - INV_HOTBAR) / INV_HOTBAR, false)
+            && g_inv.slot[i].count) hover = item_name(g_inv.slot[i].state);
     }
     for (int i = 0; i < INV_HOTBAR; i++) {
-        float x, y;
-        slot_pos(l.left, l.hotbar_top, i, 0, &x, &y);
-        draw_slot(&g_inv.slot[i], x, y, i == g_inv.selected);
-        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(g_inv.slot[i].state);
+        if (show_slot(&g_inv.slot[i], l.left, l.hotbar_top, INV_HOTBAR, i, 0, i == g_inv.selected)
+            && g_inv.slot[i].count) hover = item_name(g_inv.slot[i].state);
     }
     if (g_inv.cursor.count) {
         draw_icon(g_inv.cursor.state, (float)g_in.mouse_x - 16, (float)g_in.mouse_y - 16, 32);
@@ -222,9 +207,8 @@ static void click_palette(const Layout *l) {
     for (int r = 0; r < PALETTE_ROWS; r++)
         for (int c = 0; c < PALETTE_COLS; c++) {
             int idx = (r + H.palette_scroll) * PALETTE_COLS + c;
-            float x, y;
-            slot_pos(l->left, l->palette_top, c, r, &x, &y);
-            if (idx >= total || !mouse_in(x, y, SLOT_PX, SLOT_PX)) continue;
+            UiBox cell = slot_cell(l->left, l->palette_top, PALETTE_COLS, c, r);
+            if (idx >= total || !ui_hover(cell.x, cell.y, cell.w, cell.h)) continue;
             for (int b = 0; b < 2; b++) {
                 if (!g_in.mouse_pressed[b]) continue;
                 g_inv.cursor.state = item_state_at(idx);
@@ -235,10 +219,9 @@ static void click_palette(const Layout *l) {
 
 static void click_slots(const Layout *l) {
     for (int i = 0; i < INV_SLOTS; i++) {
-        float x, y;
-        if (i < INV_HOTBAR) slot_pos(l->left, l->hotbar_top, i, 0, &x, &y);
-        else slot_pos(l->left, l->main_top, (i - INV_HOTBAR) % INV_HOTBAR, (i - INV_HOTBAR) / INV_HOTBAR, &x, &y);
-        if (!mouse_in(x, y, SLOT_PX, SLOT_PX)) continue;
+        UiBox cell = i < INV_HOTBAR ? slot_cell(l->left, l->hotbar_top, INV_HOTBAR, i, 0)
+                                    : slot_cell(l->left, l->main_top, INV_HOTBAR, (i - INV_HOTBAR) % INV_HOTBAR, (i - INV_HOTBAR) / INV_HOTBAR);
+        if (!ui_hover(cell.x, cell.y, cell.w, cell.h)) continue;
         for (int b = 0; b < 2; b++) if (g_in.mouse_pressed[b]) inventory_click(&g_inv, i, b);
     }
 }
@@ -313,11 +296,7 @@ static void draw_death(int width, int height) {
 
 static void draw_hotbar(int width, int height) {
     float left = ((float)width - row_width(INV_HOTBAR)) * 0.5f, top = (float)height - SLOT_PX - HOTBAR_MARGIN;
-    for (int i = 0; i < INV_HOTBAR; i++) {
-        float x, y;
-        slot_pos(left, top, i, 0, &x, &y);
-        draw_slot(&g_inv.slot[i], x, y, i == g_inv.selected);
-    }
+    for (int i = 0; i < INV_HOTBAR; i++) show_slot(&g_inv.slot[i], left, top, INV_HOTBAR, i, 0, i == g_inv.selected);
     if (H.last_selected != g_inv.selected) {
         H.last_selected = g_inv.selected;
         H.toast_until = time_now_s() + NAME_TOAST_S;

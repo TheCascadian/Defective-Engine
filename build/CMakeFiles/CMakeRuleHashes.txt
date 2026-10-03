@@ -1,0 +1,4 @@
+# Hashes of file build rules.
+57c0c3cc559931cc97b684c08b8fa404 CMakeFiles/luajit_build
+b408220940173714fef68c7749b1a3f7 luajit/src/libluajit.a
+b878f96d4a1443b45a7e2a847fab541d third_party/glfw/src/CMakeFiles/update_mappings

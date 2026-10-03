@@ -1,0 +1,32 @@
+[  1%] Built target luajit_build
+[  6%] Built target dfe_third
+[ 46%] Built target glfw
+[ 48%] Building C object CMakeFiles/dfe_engine.dir/src/render.c.o
+[ 50%] Building C object CMakeFiles/dfe_engine.dir/src/ui_widgets.c.o
+[ 51%] Building C object CMakeFiles/dfe_engine.dir/src/menu.c.o
+[ 53%] Building C object CMakeFiles/dfe_engine.dir/src/bench.c.o
+[ 55%] Building C object CMakeFiles/dfe_engine.dir/src/entity.c.o
+[ 56%] Building C object CMakeFiles/dfe_engine.dir/src/json.c.o
+[ 58%] Building C object CMakeFiles/dfe_engine.dir/src/registry.c.o
+[ 60%] Building C object CMakeFiles/dfe_engine.dir/src/world.c.o
+[ 61%] Building C object CMakeFiles/dfe_engine.dir/src/light.c.o
+[ 63%] Building C object CMakeFiles/dfe_engine.dir/src/gen.c.o
+[ 65%] Building C object CMakeFiles/dfe_engine.dir/src/save.c.o
+[ 66%] Building C object CMakeFiles/dfe_engine.dir/src/mesher.c.o
+[ 68%] Building C object CMakeFiles/dfe_engine.dir/src/scene.c.o
+[ 70%] Building C object CMakeFiles/dfe_engine.dir/src/lod.c.o
+[ 71%] Building C object CMakeFiles/dfe_engine.dir/src/atmosphere.c.o
+[ 73%] Building C object CMakeFiles/dfe_engine.dir/src/mods.c.o
+[ 75%] Building C object CMakeFiles/dfe_engine.dir/src/script.c.o
+[ 76%] Building C object CMakeFiles/dfe_engine.dir/src/console.c.o
+[ 78%] Building C object CMakeFiles/dfe_engine.dir/src/player.c.o
+[ 80%] Building C object CMakeFiles/dfe_engine.dir/src/inventory.c.o
+[ 81%] Building C object CMakeFiles/dfe_engine.dir/src/interact.c.o
+[ 83%] Building C object CMakeFiles/dfe_engine.dir/src/server.c.o
+[ 85%] Building C object CMakeFiles/dfe_engine.dir/src/hud.c.o
+[ 86%] Building C object CMakeFiles/dfe_engine.dir/src/selftest.c.o
+[ 88%] Linking C static library libdfe_engine.a
+[ 96%] Built target dfe_engine
+[ 98%] Building C object CMakeFiles/dfe.dir/src/main.c.o
+[100%] Linking C executable dfe
+[100%] Built target dfe

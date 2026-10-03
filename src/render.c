@@ -1,6 +1,7 @@
 /* Window, input, GL helpers, camera, 2D batch with text, and the debug overlay.
  * World rendering (chunks, sky, post) is added to this unit in later milestones. */
 #include "dfe.h"
+#include "ui_widgets.h"
 
 #include <GLFW/glfw3.h>
 
@@ -424,6 +425,7 @@ void ui_begin(int width, int height) {
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    ui_frame_begin(); /* widget-layer housekeeping (timers, focus, tooltip slots): one cheap call per frame */
 }
 
 void ui_flush(void) {

@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -fno-strict-aliasing -DNDEBUG -Wl,--export-dynamic -rdynamic CMakeFiles/dfe.dir/src/main.c.o -o dfe  libdfe_engine.a libdfe_third.a third_party/glfw/src/libglfw3.a /usr/lib/x86_64-linux-gnu/librt.a -lm luajit/src/libluajit.a -lm -lpthread -ldl 

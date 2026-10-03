@@ -1,0 +1,12 @@
+/workspace/build/CMakeFiles/luajit_build.dir
+/workspace/build/CMakeFiles/dfe_third.dir
+/workspace/build/CMakeFiles/dfe_engine.dir
+/workspace/build/CMakeFiles/dfe.dir
+/workspace/build/CMakeFiles/edit_cache.dir
+/workspace/build/CMakeFiles/rebuild_cache.dir
+/workspace/build/third_party/glfw/CMakeFiles/edit_cache.dir
+/workspace/build/third_party/glfw/CMakeFiles/rebuild_cache.dir
+/workspace/build/third_party/glfw/src/CMakeFiles/glfw.dir
+/workspace/build/third_party/glfw/src/CMakeFiles/update_mappings.dir
+/workspace/build/third_party/glfw/src/CMakeFiles/edit_cache.dir
+/workspace/build/third_party/glfw/src/CMakeFiles/rebuild_cache.dir

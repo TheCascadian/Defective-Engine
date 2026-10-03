@@ -657,6 +657,10 @@ static void test_example_mods(void) {
     jobs_init(2);
     world_init(4242);
     world_flush_generation(0, 0, 2);
+    /* Spawn follows the terrain of the active worldgen: above the raised sea, standing on the column's surface. */
+    V3 spawn = player_find_spawn();
+    CHECK(spawn.y > (float)gen_sea_level() + 1.0f);
+    CHECK(fabsf(spawn.y - (floorf(gen_height_at(spawn.x, spawn.z)) + 1.01f)) < 0.01f);
     console_init();
     CHECK(script_init());
     CHECK(script_load_mods() == 0);

@@ -793,6 +793,12 @@ static void test_player_physics(u16 stone) {
     player_init(&q, v3(8.5f, 210.0f, 8.5f));
     for (int i = 0; i < 75; i++) player_step(&q, &none, 1.0f / 15.0f);
     CHECK(fabsf(q.pos.y - p.pos.y) < 0.01f);
+    Player long_frame, regular_frames;
+    player_init(&long_frame, v3(8.5f, 210.0f, 8.5f));
+    player_init(&regular_frames, v3(8.5f, 210.0f, 8.5f));
+    player_step(&long_frame, &none, 1.0f);
+    for (int i = 0; i < 60; i++) player_step(&regular_frames, &none, 1.0f / 60.0f);
+    CHECK(fabsf(long_frame.pos.y - regular_frames.pos.y) < 0.01f && fabsf(long_frame.vel.y - regular_frames.vel.y) < 0.01f);
     /* A wall stops a walking player and a one block ledge is stepped over only when 0.6 or lower. */
     for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, stone);
     PlayerInput fwd = {.strafe = 1.0f};

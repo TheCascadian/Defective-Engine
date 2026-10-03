@@ -9,7 +9,6 @@
 #include "dfe.h"
 
 #define PHYSICS_STEP (1.0f / 60.0f)
-#define MAX_STEPS_PER_CALL 12
 #define HALF_WIDTH (PLAYER_WIDTH * 0.5f)
 #define SKIN 0.001f            /* the box is shrunk by this much so resting contact is not an overlap */
 #define GRAVITY 30.0f
@@ -192,8 +191,7 @@ void player_step(Player *p, const PlayerInput *in, float dt) {
         p->flying = !p->flying;
         p->vel.y = 0;
     }
-    int steps = 0;
-    while (dt > 1e-6f && steps++ < MAX_STEPS_PER_CALL) {
+    while (dt > 1e-6f) {
         float h = MIN(dt, PHYSICS_STEP);
         physics_step(p, in, h);
         dt -= h;

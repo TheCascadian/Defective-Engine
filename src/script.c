@@ -352,6 +352,33 @@ static const luaL_Reg DFE_FUNCS[] = {
     {"entity_spawn", l_entity_spawn}, {"entity_remove", l_entity_remove}, {"entity_position", l_entity_position}, {"entity_count", l_entity_count},
     {"seed", l_seed}, {"time", l_time}, {"on", l_on}, {"command", l_command}, {NULL, NULL}};
 
+/* Gives the mod its own copy of a standard library by running the library's open function again. LuaJIT reuses a
+ * library table that is already registered under the same name, so the registry entry and the global are cleared first
+ * to force a fresh table. luaopen_string also replaces the state-wide string metatable, so the original is put back:
+ * method calls on strings ("x"):upper() keep resolving through one table that no per-mod copy can redirect. */
+static void install_private_lib(int env, lua_CFunction open_fn, const char *name) {
+    lua_getfield(L, LUA_REGISTRYINDEX, "_LOADED");
+    lua_pushnil(L);
+    lua_setfield(L, -2, name);
+    lua_pop(L, 1);
+    lua_pushnil(L);
+    lua_setfield(L, LUA_GLOBALSINDEX, name);
+    lua_pushcfunction(L, open_fn);
+    lua_pushstring(L, name);
+    lua_call(L, 1, 1);
+    lua_setfield(L, env, name);
+    lua_pushnil(L);
+    lua_setfield(L, LUA_GLOBALSINDEX, name); /* the open function registers a global; the real globals stay empty */
+    lua_getfield(L, LUA_REGISTRYINDEX, "_LOADED");
+    lua_pushnil(L);
+    lua_setfield(L, -2, name);
+    lua_pop(L, 1);
+    lua_pushliteral(L, "");
+    lua_getfield(L, LUA_REGISTRYINDEX, "dfe_string_meta");
+    lua_setmetatable(L, -2);
+    lua_pop(L, 1);
+}
+
 /* Pushes a new global table for a mod and returns its registry reference. */
 static int make_mod_env(const char *mod_id) {
     lua_newtable(L);                     /* env */
@@ -379,6 +406,10 @@ static int make_mod_env(const char *mod_id) {
     lua_setfield(L, env, "require");
     lua_pushvalue(L, env);
     lua_setfield(L, env, "_G");
+    /* A mod that edits string, table or math changes only its own copy. */
+    install_private_lib(env, luaopen_string, LUA_STRLIBNAME);
+    install_private_lib(env, luaopen_table, LUA_TABLIBNAME);
+    install_private_lib(env, luaopen_math, LUA_MATHLIBNAME);
     return luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
@@ -411,9 +442,13 @@ bool script_init(void) {
     static const char *const globals[] = {"assert", "error", "ipairs", "pairs", "next", "pcall", "xpcall", "select", "tonumber", "tostring", "type",
                                           "unpack", "rawget", "rawset", "rawequal", "setmetatable", "getmetatable"};
     for (int i = 0; i < ARRAY_LEN(globals); i++) copy_global(globals[i]);
-    static const char *const libs[] = {"string", "table", "math", "bit"};
-    for (int i = 0; i < ARRAY_LEN(libs); i++) copy_global(libs[i]);
+    /* string, table and math are installed per mod in make_mod_env; bit has no mutable state worth copying and stays shared. */
+    copy_global("bit");
     lua_setfield(L, LUA_REGISTRYINDEX, "dfe_safe_globals");
+    lua_pushliteral(L, "");
+    lua_getmetatable(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, "dfe_string_meta");
+    lua_pop(L, 1);
     lua_getglobal(L, "tostring");
     lua_setfield(L, LUA_REGISTRYINDEX, "dfe_tostring");
     /* Empty the real global table so nothing can reach the unsafe functions through it. */

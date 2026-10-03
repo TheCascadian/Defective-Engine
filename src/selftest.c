@@ -568,6 +568,14 @@ static void test_scripting(void) {
     put_file("isolated", "scripts/main.lua", "if ticks ~= nil then error('globals leaked between mods') end\n");
     put_manifest("memory", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
     put_file("memory", "scripts/main.lua", "local s = 'x' for i = 1, 40 do s = s .. s end\n");
+    /* Two mods write into their own string, table and math; the third, loaded after both, must see none of it.
+     * A failed assert in any of them raises the error count checked below. */
+    put_manifest("libone", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("libone", "scripts/main.lua", "string.foo = 'mine'; table.foo = 1; math.foo = 2\nassert(string.foo == 'mine' and ('x'):upper() == 'X')\n");
+    put_manifest("libtwo", "\"depends\": [\"base\"], \"script\": \"scripts/main.lua\"");
+    put_file("libtwo", "scripts/main.lua", "string.foo = 'mine'; string.upper = nil\nassert(string.foo == 'mine' and ('x'):upper() == 'X')\n");
+    put_manifest("libthree", "\"depends\": [\"libone\", \"libtwo\"], \"script\": \"scripts/main.lua\"");
+    put_file("libthree", "scripts/main.lua", "assert(string.foo == nil and table.foo == nil and math.foo == nil and string.upper ~= nil)\n");
     data_error_reset();
     mods_reset();
     events_clear_all();
@@ -575,7 +583,7 @@ static void test_scripting(void) {
     mods_resolve();
     CHECK(script_init());
     int errors = script_load_mods();
-    CHECK(errors == 3); /* looper, syntax and memory fail; base and isolated load */
+    CHECK(errors == 3); /* looper, syntax and memory fail; base, isolated and the three lib mods load */
     bool loop_named = false, syntax_named = false;
     for (int i = 0; i < data_error_count(); i++) {
         if (strstr(data_error_text(i), "[mod looper]") && strstr(data_error_text(i), "scripts/main.lua:2") && strstr(data_error_text(i), "instructions")) loop_named = true;

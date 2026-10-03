@@ -24,6 +24,32 @@
 
 typedef enum { BIOME_OCEAN, BIOME_BEACH, BIOME_DESERT, BIOME_TUNDRA, BIOME_SWAMP, BIOME_FOREST, BIOME_PLAINS, BIOME_MOUNTAIN, BIOME_COUNT } Biome;
 
+typedef struct GenBiomeDef {
+    char id[64];
+    char surface_name[64];
+    char subsurface_name[64];
+    u16 surface_state, subsurface_state;
+    float temp_min, temp_max;
+    float humid_min, humid_max;
+    int min_h, max_h;
+    int tree_chance;
+    int feature_chance;
+    char feature_id[64];
+} GenBiomeDef;
+
+typedef struct GenOreDef {
+    char id[64];
+    char ore_name[64];
+    char replace_name[64];
+    char biome_ids[8][64];
+    u16 ore_state, replace_state;
+    int min_y, max_y;
+    int rarity;
+    int size;
+    int density;
+    int biome_count;
+} GenOreDef;
+
 typedef struct GenConfig {
     bool loaded;
     int sea_level, deep_level;
@@ -31,6 +57,43 @@ typedef struct GenConfig {
     /* Decoration roles are optional: a world generation file that omits one simply has none of that feature. */
     u16 log, leaves, tall_grass, flower_red, flower_yellow, mushroom, dead_bush, coal, iron, gold, diamond;
 } GenConfig;
+
+#define MAX_WORLDGEN_BIOMES 32
+#define MAX_WORLDGEN_ORES 64
+#define MAX_WORLDGEN_FEATURES 32
+#define MAX_WORLDGEN_STRUCTURES 32
+
+typedef struct GenFeatureDef {
+    char id[64];
+    char block_name[64];
+    u16 block_state;
+    char biome_ids[8][64];
+    int biome_count;
+    int chance;
+    int min_y, max_y;
+    int radius;
+} GenFeatureDef;
+
+typedef struct GenStructureBlock {
+    int x, y, z;
+    u16 state;
+} GenStructureBlock;
+
+typedef struct GenStructureDef {
+    char id[64];
+    char biome_ids[8][64];
+    int biome_count;
+    int chance;
+    int min_y, max_y;
+    GenStructureBlock blocks[32];
+    int block_count;
+} GenStructureDef;
+
+static GenBiomeDef g_biomes[MAX_WORLDGEN_BIOMES];
+static GenOreDef g_ores[MAX_WORLDGEN_ORES];
+static GenFeatureDef g_features[MAX_WORLDGEN_FEATURES];
+static GenStructureDef g_structures[MAX_WORLDGEN_STRUCTURES];
+static int g_biome_count, g_ore_count, g_feature_count, g_structure_count;
 
 static GenConfig C;
 static struct {
@@ -66,8 +129,140 @@ static u16 optional_role_block(const Json *roles, const char *role, const char *
     return role_block(roles, role, file, mod);
 }
 
+static bool parse_block_name(const Json *v, const char *role, u16 *out, const char *rel, const char *owner) {
+    const char *name = json_as_str(v, NULL);
+    if (!name) {
+        data_error(owner, rel, v ? v->line : 1, "worldgen field \"%s\" must be a block id such as \"base:stone\".", role);
+        return false;
+    }
+    BlockDef *b = block_find(name);
+    if (!b) {
+        data_error(owner, rel, v ? v->line : 1, "worldgen field \"%s\" refers to unknown block \"%s\".", role, name);
+        return false;
+    }
+    *out = b->default_state;
+    return true;
+}
+
+static void add_biome_def(const char *id, const char *surface, const char *subsurface, float tmin, float tmax, float hmin, float hmax, int min_h, int max_h) {
+    if (g_biome_count >= MAX_WORLDGEN_BIOMES) return;
+    memset(&g_biomes[g_biome_count], 0, sizeof g_biomes[g_biome_count]);
+    snprintf(g_biomes[g_biome_count].id, sizeof g_biomes[g_biome_count].id, "%s", id ? id : "biome");
+    if (surface) snprintf(g_biomes[g_biome_count].surface_name, sizeof g_biomes[g_biome_count].surface_name, "%s", surface);
+    if (subsurface) snprintf(g_biomes[g_biome_count].subsurface_name, sizeof g_biomes[g_biome_count].subsurface_name, "%s", subsurface);
+    g_biomes[g_biome_count].surface_state = surface ? block_find(surface)->default_state : C.grass;
+    g_biomes[g_biome_count].subsurface_state = subsurface ? block_find(subsurface)->default_state : C.dirt;
+    g_biomes[g_biome_count].temp_min = tmin; g_biomes[g_biome_count].temp_max = tmax;
+    g_biomes[g_biome_count].humid_min = hmin; g_biomes[g_biome_count].humid_max = hmax;
+    g_biomes[g_biome_count].min_h = min_h; g_biomes[g_biome_count].max_h = max_h;
+    g_biome_count++;
+}
+
+static void add_default_biomes(void) {
+    add_biome_def("base:ocean", "base:sand", "base:sand", -1.0f, 0.2f, 0.0f, 1.0f, -4096, C.sea_level);
+    add_biome_def("base:beach", "base:sand", "base:sand", 0.2f, 1.0f, 0.0f, 1.0f, C.sea_level - 2, C.sea_level + 2);
+    add_biome_def("base:desert", "base:sand", "base:sandstone", 0.3f, 1.0f, -1.0f, 0.05f, 0, 255);
+    add_biome_def("base:tundra", "base:snow", "base:dirt", -1.0f, -0.3f, 0.0f, 1.0f, 0, 255);
+    add_biome_def("base:swamp", "base:mud", "base:mud", -0.25f, 0.25f, 0.35f, 1.0f, 0, C.sea_level + 8);
+    add_biome_def("base:forest", "base:grass_block", "base:dirt", -0.1f, 0.6f, 0.0f, 1.0f, 0, 255);
+    add_biome_def("base:plains", "base:grass_block", "base:dirt", -0.1f, 0.6f, -1.0f, 0.0f, 0, 255);
+    add_biome_def("base:mountain", "base:grass_block", "base:dirt", 0.0f, 1.0f, -1.0f, 1.0f, 90, 255);
+}
+
+static void add_default_ores(void) {
+    if (C.coal) { snprintf(g_ores[g_ore_count].id, sizeof g_ores[g_ore_count].id, "%s", "base:coal_ore"); snprintf(g_ores[g_ore_count].ore_name, sizeof g_ores[g_ore_count].ore_name, "%s", "base:coal_ore"); snprintf(g_ores[g_ore_count].replace_name, sizeof g_ores[g_ore_count].replace_name, "%s", "base:stone"); g_ores[g_ore_count].ore_state = C.coal; g_ores[g_ore_count].replace_state = C.stone; g_ores[g_ore_count].min_y = 0; g_ores[g_ore_count].max_y = 140; g_ores[g_ore_count].rarity = 1100; g_ores[g_ore_count].size = 3; g_ores[g_ore_count].density = 1; g_ore_count++; }
+    if (C.iron) { snprintf(g_ores[g_ore_count].id, sizeof g_ores[g_ore_count].id, "%s", "base:iron_ore"); snprintf(g_ores[g_ore_count].ore_name, sizeof g_ores[g_ore_count].ore_name, "%s", "base:iron_ore"); snprintf(g_ores[g_ore_count].replace_name, sizeof g_ores[g_ore_count].replace_name, "%s", "base:stone"); g_ores[g_ore_count].ore_state = C.iron; g_ores[g_ore_count].replace_state = C.stone; g_ores[g_ore_count].min_y = 0; g_ores[g_ore_count].max_y = 90; g_ores[g_ore_count].rarity = 700; g_ores[g_ore_count].size = 3; g_ores[g_ore_count].density = 1; g_ore_count++; }
+    if (C.gold) { snprintf(g_ores[g_ore_count].id, sizeof g_ores[g_ore_count].id, "%s", "base:gold_ore"); snprintf(g_ores[g_ore_count].ore_name, sizeof g_ores[g_ore_count].ore_name, "%s", "base:gold_ore"); snprintf(g_ores[g_ore_count].replace_name, sizeof g_ores[g_ore_count].replace_name, "%s", "base:stone"); g_ores[g_ore_count].ore_state = C.gold; g_ores[g_ore_count].replace_state = C.stone; g_ores[g_ore_count].min_y = 0; g_ores[g_ore_count].max_y = 40; g_ores[g_ore_count].rarity = 300; g_ores[g_ore_count].size = 2; g_ores[g_ore_count].density = 1; g_ore_count++; }
+    if (C.diamond) { snprintf(g_ores[g_ore_count].id, sizeof g_ores[g_ore_count].id, "%s", "base:diamond_ore"); snprintf(g_ores[g_ore_count].ore_name, sizeof g_ores[g_ore_count].ore_name, "%s", "base:diamond_ore"); snprintf(g_ores[g_ore_count].replace_name, sizeof g_ores[g_ore_count].replace_name, "%s", "base:stone"); g_ores[g_ore_count].ore_state = C.diamond; g_ores[g_ore_count].replace_state = C.stone; g_ores[g_ore_count].min_y = 0; g_ores[g_ore_count].max_y = 24; g_ores[g_ore_count].rarity = 130; g_ores[g_ore_count].size = 2; g_ores[g_ore_count].density = 1; g_ore_count++; }
+}
+
+static void parse_biome_array(const Json *items, const char *rel, const char *owner) {
+    if (!items || items->type != JSON_ARRAY) return;
+    for (int i = 0; i < items->count; i++) {
+        const Json *b = items->items[i];
+        if (!b || b->type != JSON_OBJECT) { data_error(owner, rel, b ? b->line : 1, "each biome definition must be an object."); continue; }
+        const char *id = json_str(b, "id", NULL);
+        if (!id) { data_error(owner, rel, b->line, "biome definitions need an \"id\" such as \"mymod:badlands\"."); continue; }
+        const Json *temp = json_get(b, "temperature");
+        const Json *humid = json_get(b, "humidity");
+        float tmin = -1.0f, tmax = 1.0f, hmin = -1.0f, hmax = 1.0f;
+        if (temp && temp->type == JSON_ARRAY && json_len(temp) == 2) { tmin = (float)json_as_num(json_at(temp, 0), tmin); tmax = (float)json_as_num(json_at(temp, 1), tmax); }
+        else if (temp) { float v = (float)json_as_num(temp, 0.0); tmin = v - 0.1f; tmax = v + 0.1f; }
+        if (humid && humid->type == JSON_ARRAY && json_len(humid) == 2) { hmin = (float)json_as_num(json_at(humid, 0), hmin); hmax = (float)json_as_num(json_at(humid, 1), hmax); }
+        else if (humid) { float v = (float)json_as_num(humid, 0.0); hmin = v - 0.1f; hmax = v + 0.1f; }
+        const char *surface = json_str(b, "surface", NULL);
+        const char *subsurface = json_str(b, "subsurface", NULL);
+        u16 surface_state = surface ? block_find(surface) ? block_find(surface)->default_state : STATE_MISSING : C.grass;
+        u16 subsurface_state = subsurface ? block_find(subsurface) ? block_find(subsurface)->default_state : STATE_MISSING : C.dirt;
+        if (surface && block_find(surface) == NULL) { data_error(owner, rel, b->line, "biome \"%s\" names unknown surface block \"%s\".", id, surface); continue; }
+        if (subsurface && block_find(subsurface) == NULL) { data_error(owner, rel, b->line, "biome \"%s\" names unknown subsurface block \"%s\".", id, subsurface); continue; }
+        int min_h = json_int(b, "min_height", 0), max_h = json_int(b, "max_height", 255);
+        if (g_biome_count >= MAX_WORLDGEN_BIOMES) { data_error(owner, rel, b->line, "too many biome definitions; the limit is %d. Remove some or combine them.", MAX_WORLDGEN_BIOMES); break; }
+        memset(&g_biomes[g_biome_count], 0, sizeof g_biomes[g_biome_count]);
+        snprintf(g_biomes[g_biome_count].id, sizeof g_biomes[g_biome_count].id, "%s", id);
+        if (surface) snprintf(g_biomes[g_biome_count].surface_name, sizeof g_biomes[g_biome_count].surface_name, "%s", surface);
+        if (subsurface) snprintf(g_biomes[g_biome_count].subsurface_name, sizeof g_biomes[g_biome_count].subsurface_name, "%s", subsurface);
+        g_biomes[g_biome_count].surface_state = surface_state;
+        g_biomes[g_biome_count].subsurface_state = subsurface_state;
+        g_biomes[g_biome_count].temp_min = tmin; g_biomes[g_biome_count].temp_max = tmax;
+        g_biomes[g_biome_count].humid_min = hmin; g_biomes[g_biome_count].humid_max = hmax;
+        g_biomes[g_biome_count].min_h = min_h; g_biomes[g_biome_count].max_h = max_h;
+        g_biomes[g_biome_count].tree_chance = json_int(b, "tree_chance", 0);
+        g_biomes[g_biome_count].feature_chance = json_int(b, "feature_chance", 0);
+        if (json_str(b, "feature", NULL)) snprintf(g_biomes[g_biome_count].feature_id, sizeof g_biomes[g_biome_count].feature_id, "%s", json_str(b, "feature", ""));
+        g_biome_count++;
+    }
+}
+
+static void parse_ore_array(const Json *items, const char *rel, const char *owner) {
+    if (!items || items->type != JSON_ARRAY) return;
+    for (int i = 0; i < items->count; i++) {
+        const Json *o = items->items[i];
+        if (!o || o->type != JSON_OBJECT) { data_error(owner, rel, o ? o->line : 1, "each ore definition must be an object."); continue; }
+        const char *id = json_str(o, "id", NULL);
+        const char *ore = json_str(o, "ore", NULL);
+        const char *replace = json_str(o, "replace", NULL);
+        if (!id || !ore || !replace) { data_error(owner, rel, o->line, "ore definitions need \"id\", \"ore\" and \"replace\" fields."); continue; }
+        if (g_ore_count >= MAX_WORLDGEN_ORES) { data_error(owner, rel, o->line, "too many ore definitions; the limit is %d.", MAX_WORLDGEN_ORES); break; }
+        BlockDef *ore_def = block_find(ore), *replace_def = block_find(replace);
+        if (!ore_def || !replace_def) { data_error(owner, rel, o->line, "ore \"%s\" or replacement \"%s\" is unknown.", ore, replace); continue; }
+        memset(&g_ores[g_ore_count], 0, sizeof g_ores[g_ore_count]);
+        snprintf(g_ores[g_ore_count].id, sizeof g_ores[g_ore_count].id, "%s", id);
+        snprintf(g_ores[g_ore_count].ore_name, sizeof g_ores[g_ore_count].ore_name, "%s", ore);
+        snprintf(g_ores[g_ore_count].replace_name, sizeof g_ores[g_ore_count].replace_name, "%s", replace);
+        g_ores[g_ore_count].ore_state = ore_def->default_state;
+        g_ores[g_ore_count].replace_state = replace_def->default_state;
+        g_ores[g_ore_count].min_y = json_int(o, "min_y", 0);
+        g_ores[g_ore_count].max_y = json_int(o, "max_y", 128);
+        g_ores[g_ore_count].rarity = json_int(o, "rarity", 1000);
+        g_ores[g_ore_count].size = json_int(o, "size", 2);
+        g_ores[g_ore_count].density = json_int(o, "density", 1);
+        const Json *biomes = json_get(o, "biomes");
+        g_ores[g_ore_count].biome_count = 0;
+        if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
+            const char *name = json_as_str(biomes->items[k], "");
+            if (name[0]) snprintf(g_ores[g_ore_count].biome_ids[g_ores[g_ore_count].biome_count++], sizeof g_ores[g_ore_count].biome_ids[0], "%s", name);
+        }
+        g_ore_count++;
+    }
+}
+
+static void parse_feature_array(const Json *items, const char *rel, const char *owner);
+static void parse_structure_array(const Json *items, const char *rel, const char *owner);
+static void put_if_air(u16 *states, int cx, int cz, int wx, int y, int wz, u16 state);
+
+int gen_biome_count(void) { return g_biome_count; }
+int gen_ore_count(void) { return g_ore_count; }
+int gen_feature_count(void) { return g_feature_count; }
+int gen_structure_count(void) { return g_structure_count; }
+
 int registry_load_worldgen_config(void) {
     int errors_before = data_error_count();
+    g_biome_count = g_ore_count = g_feature_count = g_structure_count = 0;
+    memset(g_biomes, 0, sizeof g_biomes);
+    memset(g_ores, 0, sizeof g_ores);
+    memset(g_features, 0, sizeof g_features);
+    memset(g_structures, 0, sizeof g_structures);
     memset(&C, 0, sizeof C);
     C.sea_level = 62;
     C.deep_level = 0;
@@ -125,9 +320,102 @@ int registry_load_worldgen_config(void) {
         C.gold = optional_role_block(roles, "gold_ore", rel, owner);
         C.diamond = optional_role_block(roles, "diamond_ore", rel, owner);
     }
+    parse_biome_array(json_get(root, "biomes"), rel, owner);
+    parse_ore_array(json_get(root, "ores"), rel, owner);
+    parse_feature_array(json_get(root, "features"), rel, owner);
+    parse_structure_array(json_get(root, "structures"), rel, owner);
+    if (!g_biome_count) add_default_biomes();
+    if (!g_ore_count) add_default_ores();
     C.loaded = data_error_count() == errors_before;
     json_free(root);
     return data_error_count() - errors_before;
+}
+
+static bool biome_name_matches(const char *biome_id, const char *name) {
+    if (!biome_id || !name) return false;
+    return !strcmp(biome_id, name);
+}
+
+static bool biome_included(int biome_index, const char *const *names, int count) {
+    if (count == 0) return true;
+    const char *biome_id = g_biomes[biome_index].id;
+    for (int i = 0; i < count; i++) if (biome_name_matches(biome_id, names[i])) return true;
+    return false;
+}
+
+static void parse_feature_array(const Json *items, const char *rel, const char *owner) {
+    if (!items || items->type != JSON_ARRAY) return;
+    for (int i = 0; i < items->count; i++) {
+        const Json *f = items->items[i];
+        if (!f || f->type != JSON_OBJECT) { data_error(owner, rel, f ? f->line : 1, "each feature definition must be an object."); continue; }
+        const char *id = json_str(f, "id", NULL), *block = json_str(f, "block", NULL);
+        if (!id || !block) { data_error(owner, rel, f->line, "feature definitions need \"id\" and \"block\" fields."); continue; }
+        if (g_feature_count >= MAX_WORLDGEN_FEATURES) { data_error(owner, rel, f->line, "too many feature definitions; the limit is %d.", MAX_WORLDGEN_FEATURES); break; }
+        BlockDef *def = block_find(block);
+        if (!def) { data_error(owner, rel, f->line, "feature \"%s\" names unknown block \"%s\".", id, block); continue; }
+        memset(&g_features[g_feature_count], 0, sizeof g_features[g_feature_count]);
+        snprintf(g_features[g_feature_count].id, sizeof g_features[g_feature_count].id, "%s", id);
+        snprintf(g_features[g_feature_count].block_name, sizeof g_features[g_feature_count].block_name, "%s", block);
+        g_features[g_feature_count].block_state = def->default_state;
+        g_features[g_feature_count].chance = json_int(f, "chance", 100);
+        g_features[g_feature_count].min_y = json_int(f, "min_y", 0);
+        g_features[g_feature_count].max_y = json_int(f, "max_y", 255);
+        g_features[g_feature_count].radius = json_int(f, "radius", 1);
+        const Json *biomes = json_get(f, "biomes");
+        g_features[g_feature_count].biome_count = 0;
+        if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
+            const char *name = json_as_str(biomes->items[k], "");
+            if (name[0]) snprintf(g_features[g_feature_count].biome_ids[g_features[g_feature_count].biome_count++], sizeof g_features[g_feature_count].biome_ids[0], "%s", name);
+        }
+        g_feature_count++;
+    }
+}
+
+static void parse_structure_array(const Json *items, const char *rel, const char *owner) {
+    if (!items || items->type != JSON_ARRAY) return;
+    for (int i = 0; i < items->count; i++) {
+        const Json *s = items->items[i];
+        if (!s || s->type != JSON_OBJECT) { data_error(owner, rel, s ? s->line : 1, "each structure definition must be an object."); continue; }
+        const char *id = json_str(s, "id", NULL);
+        const Json *blocks = json_get(s, "blocks");
+        if (!id || !blocks || blocks->type != JSON_ARRAY || !blocks->count) { data_error(owner, rel, s->line, "structure \"%s\" needs an \"id\" and a non-empty \"blocks\" array.", id ? id : "?" ); continue; }
+        if (g_structure_count >= MAX_WORLDGEN_STRUCTURES) { data_error(owner, rel, s->line, "too many structure definitions; the limit is %d.", MAX_WORLDGEN_STRUCTURES); break; }
+        memset(&g_structures[g_structure_count], 0, sizeof g_structures[g_structure_count]);
+        snprintf(g_structures[g_structure_count].id, sizeof g_structures[g_structure_count].id, "%s", id);
+        g_structures[g_structure_count].chance = json_int(s, "chance", 100);
+        g_structures[g_structure_count].min_y = json_int(s, "min_y", 0);
+        g_structures[g_structure_count].max_y = json_int(s, "max_y", 255);
+        const Json *biomes = json_get(s, "biomes");
+        g_structures[g_structure_count].biome_count = 0;
+        if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
+            const char *name = json_as_str(biomes->items[k], "");
+            if (name[0]) snprintf(g_structures[g_structure_count].biome_ids[g_structures[g_structure_count].biome_count++], sizeof g_structures[g_structure_count].biome_ids[0], "%s", name);
+        }
+        g_structures[g_structure_count].block_count = 0;
+        for (int b = 0; b < blocks->count; b++) {
+            const Json *entry = blocks->items[b];
+            if (!entry || entry->type != JSON_ARRAY || entry->count < 4) { data_error(owner, rel, s->line, "structure \"%s\" block entries must be [x, y, z, \"block\"].", id); continue; }
+            if (g_structures[g_structure_count].block_count >= 32) { data_error(owner, rel, s->line, "structure \"%s\" has too many blocks; the limit is 32.", id); break; }
+            int x = (int)json_as_num(json_at(entry, 0), 0); int y = (int)json_as_num(json_at(entry, 1), 0); int z = (int)json_as_num(json_at(entry, 2), 0);
+            const char *name = json_as_str(json_at(entry, 3), NULL);
+            BlockDef *def = name ? block_find(name) : NULL;
+            if (!def) { data_error(owner, rel, s->line, "structure \"%s\" references unknown block \"%s\".", id, name ? name : "<null>"); continue; }
+            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].x = x;
+            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].y = y;
+            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].z = z;
+            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].state = def->default_state;
+            g_structures[g_structure_count].block_count++;
+        }
+        if (g_structures[g_structure_count].block_count > 0) g_structure_count++;
+    }
+}
+
+static void parse_worldgen_data(void) {
+    g_biome_count = g_ore_count = g_feature_count = g_structure_count = 0;
+    memset(g_biomes, 0, sizeof g_biomes);
+    memset(g_ores, 0, sizeof g_ores);
+    memset(g_features, 0, sizeof g_features);
+    memset(g_structures, 0, sizeof g_structures);
 }
 
 /* ----------------------------------------------------------------- noise */
@@ -184,17 +472,29 @@ float gen_height_at(float x, float z) {
     return h;
 }
 
-static Biome biome_at(float x, float z, float h) {
-    float sea = (float)C.sea_level;
-    if (h < sea) return BIOME_OCEAN;
+static int biome_index_at(float x, float z, float h) {
+    if (g_biome_count == 0) {
+        float sea = (float)C.sea_level;
+        if (h < sea) return BIOME_OCEAN;
+        float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
+        float m = fnlGetNoise2D(&N.humid, x, z);
+        if (h > MOUNTAIN_HEIGHT_START) return BIOME_MOUNTAIN;
+        if (h < sea + 2.5f && t > -0.3f) return BIOME_BEACH;
+        if (t < -0.3f) return BIOME_TUNDRA;
+        if (t > 0.3f && m < 0.05f) return BIOME_DESERT;
+        if (m > 0.35f && h < sea + 8.0f) return BIOME_SWAMP;
+        return m > 0.0f ? BIOME_FOREST : BIOME_PLAINS;
+    }
     float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
     float m = fnlGetNoise2D(&N.humid, x, z);
-    if (h > MOUNTAIN_HEIGHT_START) return BIOME_MOUNTAIN;
-    if (h < sea + 2.5f && t > -0.3f) return BIOME_BEACH;
-    if (t < -0.3f) return BIOME_TUNDRA;
-    if (t > 0.3f && m < 0.05f) return BIOME_DESERT;
-    if (m > 0.35f && h < sea + 8.0f) return BIOME_SWAMP;
-    return m > 0.0f ? BIOME_FOREST : BIOME_PLAINS;
+    for (int i = 0; i < g_biome_count; i++) {
+        const GenBiomeDef *b = &g_biomes[i];
+        if (h < b->min_h || h > b->max_h) continue;
+        if (t < b->temp_min || t > b->temp_max) continue;
+        if (m < b->humid_min || m > b->humid_max) continue;
+        return i;
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------- columns */
@@ -207,7 +507,7 @@ static void fill_heightmap(GenScratch *s, int cx, int cz, int *max_h) {
             float h = gen_height_at(wx, wz);
             int i = (z << 5) | x;
             s->height[i] = (i16)floorf(h);
-            s->biome[i] = (u8)biome_at(wx, wz, h);
+            s->biome[i] = (u8)biome_index_at(wx, wz, h);
             if (s->height[i] > mh) mh = s->height[i];
         }
     *max_h = mh;
@@ -255,7 +555,13 @@ static float snowline_at(float x, float z) { return SNOWLINE + fnlGetNoise2D(&N.
 /* Mountains are meadow below the tree line, rock above it and snow on the upper slopes; any biome shows bare
  * rock where the ground is steep, which is what makes cliffs and ridges read as mountain rather than as a
  * green heap. Distant voxel tiles use the same rules, so near and far terrain are made of the same blocks. */
-static u16 surface_block(Biome b, int y, float detail, bool steep, float treeline, float snowline) {
+static u16 surface_block(int biome_index, int y, float detail, bool steep, float treeline, float snowline) {
+    if (g_biome_count > 0) {
+        const GenBiomeDef *b = &g_biomes[biome_index];
+        if (steep && b->surface_state != C.sand && b->surface_state != C.water && b->surface_state != C.sandstone) return C.stone;
+        return b->surface_state != STATE_MISSING ? b->surface_state : C.grass;
+    }
+    Biome b = (Biome)biome_index;
     if (steep && b != BIOME_OCEAN && b != BIOME_BEACH && b != BIOME_DESERT) return C.stone;
     switch (b) {
     case BIOME_OCEAN: return detail > 0.15f ? C.gravel : C.sand;
@@ -270,7 +576,12 @@ static u16 surface_block(Biome b, int y, float detail, bool steep, float treelin
     }
 }
 
-static u16 subsurface_block(Biome b) {
+static u16 subsurface_block(int biome_index) {
+    if (g_biome_count > 0) {
+        const GenBiomeDef *b = &g_biomes[biome_index];
+        return b->subsurface_state != STATE_MISSING ? b->subsurface_state : C.dirt;
+    }
+    Biome b = (Biome)biome_index;
     switch (b) {
     case BIOME_OCEAN: case BIOME_BEACH: return C.sand;
     case BIOME_DESERT: return C.sandstone;
@@ -309,8 +620,26 @@ static u16 subsurface_block(Biome b) {
 #define PLANT_MUSHROOM_PERCENT 2
 #define PLANT_DEAD_BUSH_PERCENT 2
 
-static u16 ore_at(int wx, int y, int wz, int depth) {
+static u16 ore_at(int wx, int y, int wz, int depth, int biome_index) {
     if (depth < ORE_MIN_DEPTH) return STATE_AIR;
+    if (g_ore_count > 0) {
+        const char *biome_id = g_biome_count > 0 ? g_biomes[biome_index].id : "";
+        for (int i = 0; i < g_ore_count; i++) {
+            const GenOreDef *def = &g_ores[i];
+            if (y < def->min_y || y > def->max_y) continue;
+            bool match = true;
+            if (def->biome_count > 0) {
+                match = false;
+                for (int b = 0; b < def->biome_count; b++) if (!strcmp(def->biome_ids[b], biome_id)) { match = true; break; }
+            }
+            if (!match) continue;
+            u64 hh = hash3(N.seed ^ SALT_ORE, (wx + i) >> ORE_CELL_SHIFT, y >> ORE_CELL_SHIFT, (wz + i) >> ORE_CELL_SHIFT);
+            unsigned roll = (unsigned)(hh & (ORE_RANGE - 1));
+            if (def->rarity <= 0 || (int)(roll % (unsigned)def->rarity) != 0) continue;
+            return def->ore_state;
+        }
+        return STATE_AIR;
+    }
     u64 hh = hash3(N.seed ^ SALT_ORE, wx >> ORE_CELL_SHIFT, y >> ORE_CELL_SHIFT, wz >> ORE_CELL_SHIFT);
     unsigned roll = (unsigned)(hh & (ORE_RANGE - 1));
     if (((hh >> 16) & 3) == 0) return STATE_AIR;
@@ -322,7 +651,9 @@ static u16 ore_at(int wx, int y, int wz, int depth) {
     return STATE_AIR;
 }
 
-static u16 plant_for(Biome b, u64 roll) {
+static u16 plant_for(int biome_index, u64 roll) {
+    if (g_biome_count > 0) return STATE_AIR;
+    Biome b = (Biome)biome_index;
     unsigned pct = (unsigned)(roll % 100);
     switch (b) {
     case BIOME_PLAINS: case BIOME_FOREST: case BIOME_MOUNTAIN:
@@ -344,12 +675,75 @@ static void place_plants(const GenScratch *s, u16 *states, int cx, int cz) {
             if (h <= C.sea_level || ly < 1 || ly >= H) continue;
             size_t at = ((size_t)ly << 10) | col, below = ((size_t)(ly - 1) << 10) | col;
             if (states[at] != STATE_AIR) continue;
-            Biome b = (Biome)s->biome[col];
+            int biome_index = s->biome[col];
             bool sandy = states[below] == C.sand;
-            if (states[below] != C.grass && !(b == BIOME_DESERT && sandy)) continue;
-            u16 plant = plant_for(b, hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z));
+            if (states[below] != C.grass && !(g_biome_count == 0 && (Biome)biome_index == BIOME_DESERT && sandy)) continue;
+            u16 plant = plant_for(biome_index, hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z));
             if (plant != STATE_AIR) states[at] = plant;
         }
+}
+
+static bool feature_matches_biome(int biome_index, const GenFeatureDef *feature) {
+    if (feature->biome_count <= 0) return true;
+    const char *id = g_biomes[biome_index].id;
+    for (int i = 0; i < feature->biome_count; i++) if (!strcmp(id, feature->biome_ids[i])) return true;
+    return false;
+}
+
+static void place_features(const GenScratch *s, u16 *states, int cx, int cz) {
+    for (int f = 0; f < g_feature_count; f++) {
+        const GenFeatureDef *feature = &g_features[f];
+        for (int z = 0; z < CHUNK_SIZE; z++)
+            for (int x = 0; x < CHUNK_SIZE; x++) {
+                int col = (z << 5) | x;
+                int biome_index = s->biome[col];
+                if (!feature_matches_biome(biome_index, feature)) continue;
+                int wx = cx * CHUNK_SIZE + x, wz = cz * CHUNK_SIZE + z;
+                int y = s->height[col];
+                if (y < feature->min_y || y > feature->max_y) continue;
+                u64 roll = hash3(N.seed ^ 0xF1E5ULL, wx, y, wz);
+                if ((unsigned)(roll % 100) >= (unsigned)feature->chance) continue;
+                int r = MAX(0, feature->radius);
+                for (int dy = -r; dy <= r; dy++)
+                    for (int dz = -r; dz <= r; dz++)
+                        for (int dx = -r; dx <= r; dx++)
+                            if (dx * dx + dy * dy + dz * dz <= r * r + 1) {
+                                int wy = y + 1 + dy;
+                                int px = wx + dx, pz = wz + dz;
+                                put_if_air(states, cx, cz, px, wy, pz, feature->block_state);
+                            }
+            }
+    }
+}
+
+static bool structure_matches_biome(int biome_index, const GenStructureDef *structure) {
+    if (structure->biome_count <= 0) return true;
+    const char *id = g_biomes[biome_index].id;
+    for (int i = 0; i < structure->biome_count; i++) if (!strcmp(id, structure->biome_ids[i])) return true;
+    return false;
+}
+
+static void place_structures(const GenScratch *s, u16 *states, int cx, int cz) {
+    for (int st = 0; st < g_structure_count; st++) {
+        const GenStructureDef *structure = &g_structures[st];
+        for (int z = 0; z < CHUNK_SIZE; z++)
+            for (int x = 0; x < CHUNK_SIZE; x++) {
+                int col = (z << 5) | x;
+                int biome_index = s->biome[col];
+                if (!structure_matches_biome(biome_index, structure)) continue;
+                int wx = cx * CHUNK_SIZE + x, wz = cz * CHUNK_SIZE + z;
+                int y = s->height[col];
+                if (y < structure->min_y || y > structure->max_y) continue;
+                u64 roll = hash3(N.seed ^ 0xA11CULL, wx, y, wz);
+                if ((unsigned)(roll % 100) >= (unsigned)structure->chance) continue;
+                int base_y = y + 1;
+                for (int b = 0; b < structure->block_count; b++) {
+                    const GenStructureBlock *block = &structure->blocks[b];
+                    int px = wx + block->x, py = base_y + block->y, pz = wz + block->z;
+                    put_if_air(states, cx, cz, px, py, pz, block->state);
+                }
+            }
+    }
 }
 
 static void put_if_air(u16 *states, int cx, int cz, int wx, int y, int wz, u16 state) {
@@ -359,7 +753,9 @@ static void put_if_air(u16 *states, int cx, int cz, int wx, int y, int wz, u16 s
     if (states[at] == STATE_AIR) states[at] = state;
 }
 
-static int tree_percent(Biome b) {
+static int tree_percent(int biome_index) {
+    if (g_biome_count > 0) return 0;
+    Biome b = (Biome)biome_index;
     switch (b) {
     case BIOME_FOREST: return 100;
     case BIOME_PLAINS: return 8;
@@ -369,7 +765,9 @@ static int tree_percent(Biome b) {
     }
 }
 
-static bool tree_ground_ok(int wx, int wz, float h, Biome b) {
+static bool tree_ground_ok(int wx, int wz, float h, int biome_index) {
+    if (g_biome_count > 0) return false;
+    Biome b = (Biome)biome_index;
     if (h <= (float)C.sea_level + 1.0f) return false;
     if (b == BIOME_MOUNTAIN && h > treeline_at((float)wx, (float)wz) - TREE_TREELINE_MARGIN) return false;
     int fh = (int)floorf(h);
@@ -396,14 +794,14 @@ static void build_tree(u16 *states, int cx, int cz, int wx, int wz, int base_y, 
 }
 
 static void place_trees(u16 *states, int cx, int cz) {
-    if (C.log == STATE_AIR || C.leaves == STATE_AIR) return;
+    if (C.log == STATE_AIR || C.leaves == STATE_AIR || g_biome_count > 0) return;
     int x0 = cx * CHUNK_SIZE - TREE_MARGIN, z0 = cz * CHUNK_SIZE - TREE_MARGIN, span = CHUNK_SIZE + 2 * TREE_MARGIN;
     for (int wz = z0; wz < z0 + span; wz++)
         for (int wx = x0; wx < x0 + span; wx++) {
             u64 roll = hash3(N.seed ^ SALT_TREE, wx, 0, wz);
             if (roll % TREE_LATTICE_ODDS) continue;
             float h = gen_height_at((float)wx, (float)wz);
-            Biome b = biome_at((float)wx, (float)wz, h);
+            int b = biome_index_at((float)wx, (float)wz, h);
             if ((int)((roll >> 32) % 100) >= tree_percent(b) || !tree_ground_ok(wx, wz, h, b)) continue;
             build_tree(states, cx, cz, wx, wz, (int)floorf(h) + 1, roll);
         }
@@ -418,7 +816,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
         for (int x = 0; x < CHUNK_SIZE; x++) {
             int col = (z << 5) | x;
             int h = s->height[col];
-            Biome bi = (Biome)s->biome[col];
+            int bi = s->biome[col];
             float detail = fnlGetNoise2D(&N.detail, (float)(cx * CHUNK_SIZE + x) * 3.1f, (float)(cz * CHUNK_SIZE + z) * 3.1f);
             int step = 0;
             for (int k = 0; k < 4; k++) {
@@ -439,7 +837,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                     else if (depth <= SUBSURFACE_DEPTH) st = subsurface_block(bi);
                     else st = y < C.deep_level ? C.deep : C.stone;
                     if (st == C.stone) {
-                        u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth);
+                        u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth, bi);
                         if (ore != STATE_AIR) st = ore;
                     }
                     /* No carving near the surface or on the band floor keeps caves sealed from the sky and from the filler below. */
@@ -450,6 +848,8 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
         }
     place_plants(s, states, cx, cz);
     place_trees(states, cx, cz);
+    place_features(s, states, cx, cz);
+    place_structures(s, states, cx, cz);
 }
 
 /* ------------------------------------------------------- distant voxel tiles */
@@ -474,7 +874,7 @@ static void lod_sample_column(int shift, int vx, int vz, float *min_h, float *cx
 void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
     int s = 1 << shift, sea_top = (int)floorf((float)C.sea_level / (float)s);
     float min_h[LOD_PAD * LOD_PAD];
-    Biome biome[LOD_PAD * LOD_PAD];
+    int biome[LOD_PAD * LOD_PAD];
     float wx[LOD_PAD * LOD_PAD], wz[LOD_PAD * LOD_PAD];
     g->vmin = INT_MAX;
     g->vmax = sea_top;
@@ -482,7 +882,7 @@ void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
         for (int xp = 0; xp < LOD_PAD; xp++) {
             int i = zp * LOD_PAD + xp;
             lod_sample_column(shift, cx * CHUNK_SIZE + xp - 1, cz * CHUNK_SIZE + zp - 1, &min_h[i], &wx[i], &wz[i]);
-            biome[i] = biome_at(wx[i], wz[i], min_h[i]);
+            biome[i] = biome_index_at(wx[i], wz[i], min_h[i]);
             g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
             if (xp >= 1 && xp <= CHUNK_SIZE && zp >= 1 && zp <= CHUNK_SIZE) {
                 g->vmin = MIN(g->vmin, g->top[i]);

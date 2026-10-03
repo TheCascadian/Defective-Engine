@@ -166,6 +166,141 @@ static void test_json(void) {
     CHECK(json_parse(bad, strlen(bad), err, sizeof err, &line) == NULL && line == 3);
 }
 
+static void test_mod_storage(void) {
+    remove("selftest_mod_storage");
+    CHECK(save_open("selftest_mod_storage", 7));
+    Json *progress = json_parse("{\"quest\": \"village\", \"stage\": 2, \"flags\": [true, false, true], \"inventory\": {\"ore\": 9}}", 100, NULL, 0, NULL);
+    CHECK(progress);
+    CHECK(mod_storage_set("alpha", "progress", progress));
+    json_free(progress);
+    Json *coins = json_parse("7", 1, NULL, 0, NULL);
+    CHECK(coins);
+    CHECK(mod_storage_set("alpha", "coins", coins));
+    json_free(coins);
+    CHECK(mod_storage_get("alpha", "coins")->type == JSON_NUMBER);
+    CHECK(mod_storage_get("alpha", "missing") == NULL);
+    CHECK(mod_storage_remove("alpha", "coins"));
+    CHECK(mod_storage_get("alpha", "coins") == NULL);
+    Json *flag = json_parse("true", 4, NULL, 0, NULL);
+    CHECK(flag);
+    CHECK(mod_storage_set("beta", "flag", flag));
+    json_free(flag);
+    Json *bad = json_parse("1", 1, NULL, 0, NULL);
+    CHECK(bad);
+    CHECK(!mod_storage_set("alpha", "", bad));
+    json_free(bad);
+    save_close();
+    CHECK(save_open("selftest_mod_storage", 7));
+    CHECK(mod_storage_get("alpha", "progress") != NULL && mod_storage_get("alpha", "progress")->items[0]->str && !strcmp(mod_storage_get("alpha", "progress")->items[0]->str, "village"));
+    CHECK(mod_storage_get("beta", "flag") != NULL && mod_storage_get("beta", "flag")->boolean == true);
+    CHECK(mod_storage_get("alpha", "coins") == NULL);
+    CHECK(mod_storage_get("alpha", "missing") == NULL);
+    save_close();
+    remove("selftest_mod_storage/world.json");
+    remove("selftest_mod_storage/region");
+    remove("selftest_mod_storage");
+}
+
+static void test_worldgen_data_driven(void) {
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    dir_make_all("selftest_worldgen_mod/data/test/blocks");
+    dir_make_all("selftest_worldgen_mod/data/test/worldgen");
+    file_write_atomic("selftest_worldgen_mod/data/test/blocks/stone.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/stone\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/stone\"}}\n"));
+    file_write_atomic("selftest_worldgen_mod/data/test/blocks/crimson_sand.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/crimson_sand\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/crimson_sand\"}}\n"));
+    file_write_atomic("selftest_worldgen_mod/data/test/blocks/jade_ore.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/jade_ore\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/jade_ore\"}}\n"));
+    file_write_atomic("selftest_worldgen_mod/data/test/worldgen/default.json",
+        "{\n  \"sea_level\": 62,\n  \"deep_level\": 0,\n  \"blocks\": {\n    \"stone\": \"test:stone\", \"deep_stone\": \"test:stone\", \"dirt\": \"test:stone\", \"grass\": \"test:stone\", \"sand\": \"test:crimson_sand\", \"sandstone\": \"test:stone\", \"gravel\": \"test:stone\", \"snow\": \"test:stone\", \"mud\": \"test:stone\", \"water\": \"test:stone\"\n  },\n  \"biomes\": [\n    {\"id\": \"test:crimson\", \"surface\": \"test:crimson_sand\", \"subsurface\": \"test:stone\", \"temperature\": [0.6, 1.0], \"humidity\": [0.0, 0.5], \"min_height\": 0, \"max_height\": 200},\n    {\"id\": \"test:stonefield\", \"surface\": \"test:stone\", \"subsurface\": \"test:stone\", \"temperature\": [0.0, 0.6], \"humidity\": [0.0, 1.0], \"min_height\": 0, \"max_height\": 200}\n  ],\n  \"ores\": [\n    {\"id\": \"test:jade_ore\", \"ore\": \"test:jade_ore\", \"replace\": \"test:stone\", \"min_y\": 0, \"max_y\": 32, \"density\": 0.95, \"size\": 3, \"rarity\": 4, \"biomes\": [\"test:crimson\"]}\n  ]\n}\n",
+        strlen("{\n  \"sea_level\": 62,\n  \"deep_level\": 0,\n  \"blocks\": {\n    \"stone\": \"test:stone\", \"deep_stone\": \"test:stone\", \"dirt\": \"test:stone\", \"grass\": \"test:stone\", \"sand\": \"test:crimson_sand\", \"sandstone\": \"test:stone\", \"gravel\": \"test:stone\", \"snow\": \"test:stone\", \"mud\": \"test:stone\", \"water\": \"test:stone\"\n  },\n  \"biomes\": [\n    {\"id\": \"test:crimson\", \"surface\": \"test:crimson_sand\", \"subsurface\": \"test:stone\", \"temperature\": [0.6, 1.0], \"humidity\": [0.0, 0.5], \"min_height\": 0, \"max_height\": 200},\n    {\"id\": \"test:stonefield\", \"surface\": \"test:stone\", \"subsurface\": \"test:stone\", \"temperature\": [0.0, 0.6], \"humidity\": [0.0, 1.0], \"min_height\": 0, \"max_height\": 200}\n  ],\n  \"ores\": [\n    {\"id\": \"test:jade_ore\", \"ore\": \"test:jade_ore\", \"replace\": \"test:stone\", \"min_y\": 0, \"max_y\": 32, \"density\": 0.95, \"size\": 3, \"rarity\": 4, \"biomes\": [\"test:crimson\"]}\n  ]\n}\n"));
+    vfs_add_root("selftest_worldgen_mod", "test");
+    registry_load_blocks();
+    CHECK(registry_load_worldgen_config() == 0);
+    CHECK(gen_biome_count() >= 2);
+    CHECK(gen_ore_count() >= 1);
+    gen_init(777);
+    GenScratch *scratch = gen_scratch_create();
+    int lo, hi;
+    gen_band(&lo, &hi);
+    int H = (hi - lo + 1) * CHUNK_SIZE;
+    u16 states[H * CHUNK_AREA];
+    gen_column(scratch, 0, 0, states);
+    u16 crimson = block_find("test:crimson_sand")->default_state;
+    u16 jade = block_find("test:jade_ore")->default_state;
+    bool saw_crimson = false, saw_jade = false;
+    for (int y = lo * CHUNK_SIZE; y < (hi + 1) * CHUNK_SIZE; y++) {
+        for (int z = 0; z < CHUNK_SIZE; z++) {
+            for (int x = 0; x < CHUNK_SIZE; x++) {
+                int ly = y - lo * CHUNK_SIZE;
+                size_t idx = ((size_t)ly << 10) | (size_t)((z << 5) | x);
+                if (states[idx] == crimson) saw_crimson = true;
+                if (states[idx] == jade) saw_jade = true;
+            }
+        }
+    }
+    CHECK(saw_crimson && saw_jade);
+    gen_scratch_destroy(scratch);
+    mods_reset();
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    mods_discover("mods");
+    mods_resolve();
+    mods_mount();
+    remove("selftest_worldgen_mod");
+}
+
+static void test_worldgen_features_and_structures(void) {
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    dir_make_all("selftest_feature_mod/data/test/blocks");
+    dir_make_all("selftest_feature_mod/data/test/worldgen");
+    file_write_atomic("selftest_feature_mod/data/test/blocks/feature_glow.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/feature_glow\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/feature_glow\"}}\n"));
+    file_write_atomic("selftest_feature_mod/data/test/blocks/structure_anchor.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/structure_anchor\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/structure_anchor\"}}\n"));
+    file_write_atomic("selftest_feature_mod/data/test/worldgen/default.json",
+        "{\n  \"sea_level\": 62,\n  \"deep_level\": 0,\n  \"blocks\": {\n    \"stone\": \"test:stone\", \"deep_stone\": \"test:stone\", \"dirt\": \"test:stone\", \"grass\": \"test:stone\", \"sand\": \"test:stone\", \"sandstone\": \"test:stone\", \"gravel\": \"test:stone\", \"snow\": \"test:stone\", \"mud\": \"test:stone\", \"water\": \"test:stone\"\n  },\n  \"biomes\": [\n    {\"id\": \"test:crimson\", \"surface\": \"test:stone\", \"subsurface\": \"test:stone\", \"temperature\": [0.6, 1.0], \"humidity\": [0.0, 0.5], \"min_height\": 0, \"max_height\": 200}\n  ],\n  \"features\": [\n    {\"id\": \"test:crimson_bloom\", \"block\": \"test:feature_glow\", \"biomes\": [\"test:crimson\"], \"chance\": 100, \"min_y\": 0, \"max_y\": 64, \"radius\": 1}\n  ],\n  \"structures\": [\n    {\"id\": \"test:watchtower\", \"biomes\": [\"test:crimson\"], \"chance\": 100, \"anchor\": \"test:stone\", \"blocks\": [[0, 0, 0, \"test:structure_anchor\"], [1, 0, 0, \"test:structure_anchor\"], [0, 1, 0, \"test:structure_anchor\"], [0, 0, 1, \"test:structure_anchor\"]]}\n  ]\n}\n",
+        strlen("{\n  \"sea_level\": 62,\n  \"deep_level\": 0,\n  \"blocks\": {\n    \"stone\": \"test:stone\", \"deep_stone\": \"test:stone\", \"dirt\": \"test:stone\", \"grass\": \"test:stone\", \"sand\": \"test:stone\", \"sandstone\": \"test:stone\", \"gravel\": \"test:stone\", \"snow\": \"test:stone\", \"mud\": \"test:stone\", \"water\": \"test:stone\"\n  },\n  \"biomes\": [\n    {\"id\": \"test:crimson\", \"surface\": \"test:stone\", \"subsurface\": \"test:stone\", \"temperature\": [0.6, 1.0], \"humidity\": [0.0, 0.5], \"min_height\": 0, \"max_height\": 200}\n  ],\n  \"features\": [\n    {\"id\": \"test:crimson_bloom\", \"block\": \"test:feature_glow\", \"biomes\": [\"test:crimson\"], \"chance\": 100, \"min_y\": 0, \"max_y\": 64, \"radius\": 1}\n  ],\n  \"structures\": [\n    {\"id\": \"test:watchtower\", \"biomes\": [\"test:crimson\"], \"chance\": 100, \"anchor\": \"test:stone\", \"blocks\": [[0, 0, 0, \"test:structure_anchor\"], [1, 0, 0, \"test:structure_anchor\"], [0, 1, 0, \"test:structure_anchor\"], [0, 0, 1, \"test:structure_anchor\"]]}\n  ]\n}\n"));
+    file_write_atomic("selftest_feature_mod/data/test/blocks/stone.json",
+        "{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/stone\"}}\n", strlen("{\"shape\": \"cube\", \"layer\": \"opaque\", \"textures\": {\"all\": \"test:block/stone\"}}\n"));
+    vfs_add_root("selftest_feature_mod", "test");
+    registry_load_blocks();
+    CHECK(registry_load_worldgen_config() == 0);
+    CHECK(gen_feature_count() >= 1);
+    CHECK(gen_structure_count() >= 1);
+    gen_init(777);
+    GenScratch *scratch = gen_scratch_create();
+    int lo, hi;
+    gen_band(&lo, &hi);
+    int H = (hi - lo + 1) * CHUNK_SIZE;
+    u16 states[H * CHUNK_AREA];
+    gen_column(scratch, 0, 0, states);
+    u16 glow = block_find("test:feature_glow")->default_state;
+    u16 anchor = block_find("test:structure_anchor")->default_state;
+    bool saw_glow = false, saw_anchor = false;
+    for (int y = lo * CHUNK_SIZE; y < (hi + 1) * CHUNK_SIZE; y++) {
+        for (int z = 0; z < CHUNK_SIZE; z++) {
+            for (int x = 0; x < CHUNK_SIZE; x++) {
+                int ly = y - lo * CHUNK_SIZE;
+                size_t idx = ((size_t)ly << 10) | (size_t)((z << 5) | x);
+                if (states[idx] == glow) saw_glow = true;
+                if (states[idx] == anchor) saw_anchor = true;
+            }
+        }
+    }
+    CHECK(saw_glow && saw_anchor);
+    gen_scratch_destroy(scratch);
+    mods_reset();
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    mods_discover("mods");
+    mods_resolve();
+    mods_mount();
+    remove("selftest_feature_mod");
+}
+
 /* Registry behaviour with hand-made blocks, independent of any mod on disk. */
 static void test_registry(void) {
     registry_reset();
@@ -865,6 +1000,30 @@ static void test_player_physics(u16 stone) {
     for (int i = 0; i < 240; i++) player_step(&p, &fwd, 1.0f / 60.0f);
     CHECK(p.pos.x < 12.0f - PLAYER_WIDTH * 0.5f + 0.01f && p.pos.x > 10.0f);
     for (int y = SLAB_Y + 1; y < SLAB_Y + 4; y++) world_set_state(12, y, 8, STATE_AIR);
+    for (int x = 10; x <= 15; x++) world_set_state(x, SLAB_Y + 1, 8, stone);
+    Player step_up;
+    player_init(&step_up, v3(9.5f, (float)(SLAB_Y + 1), 8.5f));
+    for (int i = 0; i < 4; i++) player_step(&step_up, &none, 1.0f / 60.0f);
+    float step_up_speed = 0.0f;
+    for (int i = 0; i < 45; i++) {
+        player_step(&step_up, &fwd, 1.0f / 60.0f);
+        step_up_speed = MAX(step_up_speed, step_up.vel.x);
+    }
+    CHECK(step_up.pos.x > 10.5f && fabsf(step_up.pos.y - (float)(SLAB_Y + 2)) < 0.01f);
+    CHECK(step_up_speed > 4.0f);
+    for (int x = 10; x <= 15; x++) world_set_state(x, SLAB_Y + 1, 8, STATE_AIR);
+    world_set_state(12, SLAB_Y + 1, 8, stone);
+    Player step_down;
+    player_init(&step_down, v3(12.5f, (float)(SLAB_Y + 2), 8.5f));
+    for (int i = 0; i < 4; i++) player_step(&step_down, &none, 1.0f / 60.0f);
+    CHECK(step_down.on_ground && fabsf(step_down.pos.y - (float)(SLAB_Y + 2)) < 0.01f);
+    bool stayed_grounded = true;
+    for (int i = 0; i < 45; i++) {
+        player_step(&step_down, &fwd, 1.0f / 60.0f);
+        if (!step_down.on_ground) stayed_grounded = false;
+    }
+    CHECK(stayed_grounded && step_down.pos.x > 13.0f && fabsf(step_down.pos.y - (float)(SLAB_Y + 1)) < 0.01f);
+    world_set_state(12, SLAB_Y + 1, 8, STATE_AIR);
     CHECK(!player_box_blocked(v3(8.5f, (float)(SLAB_Y + 1) + 0.01f, 8.5f)));
     CHECK(player_box_blocked(v3(8.5f, (float)SLAB_Y + 0.5f, 8.5f)));
 }
@@ -1123,8 +1282,11 @@ int selftest_run(void) {
         {"palette", test_palette},
         {"json", test_json},
         {"registry", test_registry},
+        {"worldgen", test_worldgen_data_driven},
+        {"worldgen-features", test_worldgen_features_and_structures},
         {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
+        {"mod-storage", test_mod_storage},
         {"mods-scripts", test_mods_and_scripts},
         {"examples", test_example_mods},
         {"gameplay", test_gameplay},

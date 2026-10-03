@@ -27,7 +27,7 @@
 #define SWIM_RESPONSE 7.0f
 #define CLIMB_RESPONSE 14.0f
 #define FLY_RESPONSE 8.0f
-#define STEP_HEIGHT 0.6f
+#define STEP_HEIGHT 1.0f
 #define CLIMB_SPEED 3.0f
 #define SPAWN_SEARCH_RADIUS 640
 #define SPAWN_SEARCH_STEP 16
@@ -173,15 +173,22 @@ static bool try_step_up(Player *p, int axis, float delta) {
     return true;
 }
 
+static bool try_step_down(Player *p) {
+    Player t = *p;
+    if (!move_axis(&t, 1, -(STEP_HEIGHT + 0.01f))) return false;
+    *p = t;
+    return true;
+}
+
 static void collide_and_move(Player *p, float dt) {
     bool was_ground = p->on_ground;
     float dx = p->vel.x * dt, dy = p->vel.y * dt, dz = p->vel.z * dt;
     if (move_axis(p, 0, dx)) {
         if (!(was_ground && !p->flying && try_step_up(p, 0, dx))) p->vel.x = 0;
-    }
+    } else if (dx != 0.0f && was_ground && !p->flying) try_step_down(p);
     if (move_axis(p, 2, dz)) {
         if (!(was_ground && !p->flying && try_step_up(p, 2, dz))) p->vel.z = 0;
-    }
+    } else if (dz != 0.0f && was_ground && !p->flying) try_step_down(p);
     bool hit = move_axis(p, 1, dy);
     p->on_ground = hit && dy < 0;
     if (hit) p->vel.y = 0;

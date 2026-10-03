@@ -97,6 +97,12 @@ typedef struct dfe_api_t {
     /* Writes the feet position to out[3]. Returns false for a handle that no longer exists. */
     bool (*entity_position)(int handle, double out[3]);
     int (*entity_count)(void);
+
+    /* Added as an optional world-save-backed mod storage facility. This is JSON state under the active world save,
+     * namespaced by mod id. The JSON is stored alongside the world, not in a global registry. */
+    bool (*mod_storage_get)(const char *mod_id, const char *key, char *out, size_t size);
+    bool (*mod_storage_set)(const char *mod_id, const char *key, const char *json_value);
+    bool (*mod_storage_remove)(const char *mod_id, const char *key);
 } dfe_api_t;
 
 #ifdef __cplusplus

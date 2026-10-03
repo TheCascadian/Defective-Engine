@@ -388,14 +388,30 @@ bool game_edit_block(int x, int y, int z, u16 state) {
 
 void events_clear(const char *mod_id) {
     int w = 0;
-    for (int i = 0; i < g_sub_count; i++) if (strcmp(g_subs[i].mod, mod_id)) g_subs[w++] = g_subs[i];
+    for (int i = 0; i < g_sub_count; i++) {
+        if (!strcmp(g_subs[i].mod, mod_id)) {
+            free(g_subs[i].user);
+            continue;
+        }
+        g_subs[w++] = g_subs[i];
+    }
     g_sub_count = w;
     w = 0;
-    for (int i = 0; i < g_cmd_count; i++) if (strcmp(g_cmds[i].mod, mod_id)) g_cmds[w++] = g_cmds[i];
+    for (int i = 0; i < g_cmd_count; i++) {
+        if (!strcmp(g_cmds[i].mod, mod_id)) {
+            free(g_cmds[i].user);
+            continue;
+        }
+        g_cmds[w++] = g_cmds[i];
+    }
     g_cmd_count = w;
 }
 
-void events_clear_all(void) { g_sub_count = g_cmd_count = 0; }
+void events_clear_all(void) {
+    for (int i = 0; i < g_sub_count; i++) free(g_subs[i].user);
+    for (int i = 0; i < g_cmd_count; i++) free(g_cmds[i].user);
+    g_sub_count = g_cmd_count = 0;
+}
 
 /* ---------------------------------------------------------------- commands */
 
@@ -477,6 +493,26 @@ static int api_entity_count(void) { return entity_count(); }
 static uint64_t api_world_seed(void) { return world_seed(); }
 static double api_game_time(void) { return g_game_time; }
 static void api_console_print(const char *message) { console_print("%s", message); }
+static bool api_mod_storage_get(const char *mod_id, const char *key, char *out, size_t size) {
+    const Json *v = mod_storage_get(mod_id, key);
+    if (!v || !out || size == 0) return false;
+    JsonWriter w = {0};
+    json_write(&w, v);
+    snprintf(out, size, "%s", w.buf ? w.buf : "");
+    jw_free(&w);
+    return true;
+}
+static bool api_mod_storage_set(const char *mod_id, const char *key, const char *json_value) {
+    if (!mod_id || !key || !json_value) return false;
+    char err[160];
+    int line = 0;
+    Json *j = json_parse(json_value, strlen(json_value), err, sizeof err, &line);
+    if (!j) { LOGW("[mod %s] invalid JSON storage value for %s: %s", mod_id, key, err); return false; }
+    bool ok = mod_storage_set(mod_id, key, j);
+    json_free(j);
+    return ok;
+}
+static bool api_mod_storage_remove(const char *mod_id, const char *key) { return mod_storage_remove(mod_id, key); }
 
 const dfe_api_t *api_get(void) {
     static const dfe_api_t api = {
@@ -498,6 +534,9 @@ const dfe_api_t *api_get(void) {
         .entity_remove = api_entity_remove,
         .entity_position = api_entity_position,
         .entity_count = api_entity_count,
+        .mod_storage_get = api_mod_storage_get,
+        .mod_storage_set = api_mod_storage_set,
+        .mod_storage_remove = api_mod_storage_remove,
     };
     return &api;
 }

@@ -50,6 +50,7 @@ static struct {
     char dir[512];
     u64 seed;
     SaveMeta meta;
+    Json *mod_storage;
     Mutex *lock;
     Region cache[REGION_CACHE];
     int cache_used;
@@ -159,6 +160,9 @@ static bool meta_read(void) {
     S.meta.day_time = json_num(j, "time", 0.3);
     const Json *names = json_get(j, "blocks");
     for (int i = 0; names && i < json_len(names); i++) vec_push(S.names.names, xstrdup(json_as_str(json_at(names, i), "dfe:missing")));
+    const Json *storage = json_get(j, "mod_storage");
+    if (storage && storage->type == JSON_OBJECT) S.mod_storage = json_clone(storage);
+    else S.mod_storage = NULL;
     json_free(j);
     return true;
 }
@@ -203,6 +207,10 @@ static bool meta_write(void) {
     jw_begin_arr(&w);
     for (int i = 0; i < S.names.names.n; i++) jw_str(&w, S.names.names.d[i]);
     jw_end_arr(&w);
+    if (S.mod_storage && S.mod_storage->type == JSON_OBJECT) {
+        jw_key(&w, "mod_storage");
+        json_write(&w, S.mod_storage);
+    }
     jw_end_obj(&w);
     char path[600];
     meta_path(path, sizeof path);
@@ -417,6 +425,107 @@ static bool deserialize_column(const u8 *raw, size_t len, int cx, int cz, SavedC
     return true;
 }
 
+static bool mod_storage_key_valid(const char *key) {
+    if (!key || !key[0]) return false;
+    size_t n = strspn(key, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. ");
+    return n == strlen(key) && strlen(key) < 64 && strchr(key, ' ') == NULL;
+}
+
+static Json *mod_storage_root(bool create) {
+    if (!S.mod_storage) {
+        if (!create) return NULL;
+        S.mod_storage = xcalloc(1, sizeof *S.mod_storage);
+        S.mod_storage->type = JSON_OBJECT;
+    }
+    if (S.mod_storage->type != JSON_OBJECT) {
+        if (!create) return NULL;
+        json_free(S.mod_storage);
+        S.mod_storage = xcalloc(1, sizeof *S.mod_storage);
+        S.mod_storage->type = JSON_OBJECT;
+    }
+    return S.mod_storage;
+}
+
+static Json *mod_storage_mod_obj(const char *mod_id, bool create) {
+    if (!mod_id || !mod_id[0]) return NULL;
+    Json *root = mod_storage_root(create);
+    if (!root) return NULL;
+    Json *mod = (Json *)json_get(root, mod_id);
+    if (!mod || mod->type != JSON_OBJECT) {
+        if (!create) return NULL;
+        mod = xcalloc(1, sizeof *mod);
+        mod->type = JSON_OBJECT;
+        root->items = xrealloc(root->items, (size_t)(root->count + 1) * sizeof(Json *));
+        root->keys = xrealloc(root->keys, (size_t)(root->count + 1) * sizeof(char *));
+        root->items[root->count] = mod;
+        root->keys[root->count] = xstrdup(mod_id);
+        root->count++;
+    }
+    return mod;
+}
+
+static bool mod_storage_remove_key(Json *obj, const char *key) {
+    if (!obj || obj->type != JSON_OBJECT) return false;
+    for (int i = 0; i < obj->count; i++) {
+        if (!strcmp(obj->keys[i], key)) {
+            free(obj->keys[i]);
+            json_free(obj->items[i]);
+            for (int j = i + 1; j < obj->count; j++) {
+                obj->keys[j - 1] = obj->keys[j];
+                obj->items[j - 1] = obj->items[j];
+            }
+            obj->count--;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool mod_storage_set(const char *mod_id, const char *key, const Json *value) {
+    if (!mod_storage_key_valid(key)) return false;
+    if (!mod_id || !mod_id[0]) return false;
+    if (!value) return mod_storage_remove(mod_id, key);
+    Json *root = mod_storage_root(true);
+    Json *mod = mod_storage_mod_obj(mod_id, true);
+    if (!root || !mod) return false;
+    for (int i = 0; i < mod->count; i++) {
+        if (!strcmp(mod->keys[i], key)) {
+            json_free(mod->items[i]);
+            mod->items[i] = json_clone(value);
+            return true;
+        }
+    }
+    mod->keys = xrealloc(mod->keys, (size_t)(mod->count + 1) * sizeof(char *));
+    mod->items = xrealloc(mod->items, (size_t)(mod->count + 1) * sizeof(Json *));
+    mod->keys[mod->count] = xstrdup(key);
+    mod->items[mod->count++] = json_clone(value);
+    return true;
+}
+
+const Json *mod_storage_get(const char *mod_id, const char *key) {
+    if (!mod_id || !key || !mod_storage_key_valid(key)) return NULL;
+    Json *root = mod_storage_root(false);
+    if (!root) return NULL;
+    Json *mod = (Json *)json_get(root, mod_id);
+    if (!mod || mod->type != JSON_OBJECT) return NULL;
+    return json_get(mod, key);
+}
+
+bool mod_storage_remove(const char *mod_id, const char *key) {
+    if (!mod_id || !key || !mod_storage_key_valid(key)) return false;
+    Json *root = mod_storage_root(false);
+    if (!root) return false;
+    Json *mod = (Json *)json_get(root, mod_id);
+    if (!mod || mod->type != JSON_OBJECT) return false;
+    bool removed = mod_storage_remove_key(mod, key);
+    if (mod->count == 0) {
+        mod_storage_remove_key(root, mod_id);
+        json_free(mod);
+        if (root->count == 0) { json_free(root); S.mod_storage = NULL; }
+    }
+    return removed;
+}
+
 /* ------------------------------------------------------------- public API */
 
 bool save_open(const char *dir, u64 default_seed) {
@@ -425,6 +534,7 @@ bool save_open(const char *dir, u64 default_seed) {
     S.lock = mutex_create();
     S.seed = default_seed;
     S.meta.day_time = 0.3;
+    S.mod_storage = NULL;
     char regions[600];
     snprintf(regions, sizeof regions, "%s/region", dir);
     if (!dir_make_all(regions)) {
@@ -589,6 +699,8 @@ void save_close(void) {
     block_table_free(&S.names);
     strmap_free(&S.name_index);
     free(S.rt_to_saved);
+    json_free(S.mod_storage);
+    S.mod_storage = NULL;
     vec_free(S.pending);
     mutex_destroy(S.lock);
     memset(&S, 0, sizeof S);

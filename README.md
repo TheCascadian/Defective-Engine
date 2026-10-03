@@ -15,6 +15,11 @@ cmake --build build
 ./build/dfe --selftest      # engine and example mod checks
 ./build/dfe --benchmark     # fixed camera path, prints frame statistics
 ./build/dfe --help          # every option
+
+# optional: local sanitizer validation
+cmake -S . -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDFE_ENABLE_SANITIZERS=ON
+cmake --build build-sanitize
+./build-sanitize/dfe --selftest
 ```
 
 Use a Release build for any performance measurement. Add `-DDFE_BUILD_EXAMPLES=ON` to build the native plugin example.

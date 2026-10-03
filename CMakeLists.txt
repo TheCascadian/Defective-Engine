@@ -21,6 +21,16 @@ else()
   set(DFE_WARN /W3 /wd4244 /wd4267 /wd4996)
 endif()
 
+option(DFE_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer for debug validation" OFF)
+if(DFE_ENABLE_SANITIZERS)
+  if(MSVC)
+    message(WARNING "DFE_ENABLE_SANITIZERS is not supported with MSVC; ignoring the option.")
+  else()
+    add_compile_options(-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address -fsanitize=undefined)
+  endif()
+endif()
+
 set(THIRD ${CMAKE_SOURCE_DIR}/third_party)
 
 # GLFW: X11 only on Linux so a build needs no Wayland protocol tooling.

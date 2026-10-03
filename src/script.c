@@ -76,6 +76,130 @@ static void split_location(const char *msg, const char *fallback_file, char *fil
     }
 }
 
+static bool lua_key_valid(const char *key) {
+    if (!key || !key[0] || strlen(key) >= 64) return false;
+    size_t n = strspn(key, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. ");
+    return n == strlen(key) && strchr(key, ' ') == NULL;
+}
+
+static void lua_push_json(lua_State *state, const Json *j) {
+    if (!j) { lua_pushnil(state); return; }
+    switch (j->type) {
+    case JSON_NULL: lua_pushnil(state); break;
+    case JSON_BOOL: lua_pushboolean(state, j->boolean); break;
+    case JSON_NUMBER: lua_pushnumber(state, (lua_Number)j->num); break;
+    case JSON_STRING: lua_pushstring(state, j->str ? j->str : ""); break;
+    case JSON_ARRAY: {
+        lua_createtable(state, j->count, 0);
+        for (int i = 0; i < j->count; i++) {
+            lua_push_json(state, j->items[i]);
+            lua_rawseti(state, -2, i + 1);
+        }
+        break;
+    }
+    case JSON_OBJECT: {
+        lua_createtable(state, 0, j->count);
+        for (int i = 0; i < j->count; i++) {
+            lua_pushstring(state, j->keys[i]);
+            lua_push_json(state, j->items[i]);
+            lua_rawset(state, -3);
+        }
+        break;
+    }
+    }
+}
+
+static Json *json_from_lua(lua_State *state, int index, char *err, size_t cap) {
+    if (lua_isnil(state, index)) {
+        Json *j = xcalloc(1, sizeof *j);
+        j->type = JSON_NULL;
+        return j;
+    }
+    if (lua_isboolean(state, index)) {
+        Json *j = xcalloc(1, sizeof *j);
+        j->type = JSON_BOOL;
+        j->boolean = lua_toboolean(state, index);
+        return j;
+    }
+    if (lua_isnumber(state, index)) {
+        Json *j = xcalloc(1, sizeof *j);
+        j->type = JSON_NUMBER;
+        j->num = lua_tonumber(state, index);
+        return j;
+    }
+    if (lua_isstring(state, index)) {
+        Json *j = xcalloc(1, sizeof *j);
+        j->type = JSON_STRING;
+        j->str = xstrdup(lua_tostring(state, index));
+        return j;
+    }
+    if (lua_istable(state, index)) {
+        size_t len = (size_t)lua_objlen(state, index);
+        bool is_array = true;
+        for (size_t i = 1; i <= len; i++) {
+            lua_rawgeti(state, index, (int)i);
+            bool empty = lua_isnil(state, -1);
+            lua_pop(state, 1);
+            if (empty) { is_array = false; break; }
+        }
+        if (is_array) {
+            Json *a = xcalloc(1, sizeof *a);
+            a->type = JSON_ARRAY;
+            a->count = (int)len;
+            a->items = xcalloc(len ? len : 1, sizeof(Json *));
+            for (size_t i = 1; i <= len; i++) {
+                lua_rawgeti(state, index, (int)i);
+                a->items[i - 1] = json_from_lua(state, -1, err, cap);
+                lua_pop(state, 1);
+                if (!a->items[i - 1]) {
+                    json_free(a);
+                    return NULL;
+                }
+            }
+            return a;
+        }
+        Json *o = xcalloc(1, sizeof *o);
+        o->type = JSON_OBJECT;
+        lua_pushnil(state);
+        while (lua_next(state, index)) {
+            const char *key = NULL;
+            if (lua_isstring(state, -2)) key = lua_tostring(state, -2);
+            else if (lua_isnumber(state, -2)) {
+                char tmp[32];
+                snprintf(tmp, sizeof tmp, "%g", lua_tonumber(state, -2));
+                key = xstrdup(tmp);
+            } else {
+                snprintf(err, cap, "table keys must be strings or numbers");
+                lua_pop(state, 2);
+                json_free(o);
+                return NULL;
+            }
+            if (!lua_key_valid(key)) {
+                snprintf(err, cap, "storage key \"%s\" is invalid; use letters, digits, underscores, '-' or '.' only", key);
+                free((void *)key);
+                lua_pop(state, 2);
+                json_free(o);
+                return NULL;
+            }
+            Json *v = json_from_lua(state, -1, err, cap);
+            if (!v) {
+                lua_pop(state, 2);
+                json_free(o);
+                return NULL;
+            }
+            o->keys = xrealloc(o->keys, (size_t)(o->count + 1) * sizeof(char *));
+            o->items = xrealloc(o->items, (size_t)(o->count + 1) * sizeof(Json *));
+            o->keys[o->count] = xstrdup(key);
+            o->items[o->count++] = v;
+            if (lua_isnumber(state, -2)) free((void *)key);
+            lua_pop(state, 1);
+        }
+        return o;
+    }
+    snprintf(err, cap, "unsupported storage value type: %s", luaL_typename(state, index));
+    return NULL;
+}
+
 static void report_error(const char *mod, const char *fallback_file, const char *msg) {
     char file[128];
     int line;
@@ -199,6 +323,38 @@ static int l_get_light(lua_State *state) {
 
 static int l_seed(lua_State *state) { lua_pushnumber(state, (lua_Number)(api_get()->world_seed() & 0xFFFFFFFFu)); return 1; }
 static int l_time(lua_State *state) { lua_pushnumber(state, api_get()->game_time()); return 1; }
+
+static int l_storage_get(lua_State *state) {
+    const char *key = luaL_checkstring(state, 1);
+    if (!lua_key_valid(key)) return luaL_error(state, "storage key \"%s\" is invalid; use letters, digits, underscores, '-' or '.' only", key);
+    const Json *v = mod_storage_get(mod_of(state), key);
+    if (!v) { lua_pushnil(state); return 1; }
+    lua_push_json(state, v);
+    return 1;
+}
+
+static int l_storage_set(lua_State *state) {
+    const char *key = luaL_checkstring(state, 1);
+    if (!lua_key_valid(key)) return luaL_error(state, "storage key \"%s\" is invalid; use letters, digits, underscores, '-' or '.' only", key);
+    if (lua_isnil(state, 2)) {
+        lua_pushboolean(state, mod_storage_remove(mod_of(state), key));
+        return 1;
+    }
+    char err[160];
+    Json *v = json_from_lua(state, 2, err, sizeof err);
+    if (!v) return luaL_error(state, "%s", err[0] ? err : "unsupported storage value");
+    bool ok = mod_storage_set(mod_of(state), key, v);
+    json_free(v);
+    lua_pushboolean(state, ok);
+    return 1;
+}
+
+static int l_storage_remove(lua_State *state) {
+    const char *key = luaL_checkstring(state, 1);
+    if (!lua_key_valid(key)) return luaL_error(state, "storage key \"%s\" is invalid; use letters, digits, underscores, '-' or '.' only", key);
+    lua_pushboolean(state, mod_storage_remove(mod_of(state), key));
+    return 1;
+}
 
 /* ---------------------------------------------------------------- callbacks into Lua */
 
@@ -393,6 +549,17 @@ static int make_mod_env(const char *mod_id) {
         lua_pushcclosure(L, r->func, 1);
         lua_setfield(L, -2, r->name);
     }
+    lua_newtable(L);
+    lua_pushstring(L, mod_id);
+    lua_pushcclosure(L, l_storage_get, 1);
+    lua_setfield(L, -2, "get");
+    lua_pushstring(L, mod_id);
+    lua_pushcclosure(L, l_storage_set, 1);
+    lua_setfield(L, -2, "set");
+    lua_pushstring(L, mod_id);
+    lua_pushcclosure(L, l_storage_remove, 1);
+    lua_setfield(L, -2, "remove");
+    lua_setfield(L, -2, "storage");
     lua_pushstring(L, mod_id);
     lua_setfield(L, -2, "mod");
     lua_setfield(L, env, "dfe");
@@ -467,6 +634,8 @@ bool script_init(void) {
 
 void script_shutdown(void) {
     if (!L) return;
+    events_clear_all();
+    for (int i = 0; i < g_mod_env_count; i++) luaL_unref(L, LUA_REGISTRYINDEX, g_mod_env_ref[i]);
     lua_close(L);
     L = NULL;
     g_mem = 0;

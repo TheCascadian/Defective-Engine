@@ -687,7 +687,8 @@ Stated plainly so that mod authors can plan.
 * Mods cannot read or change the player or inventory from Lua yet. `block_place` and `block_break` fire for the player's own edits and for the `setblock` command.
 * Lua world generators, data-driven biomes, ores and structures, and custom screens are planned and are not part of mod API 1. Block, texture, entity type, preset, atmosphere, shader and world setting data are available now.
 * Entities have no scripted behaviour, no health, no models beyond the two-box shape and no collision with the player or each other, and they are not saved with the world. Their movement is a wander; a mod that wants other behaviour can move them by removing and respawning, or wait for the behaviour API.
-* Mods have no persistent storage. State kept in Lua variables is lost when the game closes. Block edits persist because the world is saved.
+* Mods can persist structured state under the active world save through `dfe.storage`. Data is namespaced by mod id and survives save/reload. The value is JSON-backed, so tables, arrays, booleans, numbers and strings are all valid. Block edits and player state persist because the world is saved, and the mod storage is part of the same save stream.
+* `dfe.storage` is per-mod: a script in `base` can only read and write keys in `base`, never in another mod's namespace. A key must be a short identifier such as `quest.stage` or `economy.gold`.
 * `dfe.seed()` returns only the low 32 bits of the seed. Use the C API for all 64 bits.
 * The `string`, `table` and `math` libraries are shared between mods.
 * Hot reload covers shaders, the atmosphere file, presets and entity types only; see [Developing with hot reload](#developing-with-hot-reload).

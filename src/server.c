@@ -239,9 +239,9 @@ static void run_due_ticks(void) {
     TickBucket *b = &S.ring[S.tick % TICK_RING];
     int run = MIN(b->n, MAX_DUE_PER_TICK);
     SchedTick *batch = run ? xmalloc((size_t)run * sizeof *batch) : NULL;
-    memcpy(batch, b->d, (size_t)run * sizeof *batch);
+    if (run) memcpy(batch, b->d, (size_t)run * sizeof *batch);
     int left = b->n - run;
-    memmove(b->d, b->d + run, (size_t)left * sizeof *batch);
+    if (left) memmove(b->d, b->d + run, (size_t)left * sizeof *batch);
     b->n = left;
     S.scheduled -= run;
     for (int i = 0; i < run; i++) tick_fluid_cell(batch[i].x, batch[i].y, batch[i].z);

@@ -184,6 +184,28 @@ Json *json_parse(const char *text, size_t len, char *err, size_t errcap, int *er
     return root;
 }
 
+Json *json_clone(const Json *src) {
+    if (!src) return NULL;
+    Json *copy = xcalloc(1, sizeof *copy);
+    copy->type = src->type;
+    copy->line = src->line;
+    copy->num = src->num;
+    copy->boolean = src->boolean;
+    if (src->type == JSON_STRING) copy->str = src->str ? xstrdup(src->str) : xstrdup("");
+    else if (src->type == JSON_ARRAY || src->type == JSON_OBJECT) {
+        copy->count = src->count;
+        if (src->count > 0) {
+            copy->items = xcalloc((size_t)src->count, sizeof(Json *));
+            if (src->type == JSON_OBJECT) copy->keys = xcalloc((size_t)src->count, sizeof(char *));
+            for (int i = 0; i < src->count; i++) {
+                copy->items[i] = json_clone(src->items[i]);
+                if (src->type == JSON_OBJECT && src->keys && src->keys[i]) copy->keys[i] = xstrdup(src->keys[i]);
+            }
+        }
+    }
+    return copy;
+}
+
 void json_free(Json *j) {
     if (!j) return;
     for (int i = 0; i < j->count; i++) {
@@ -289,4 +311,31 @@ void jw_num(JsonWriter *w, double v) {
     jw_put(w, b, strlen(b));
 }
 void jw_bool(JsonWriter *w, bool v) { jw_sep(w); jw_put(w, v ? "true" : "false", v ? 4 : 5); }
+void json_write(JsonWriter *w, const Json *j) {
+    if (!j) { jw_put(w, "null", 4); return; }
+    switch (j->type) {
+    case JSON_NULL:
+        jw_put(w, "null", 4);
+        break;
+    case JSON_BOOL:
+        jw_bool(w, j->boolean);
+        break;
+    case JSON_NUMBER:
+        jw_num(w, j->num);
+        break;
+    case JSON_STRING:
+        jw_str(w, j->str ? j->str : "");
+        break;
+    case JSON_ARRAY:
+        jw_begin_arr(w);
+        for (int i = 0; i < j->count; i++) { json_write(w, j->items[i]); }
+        jw_end_arr(w);
+        break;
+    case JSON_OBJECT:
+        jw_begin_obj(w);
+        for (int i = 0; i < j->count; i++) { jw_key(w, j->keys[i]); json_write(w, j->items[i]); }
+        jw_end_obj(w);
+        break;
+    }
+}
 void jw_free(JsonWriter *w) { free(w->buf); memset(w, 0, sizeof *w); }

@@ -355,6 +355,7 @@ struct Json {
     char **keys; /* objects only, parallel to items */
 };
 Json *json_parse(const char *text, size_t len, char *err, size_t errcap, int *err_line);
+Json *json_clone(const Json *src);
 void json_free(Json *j);
 const Json *json_get(const Json *obj, const char *key);
 int json_len(const Json *j);
@@ -381,6 +382,7 @@ void jw_key(JsonWriter *w, const char *key);
 void jw_str(JsonWriter *w, const char *s);
 void jw_num(JsonWriter *w, double v);
 void jw_bool(JsonWriter *w, bool v);
+void json_write(JsonWriter *w, const Json *j);
 void jw_free(JsonWriter *w);
 
 /* ------------------------------------------------------------ registry.c */
@@ -620,6 +622,10 @@ typedef struct SaveMeta {
     char inv_name[SAVE_INV_SLOTS][SAVE_BLOCK_NAME_LEN];
     u8 inv_count[SAVE_INV_SLOTS];
 } SaveMeta;
+/* Mod-scoped save data. Each mod gets its own JSON object under the active world save. */
+bool mod_storage_set(const char *mod_id, const char *key, const Json *value);
+const Json *mod_storage_get(const char *mod_id, const char *key);
+bool mod_storage_remove(const char *mod_id, const char *key);
 typedef struct SavedColumn {
     int lo, hi;
     u16 deep_state;
@@ -664,6 +670,10 @@ GenScratch *gen_scratch_create(void);
 void gen_scratch_destroy(GenScratch *s);
 void gen_band(int *lo_cy, int *hi_cy);
 u16 gen_deep_state(void);
+int gen_biome_count(void);
+int gen_ore_count(void);
+int gen_feature_count(void);
+int gen_structure_count(void);
 /* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
 void gen_column(GenScratch *s, int cx, int cz, u16 *states);
 int gen_sea_level(void);

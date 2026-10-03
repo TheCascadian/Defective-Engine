@@ -1,6 +1,10 @@
 build/
+build-*/
 *.o
 saves/
 examples/mods/*/plugins/
 perf_results/
 settings.json
+/selftest_*/
+/Defective-Engine-source.zip
+/repomix-output.xml

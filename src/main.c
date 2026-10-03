@@ -148,6 +148,8 @@ static int worker_count_for_machine(void) { return g_opt.workers > 0 ? CLAMP(g_o
 /* Matrix cases follow one another in a warm process, so each discards its first second while the new size and
  * preset settle (target reallocation, driver shader variants) before anything is recorded. */
 #define MATRIX_SETTLE_S 1.0
+/* The first case also pays for shader variants and driver start-up, which show as a long frame if recorded. */
+#define MATRIX_FIRST_SETTLE_S 3.0
 /* Deterministic path so two benchmark runs sample the same view: time advances by a fixed step per frame.
  * The camera follows the terrain at constant clearance while travelling, which exercises streaming, meshing
  * and unloading the same way on every run. */
@@ -314,6 +316,8 @@ static void load_settings_for_run(void) {
     }
 }
 
+static double matrix_settle_s(int case_index) { return case_index == 0 ? MATRIX_FIRST_SETTLE_S : MATRIX_SETTLE_S; }
+
 /* Moves to the next matrix case: new settings and size, the camera back at the start of the path, atmosphere back at
  * its starting state, and the area around the start fully built so the case begins from the same view every time. */
 static void matrix_begin_case(Camera *cam, const BenchCase *c) {
@@ -456,7 +460,7 @@ static int run_viewer(void) {
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
             benchmark_camera(&cam, frame);
-            if (matrix && frame_start - bench_start >= g_opt.bench_seconds) {
+            if (matrix && frame_start - bench_start >= matrix_settle_s(case_index) + g_opt.bench_seconds) {
                 perf_report_case(bench_case_at(case_index), case_index, bench_case_total(), time_now_s() - record_start, cold);
                 perf_reset_samples();
                 record_start = 0;
@@ -524,7 +528,7 @@ static int run_viewer(void) {
         double frame_ms = (time_now_s() - frame_start) * 1000.0;
         if (gl) overlay_frame(frame_ms / 1000.0, cpu_ms);
         if (gl) post_update_controller(frame_ms, frame_ms - cpu_ms);
-        bool settled = !matrix || frame_start - bench_start >= MATRIX_SETTLE_S;
+        bool settled = !matrix || frame_start - bench_start >= matrix_settle_s(case_index);
         if (settled && !record_start) record_start = frame_start;
         if (g_opt.benchmark && frame > BENCH_WARMUP_FRAMES && settled) {
             FrameSample fs = {.frame_ms = (float)frame_ms, .cpu_ms = (float)cpu_ms, .stream_ms = (float)stream_ms,

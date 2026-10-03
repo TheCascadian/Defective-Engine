@@ -55,5 +55,8 @@ const BenchCase *bench_case_at(int index) { return index >= 0 && index < g_total
 void bench_case_apply(const BenchCase *c) {
     snprintf(g_settings.preset, sizeof g_settings.preset, "%s", c->preset);
     window_resize(c->width, c->height);
+    if (g_win.fb_width != c->width || g_win.fb_height != c->height)
+        fprintf(stderr, "warning: case %s:%dx%d was asked for but the window is %dx%d. The window manager overrode the size, so this case does not measure what it names. Start with --hidden, which a window manager does not resize.\n",
+                c->preset, c->width, c->height, g_win.fb_width, g_win.fb_height);
     gfx_apply();
 }

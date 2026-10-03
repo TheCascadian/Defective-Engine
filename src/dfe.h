@@ -680,6 +680,13 @@ int gen_structure_count(void);
 /* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
 void gen_column(GenScratch *s, int cx, int cz, u16 *states);
 int gen_sea_level(void);
+/* Shared terrain/water result for near chunks, decoration and distant LOD. A dry sample is all zeroes. */
+typedef struct GenHydrologySample {
+    float channel, bed_y, water_y;
+    u8 type;
+    bool wet;
+} GenHydrologySample;
+void gen_hydrology_at(float x, float z, GenHydrologySample *out);
 /* Cheap analytic height, used by the distant-terrain tiles and the benchmark camera. */
 float gen_height_at(float x, float z);
 

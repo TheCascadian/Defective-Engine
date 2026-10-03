@@ -539,6 +539,16 @@ static float terrain_base_height(float wx, float wz) {
     return h;
 }
 
+/* The public query starts life as a deliberately dry, pure terrain query. The routed drainage builder fills this
+ * contract in the next task; exposing it now lets every consumer migrate to one result rather than inventing its own
+ * water rule. */
+void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
+    float wx, wz;
+    terrain_coordinates(x, z, &wx, &wz);
+    (void)terrain_base_height(wx, wz);
+    memset(out, 0, sizeof *out);
+}
+
 static float river_strength_at(float wx, float wz) {
     float rx = wx, rz = wz;
     fnlDomainWarp2D(&N.river_warp, &rx, &rz);

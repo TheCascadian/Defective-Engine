@@ -624,6 +624,15 @@ static void test_gen_determinism(void) {
         }
     CHECK(above_sea > 100 && below_sea > 100);
     CHECK(max_height - min_height > 55.0f);
+    /* A hydrology query is a pure world-generation input: repeated samples must agree and dry cells must not expose a
+     * stale water surface. The production change this catches is a query that retains mutable generation state or
+     * reports wet terrain without a carved bed. */
+    GenHydrologySample hydrology_a, hydrology_b;
+    gen_hydrology_at(384.0f, -192.0f, &hydrology_a);
+    gen_hydrology_at(384.0f, -192.0f, &hydrology_b);
+    CHECK(!memcmp(&hydrology_a, &hydrology_b, sizeof hydrology_a));
+    if (!hydrology_a.wet) CHECK(hydrology_a.channel == 0.0f && hydrology_a.bed_y == 0.0f && hydrology_a.water_y == 0.0f);
+    else CHECK(hydrology_a.bed_y < hydrology_a.water_y);
     bool found_river = false;
     int sea_voxel = gen_sea_level();
     GenLodGrid lod;

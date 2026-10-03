@@ -3,6 +3,7 @@
     "all": "base:block/snow"
   },
   "hardness": 0.2,
+  "friction": 0.85,
   "tool": "shovel",
   "sound": "snow"
 }

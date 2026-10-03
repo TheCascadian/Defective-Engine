@@ -215,7 +215,7 @@ A block is one JSON file at `data/<namespace>/blocks/<name>.json`. Its id is `<n
 | `random_tick` | bool | false | Receives random ticks (used by game systems that grow or spread blocks). |
 | `climbable` | bool | false | The player can climb it. |
 | `item` | bool | true | Whether the block has an inventory item. |
-| `friction` | number | 1.0 | Surface friction multiplier. |
+| `friction` | number | 1.0 | Ground movement speed multiplier, clamped to 0.5..1.1. Lower values slow ground movement; they do not add coasting. |
 | `hardness` | number | 1.0 | Seconds to break by hand. Negative means unbreakable. |
 | `tool` | string | none | Preferred tool, for example `pick`, `axe` or `shovel`. |
 | `drops` | string | the block itself | Block id dropped when broken. |
@@ -229,7 +229,7 @@ A block is one JSON file at `data/<namespace>/blocks/<name>.json`. Its id is `<n
 
 Mistakes that name a bad value, such as an unknown `shape` or `tint`, are reported with the file and line and list the valid choices.
 
-`hardness` (seconds to break in survival, negative for unbreakable) and `drops` (the block name given when broken, `""` for nothing) are used by the player. `random_tick: true` makes the block fire the `random_tick` event. `climbable` lets the player climb it. `tool`, `sound` and `friction` are stored and not yet used.
+`hardness` (seconds to break in survival, negative for unbreakable) and `drops` (the block name given when broken, `""` for nothing) are used by the player. `random_tick: true` makes the block fire the `random_tick` event. `climbable` lets the player climb it. `friction` scales walking and sprinting speed while grounded; `tool` and `sound` are stored for later gameplay systems.
 
 ### Block states and properties
 

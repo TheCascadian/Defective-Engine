@@ -810,6 +810,17 @@ static void test_player_physics(u16 stone) {
     float stop_z = mover.pos.z;
     player_step(&mover, &none, 1.0f / 60.0f);
     CHECK(fabsf(mover.vel.z) < 1e-6f && fabsf(mover.pos.z - stop_z) < 0.08f);
+    const BlockDef *snow = block_find("base:snow");
+    CHECK(snow && fabsf(snow->friction - 0.85f) < 1e-6f);
+    if (snow) {
+        world_set_state(14, SLAB_Y, 14, snow->default_state);
+        Player snowy;
+        player_init(&snowy, v3(14.5f, (float)(SLAB_Y + 1), 14.5f));
+        for (int i = 0; i < 4; i++) player_step(&snowy, &none, 1.0f / 60.0f);
+        player_step(&snowy, &forward, 1.0f / 60.0f);
+        CHECK(fabsf(snowy.vel.z + 4.3f * snow->friction) < 0.01f);
+        world_set_state(14, SLAB_Y, 14, stone);
+    }
     PlayerInput held_jump = {.jump = true};
     for (int i = 0; i < 60; i++) player_step(&mover, &held_jump, 1.0f / 60.0f);
     CHECK(mover.on_ground);

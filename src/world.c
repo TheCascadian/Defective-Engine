@@ -328,6 +328,7 @@ static void column_unload(Column *col);
 
 void world_shutdown(void) {
     if (!W.active) return;
+    world_save_all();
     W.active = false;
     jobs_wait_idle();
     while (jobs_in_flight() > 0) jobs_pump(1.0);
@@ -544,25 +545,52 @@ static bool column_is_dirty(const Column *col) {
     return false;
 }
 
-/* Serialises the column and clears its dirty flags. The write itself happens on a worker. */
-static void column_save(Column *col) {
+#define SAVE_COLUMNS_PER_CALL 16 /* serialising a column costs about a millisecond, so a call stays within a frame's slack */
+
+static int save_budget_remaining;
+
+/* Serialises the column and clears its dirty flags. The write itself happens on a worker. Returns false, leaving the
+ * column dirty, when a chunk of it is missing. */
+static bool column_save(Column *col) {
     int layers = col->hi_cy - col->lo_cy + 1;
     Chunk **list = xcalloc((size_t)layers, sizeof(Chunk *));
     for (int k = 0; k < layers; k++) {
         list[k] = ptrmap_get(&W.chunks, pack3(col->cx, col->lo_cy + k, col->cz));
-        if (!list[k]) { free(list); return; }
+        if (!list[k]) { free(list); return false; }
     }
     save_store_column(col, list);
     for (int k = 0; k < layers; k++) list[k]->flags &= ~CF_SAVE_DIRTY;
     free(list);
+    return true;
+}
+
+static Column *column_at_slot(u32 i) {
+    return W.columns.vals[i] && W.columns.vals[i] != TOMB ? W.columns.vals[i] : NULL;
 }
 
 void world_save_dirty(void) {
     if (!W.active || !save_active()) return;
-    for (u32 i = 0; i < W.columns.cap; i++) {
-        Column *col = W.columns.vals[i] && W.columns.vals[i] != TOMB ? W.columns.vals[i] : NULL;
-        if (col && col->state == COLUMN_READY && column_is_dirty(col)) column_save(col);
+    save_budget_remaining = SAVE_COLUMNS_PER_CALL;
+    for (u32 i = 0; i < W.columns.cap && save_budget_remaining > 0; i++) {
+        Column *col = column_at_slot(i);
+        if (col && col->state == COLUMN_READY && column_is_dirty(col) && column_save(col)) save_budget_remaining--;
     }
+}
+
+void world_save_all(void) {
+    if (!W.active || !save_active()) return;
+    /* A pass that saved nothing means the rest cannot be saved (a chunk is missing), so the loop always ends. */
+    do world_save_dirty();
+    while (save_budget_remaining < SAVE_COLUMNS_PER_CALL);
+}
+
+int world_dirty_columns(void) {
+    int n = 0;
+    for (u32 i = 0; i < W.columns.cap; i++) {
+        Column *col = column_at_slot(i);
+        if (col && col->state == COLUMN_READY && column_is_dirty(col)) n++;
+    }
+    return n;
 }
 
 static void column_unload(Column *col) {

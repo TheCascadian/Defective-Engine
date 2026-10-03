@@ -413,6 +413,57 @@ static void test_save_roundtrip(void) {
     remove_tree_files(dir);
 }
 
+/* One call saves a bounded number of columns; the rest stay dirty until a later call or world_save_all. */
+static void test_save_budget(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    BlockDef *stone = block_find("base:stone"), *glass = block_find("base:glass"), *crystal = block_find("base:crystal_red");
+    CHECK(stone && glass && crystal);
+    if (!stone || !glass || !crystal || data_error_count()) return;
+    enum { SIDE = 8, COLUMNS = SIDE * SIDE, BUDGET = 16 };
+    const char *dir = "selftest_world_budget";
+    remove_tree_files(dir);
+    jobs_init(2);
+    CHECK(save_open(dir, 7));
+    world_init(save_seed());
+    world_flush_generation(0, 0, SIDE / 2);
+    CHECK(world_dirty_columns() == 0);
+    int ex[COLUMNS], ey[COLUMNS], ez[COLUMNS];
+    u16 want[COLUMNS];
+    for (int i = 0; i < COLUMNS; i++) {
+        int cx = i % SIDE - SIDE / 2, cz = i / SIDE - SIDE / 2;
+        ex[i] = cx * CHUNK_SIZE + 3 + i % 25;
+        ez[i] = cz * CHUNK_SIZE + 5 + i % 23;
+        ey[i] = ifloor(gen_height_at((float)ex[i], (float)ez[i])) + 10 + i % 5;
+        want[i] = i % 7 == 0 ? crystal->default_state : (i & 1) ? stone->default_state : glass->default_state;
+        world_set_state(ex[i], ey[i], ez[i], want[i]);
+    }
+    CHECK(world_dirty_columns() == COLUMNS);
+    world_save_dirty();
+    CHECK(world_dirty_columns() == COLUMNS - BUDGET);
+    world_save_all();
+    CHECK(world_dirty_columns() == 0);
+    int round_tripped = 0;
+    for (int i = 0; i < COLUMNS; i++) {
+        int cx = ex[i] >> CHUNK_SHIFT, cz = ez[i] >> CHUNK_SHIFT, cy = ey[i] >> CHUNK_SHIFT;
+        SavedColumn sc;
+        if (!save_load_column(cx, cz, &sc)) continue;
+        if (cy >= sc.lo && cy <= sc.hi) {
+            int idx = ((ey[i] & 31) << 10) | ((ez[i] & 31) << 5) | (ex[i] & 31);
+            if (chunk_get(sc.chunks[cy - sc.lo], idx) == want[i]) round_tripped++;
+        }
+        for (int k = 0; k <= sc.hi - sc.lo; k++) chunk_destroy(sc.chunks[k]);
+        free(sc.chunks);
+    }
+    CHECK(round_tripped == COLUMNS);
+    world_shutdown();
+    save_close();
+    jobs_shutdown();
+    remove_tree_files(dir);
+}
+
 static void test_gen_determinism(void) {
     registry_reset();
     data_error_reset();
@@ -439,6 +490,7 @@ static void test_gen_determinism(void) {
 static void test_world_and_mesh(void) {
     test_world_light();
     test_save_roundtrip();
+    test_save_budget();
     test_gen_determinism();
     registry_reset();
     BlockDef st = {0};

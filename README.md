@@ -6,6 +6,8 @@ The priorities, in order, are low-end performance, deep moddability and atmosphe
 
 ## Build and run
 
+The quickest route on Linux or macOS is `./setup.sh`. It installs the dependencies with your package manager, builds the engine and accepts `--no-install`, `--debug`, `--sanitize`, `--examples` and `--test`. To do it by hand:
+
 Requires CMake, Ninja or Make, a C compiler and the GLFW development files. All other dependencies are vendored.
 
 ```

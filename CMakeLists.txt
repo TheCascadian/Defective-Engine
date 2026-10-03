@@ -12,7 +12,9 @@ endif()
 # The reference CPU is a 2015 laptop part, so no -march=native: the binary must run on baseline x86-64.
 if(NOT MSVC)
   set(DFE_WARN -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fwrapv)
-  # Noise hashing relies on wrapping integer multiplication; without this GCC treats the overflow as undefined.
+  # -fwrapv is required by the vendored FastNoiseLite (signed int hash multiplies and shifts of negative
+  # values in its coordinate hashing, found with UBSan). Our own hashes in base.c are unsigned and do not
+  # need it. Removing the flag would let the compiler optimise on that overflow and change terrain output.
   set(CMAKE_C_FLAGS_RELEASE "-O2 -fno-strict-aliasing -DNDEBUG")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g -fno-strict-aliasing")
 else()

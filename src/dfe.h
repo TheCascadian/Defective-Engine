@@ -271,7 +271,10 @@ void ui_rect(float x, float y, float w, float h, u32 rgba);
 void ui_rect_gradient(float x, float y, float w, float h, u32 top_rgba, u32 bottom_rgba);
 void ui_line(float x0, float y0, float x1, float y1, float thickness, u32 rgba);
 void ui_text(float x, float y, float size, u32 rgba, const char *text);
-void ui_text_plain(float x, float y, float size, u32 rgba, const char *text);
+/* Text shadow rule: auto by default (quarter-brightness copy, one font pixel down-right). offset 0 disables it, a
+ * colour of 0 keeps the automatic colour. Resets on ui_begin. */
+void ui_set_text_shadow(float offset, u32 rgba);
+void ui_reset_text_shadow(void);
 float ui_text_width(float size, const char *text);
 void ui_image(GLuint tex, float x, float y, float w, float h, float u0, float v0, float u1, float v1, u32 rgba);
 void ui_flush(void);

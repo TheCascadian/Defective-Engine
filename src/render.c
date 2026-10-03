@@ -426,6 +426,7 @@ void ui_begin(int width, int height) {
     g_ui.vert_count = 0;
     g_ui.bound_tex = g_ui.font_tex;
     g_ui.mode = 0;
+    ui_reset_text_shadow();
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
@@ -528,6 +529,8 @@ float ui_text_width(float size, const char *text) {
 static void ui_text_pass(float x, float y, float size, u32 color, const char *text) {
     float scale = size / FONT_BAKE_PX;
     float cx = 0, cy = 0;
+    x = roundf(x);
+    y = roundf(y);
     for (; *text; text++) {
         int c = (u8)*text;
         if (c < FONT_FIRST_CHAR || c >= FONT_FIRST_CHAR + FONT_CHAR_COUNT) continue;
@@ -537,18 +540,27 @@ static void ui_text_pass(float x, float y, float size, u32 color, const char *te
     }
 }
 
+/* Drop shadow rule for every ui_text call. By default the shadow is the text colour at a quarter of its brightness,
+ * moved down and right by one pixel of the font (size / 8, at least one screen pixel, whole pixels only so it stays
+ * crisp). ui_set_text_shadow overrides the offset and colour until ui_begin or ui_reset_text_shadow restores the rule. */
+static float g_shadow_offset = -1.0f;
+static u32 g_shadow_color;
+
+void ui_set_text_shadow(float offset, u32 color) {
+    g_shadow_offset = offset;
+    g_shadow_color = color;
+}
+
+void ui_reset_text_shadow(void) { ui_set_text_shadow(-1.0f, 0); }
+
 void ui_text(float x, float y, float size, u32 color, const char *text) {
     if (!g_ui.font_ready) return;
     ui_set_texture(g_ui.font_tex, 0);
-    u32 shadow = (color & 0x00FFFFFFu) | ((((color >> 24) * 160u) / 255u) << 24);
-    ui_text_pass(x + size * 0.07f, y + size * 0.07f, size, shadow & 0xFF000000u, text);
-    ui_text_pass(x, y, size, color, text);
-}
-
-/* No built-in shadow, for callers that draw their own. */
-void ui_text_plain(float x, float y, float size, u32 color, const char *text) {
-    if (!g_ui.font_ready) return;
-    ui_set_texture(g_ui.font_tex, 0);
+    float off = g_shadow_offset >= 0.0f ? g_shadow_offset : MAX(1.0f, roundf(size / 8.0f));
+    if (off > 0.0f) {
+        u32 shadow = g_shadow_color ? g_shadow_color : (((color >> 2) & 0x003F3F3Fu) | (color & 0xFF000000u));
+        ui_text_pass(x + off, y + off, size, shadow, text);
+    }
     ui_text_pass(x, y, size, color, text);
 }
 

@@ -108,13 +108,8 @@ static bool clicked(float x, float y, float w, float h, int button) { return g_i
 
 static float text_size(void) { return 8.0f * (float)g_s; }
 
-/* Minecraft text: the colour on top of a copy at a quarter brightness, one font pixel down and right. */
-static void mc_text(float x, float y, float size, u32 color, const char *text) {
-    u32 shadow = ((color >> 2) & 0x003F3F3Fu) | (color & 0xFF000000u);
-    float d = size * 0.125f; /* one pixel of the font */
-    ui_text_plain(x + d, y + d, size, shadow, text);
-    ui_text_plain(x, y, size, color, text);
-}
+/* Menu text relies on the engine-wide shadow rule in ui_text. */
+static void mc_text(float x, float y, float size, u32 color, const char *text) { ui_text(x, y, size, color, text); }
 
 static void mc_text_centered(float cx, float y, float size, u32 color, const char *text) {
     mc_text(cx - ui_text_width(size, text) * 0.5f, y, size, color, text);

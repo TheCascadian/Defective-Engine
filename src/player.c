@@ -210,5 +210,6 @@ V3 player_find_spawn(void) {
             if (h >= (float)(sea + SPAWN_MIN_HEIGHT_ABOVE_SEA)) return v3(floorf(x) + 0.5f, floorf(h) + 1.0f + 0.01f, floorf(z) + 0.5f);
         }
     }
+    LOGW("no land within %d blocks of origin; spawning over water", SPAWN_SEARCH_RADIUS);
     return v3(0.5f, (float)sea + 3.0f, 0.5f); /* an archipelago-free world: stand on the sea's surface level */
 }

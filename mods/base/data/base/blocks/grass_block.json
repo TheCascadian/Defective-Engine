@@ -1,0 +1,16 @@
+{
+  "textures": {
+    "up": "base:block/grass_top",
+    "down": "base:block/dirt",
+    "side": "base:block/grass_side"
+  },
+  "tint": "grass",
+  "tint_faces": [
+    "up"
+  ],
+  "hardness": 0.6,
+  "tool": "shovel",
+  "drops": "base:dirt",
+  "sound": "grass",
+  "random_tick": true
+}

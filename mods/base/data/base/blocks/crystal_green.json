@@ -1,0 +1,16 @@
+{
+  "textures": {
+    "all": "base:block/crystal_green"
+  },
+  "light": {
+    "opacity": 15,
+    "emit": [
+      3,
+      15,
+      6
+    ]
+  },
+  "hardness": 1.0,
+  "tool": "pick",
+  "sound": "glass"
+}

@@ -1,0 +1,33 @@
+{
+  "shape": "fluid",
+  "layer": "opaque",
+  "textures": {
+    "all": "base:block/lava"
+  },
+  "solid": false,
+  "hardness": -1,
+  "light": {
+    "opacity": 15,
+    "emit": [
+      15,
+      8,
+      2
+    ]
+  },
+  "fluid": {
+    "viscosity": 30,
+    "group": "lava",
+    "reach": 3
+  },
+  "item": false,
+  "sound": "lava",
+  "properties": {
+    "level": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "textures": {
+    "all": "base:block/lantern"
+  },
+  "light": {
+    "opacity": 15,
+    "emit": [
+      15,
+      12,
+      7
+    ]
+  },
+  "hardness": 0.5,
+  "sound": "glass"
+}

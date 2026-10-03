@@ -1,0 +1,8 @@
+{
+  "id": "builder",
+  "name": "Builder Commands",
+  "version": "1.0.0",
+  "api": 1,
+  "depends": ["base>=1.0", "?gems"],
+  "script": "scripts/main.lua"
+}

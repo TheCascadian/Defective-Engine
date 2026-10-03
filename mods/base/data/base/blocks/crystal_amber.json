@@ -1,0 +1,16 @@
+{
+  "textures": {
+    "all": "base:block/crystal_amber"
+  },
+  "light": {
+    "opacity": 15,
+    "emit": [
+      15,
+      11,
+      3
+    ]
+  },
+  "hardness": 1.0,
+  "tool": "pick",
+  "sound": "glass"
+}

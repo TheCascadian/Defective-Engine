@@ -1,0 +1,27 @@
+{
+  "sea_level": 74,
+  "deep_level": 0,
+  "blocks": {
+    "stone": "base:stone",
+    "deep_stone": "base:deep_stone",
+    "dirt": "base:dirt",
+    "grass": "base:grass_block",
+    "sand": "base:sand",
+    "sandstone": "base:sandstone",
+    "gravel": "base:gravel",
+    "snow": "base:snow",
+    "mud": "base:mud",
+    "water": "base:water",
+    "log": "base:log",
+    "leaves": "base:leaves",
+    "tall_grass": "base:tall_grass",
+    "flower_red": "base:flower_red",
+    "flower_yellow": "base:flower_yellow",
+    "mushroom": "base:mushroom",
+    "dead_bush": "base:dead_bush",
+    "coal_ore": "base:coal_ore",
+    "iron_ore": "base:iron_ore",
+    "gold_ore": "base:gold_ore",
+    "diamond_ore": "base:diamond_ore"
+  }
+}

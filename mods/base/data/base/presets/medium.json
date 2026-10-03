@@ -1,0 +1,11 @@
+{
+  "name": "Medium",
+  "render_distance": 12,
+  "far_chunks": 24,
+  "clouds": true,
+  "stars": true,
+  "light_shafts": false,
+  "dynamic_resolution": false,
+  "min_scale": 0.7,
+  "target_fps": 60
+}

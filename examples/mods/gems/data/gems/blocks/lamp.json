@@ -1,0 +1,8 @@
+{
+  "textures": { "all": "gems:block/lamp" },
+  "properties": { "lit": ["off", "on"] },
+  "defaults": { "lit": "off" },
+  "light": { "emit": [15, 12, 6], "emit_when": { "lit": "on" } },
+  "hardness": 0.5,
+  "sound": "glass"
+}

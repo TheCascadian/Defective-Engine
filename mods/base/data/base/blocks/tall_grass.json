@@ -1,0 +1,11 @@
+{
+  "shape": "cross",
+  "layer": "cutout",
+  "tint": "grass",
+  "wind": true,
+  "textures": {
+    "all": "base:block/tall_grass"
+  },
+  "hardness": 0.0,
+  "sound": "grass"
+}

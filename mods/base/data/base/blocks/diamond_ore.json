@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/diamond_ore"
+  },
+  "hardness": 3.0,
+  "tool": "pick",
+  "sound": "stone"
+}

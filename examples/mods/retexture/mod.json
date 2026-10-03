@@ -1,0 +1,7 @@
+{
+  "id": "retexture",
+  "name": "Cool Stone Retexture",
+  "version": "1.0.0",
+  "api": 1,
+  "depends": ["base>=1.0"]
+}

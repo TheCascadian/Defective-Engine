@@ -1,0 +1,9 @@
+{
+  "shape": "cross",
+  "layer": "cutout",
+  "textures": { "all": "gems:block/amethyst_cluster" },
+  "light": { "emit": [7, 2, 11] },
+  "hardness": 0.5,
+  "tool": "pick",
+  "sound": "glass"
+}

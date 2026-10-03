@@ -8,3 +8,6 @@ settings.json
 /selftest_*/
 /Defective-Engine-source.zip
 /repomix-output.xml
+.DS_Store
+compile_commands.json
+CMakeUserPresets.json

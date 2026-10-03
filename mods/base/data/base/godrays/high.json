@@ -1,0 +1,10 @@
+{
+  "name": "High",
+  "order": 2,
+  "taps": 28,
+  "divisor": 2,
+  "density": 0.90,
+  "decay": 0.95,
+  "strength": 0.32,
+  "jitter": 1.0
+}

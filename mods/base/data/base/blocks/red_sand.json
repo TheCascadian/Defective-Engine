@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/red_sand"
+  },
+  "hardness": 0.5,
+  "tool": "shovel",
+  "sound": "sand"
+}

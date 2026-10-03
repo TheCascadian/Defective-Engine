@@ -1,0 +1,10 @@
+{
+  "name": "Medium",
+  "order": 1,
+  "taps": 14,
+  "divisor": 2,
+  "density": 0.85,
+  "decay": 0.93,
+  "strength": 0.30,
+  "jitter": 1.0
+}

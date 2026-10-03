@@ -276,17 +276,21 @@ static void test_worldgen_features_and_structures(void) {
     gen_band(&lo, &hi);
     int H = (hi - lo + 1) * CHUNK_SIZE;
     u16 states[H * CHUNK_AREA];
-    gen_column(scratch, 0, 0, states);
     u16 glow = block_find("test:feature_glow")->default_state;
     u16 anchor = block_find("test:structure_anchor")->default_state;
     bool saw_glow = false, saw_anchor = false;
-    for (int y = lo * CHUNK_SIZE; y < (hi + 1) * CHUNK_SIZE; y++) {
-        for (int z = 0; z < CHUNK_SIZE; z++) {
-            for (int x = 0; x < CHUNK_SIZE; x++) {
-                int ly = y - lo * CHUNK_SIZE;
-                size_t idx = ((size_t)ly << 10) | (size_t)((z << 5) | x);
-                if (states[idx] == glow) saw_glow = true;
-                if (states[idx] == anchor) saw_anchor = true;
+    for (int cz = -4; cz <= 4 && !(saw_glow && saw_anchor); cz++) {
+        for (int cx = -4; cx <= 4 && !(saw_glow && saw_anchor); cx++) {
+            gen_column(scratch, cx, cz, states);
+            for (int y = lo * CHUNK_SIZE; y < (hi + 1) * CHUNK_SIZE; y++) {
+                for (int z = 0; z < CHUNK_SIZE; z++) {
+                    for (int x = 0; x < CHUNK_SIZE; x++) {
+                        int ly = y - lo * CHUNK_SIZE;
+                        size_t idx = ((size_t)ly << 10) | (size_t)((z << 5) | x);
+                        if (states[idx] == glow) saw_glow = true;
+                        if (states[idx] == anchor) saw_anchor = true;
+                    }
+                }
             }
         }
     }
@@ -453,7 +457,7 @@ static void test_world_light(void) {
 
     /* Trees and plants are generated, so pick a spot whose surroundings are open air for the whole test. */
     int x = 8, z = 8;
-    for (int k = 0; k < 40 && !open_sky_spot(x, z); k++) { x = 8 + 5 * (k % 6); z = 8 + 5 * (k / 6); }
+    for (int k = 0; k < 400 && !open_sky_spot(x, z); k++) { x = 8 + 37 * (k % 20); z = 8 + 37 * (k / 20); }
     int ground = ifloor(gen_height_at((float)x, (float)z));
     CHECK(open_sky_spot(x, z));
     CHECK(world_get_state(x, ground, z) != STATE_AIR);
@@ -520,7 +524,9 @@ static void test_save_roundtrip(void) {
     world_init(save_seed());
     world_flush_generation(0, 0, 2);
     int ground = ifloor(gen_height_at(5, 5));
-    int ey = ground + 10;
+    for (int z = 2; z < 22; z++)
+        for (int x = 2; x < 22; x++) ground = MAX(ground, ifloor(gen_height_at((float)x, (float)z)));
+    int ey = ground + 20;
     /* A varied pattern forces a multi-entry palette, and the emitter forces non-uniform light. */
     for (int i = 0; i < 40; i++) world_set_state(2 + i % 20, ey, 2 + i / 2, (i & 1) ? stone->default_state : glass->default_state);
     world_set_state(5, ey + 3, 5, crystal->default_state);
@@ -606,6 +612,37 @@ static void test_gen_determinism(void) {
     registry_load_worldgen_config();
     if (data_error_count()) { CHECK(false); return; }
     gen_init(777);
+    int above_sea = 0, below_sea = 0;
+    float min_height = 10000.0f, max_height = -10000.0f;
+    for (int z = -1024; z <= 1024; z += 64)
+        for (int x = -1024; x <= 1024; x += 64) {
+            float h = gen_height_at((float)x, (float)z);
+            if (h > (float)gen_sea_level()) above_sea++;
+            else below_sea++;
+            min_height = MIN(min_height, h);
+            max_height = MAX(max_height, h);
+        }
+    CHECK(above_sea > 100 && below_sea > 100);
+    CHECK(max_height - min_height > 55.0f);
+    bool found_river = false;
+    int sea_voxel = gen_sea_level();
+    GenLodGrid lod;
+    for (int cz = -24; cz <= 24 && !found_river; cz += 4)
+        for (int cx = -24; cx <= 24 && !found_river; cx += 4) {
+            gen_lod_grid(0, cx, cz, &lod);
+            for (int z = 1; z <= CHUNK_SIZE && !found_river; z++)
+                for (int x = 1; x <= CHUNK_SIZE; x++)
+                    {
+                        int i = z * LOD_PAD + x;
+                        int water_top = lod.water_top[i];
+                        int water_depth = water_top - lod.top[i];
+                        if (water_top > sea_voxel && water_depth >= 1 && water_depth <= 6) {
+                            found_river = true;
+                            break;
+                        }
+                    }
+        }
+    CHECK(found_river);
     int lo, hi;
     gen_band(&lo, &hi);
     size_t n = (size_t)(hi - lo + 1) * CHUNK_VOL;
@@ -622,11 +659,31 @@ static void test_gen_determinism(void) {
     free(b);
 }
 
+static void test_river_smoothness(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    if (data_error_count()) { CHECK(false); return; }
+    gen_init(777);
+    float last = gen_height_at(-64.0f, 0.0f);
+    float max_step = 0.0f;
+    for (float x = -63.5f; x <= 64.0f; x += 0.5f) {
+        float h = gen_height_at(x, 0.0f);
+        float step = fabsf(h - last);
+        max_step = MAX(max_step, step);
+        last = h;
+    }
+    CHECK(max_step < 5.0f);
+    gen_shutdown();
+}
+
 static void test_world_and_mesh(void) {
     test_world_light();
     test_save_roundtrip();
     test_save_budget();
     test_gen_determinism();
+    test_river_smoothness();
     registry_reset();
     BlockDef st = {0};
     snprintf(st.name, sizeof st.name, "test:stone");
@@ -1147,14 +1204,18 @@ static void test_presets(void) {
     if (!low || !high) return;
     CHECK(low->render_distance < high->render_distance && low->far_chunks < high->far_chunks);
     CHECK(!low->light_shafts && high->light_shafts);
+    CHECK(low->fog && high->fog);
 
     /* The preset supplies the values; a setting overrides only its own field; an unknown preset falls back. */
     bool no_render = g_opt.no_render;
     g_opt.no_render = false;
     settings_defaults();
     snprintf(g_settings.preset, sizeof g_settings.preset, "high");
+    g_settings.fog_off = false;
+    g_settings.fog_quality[0] = 0;
     gfx_apply();
     CHECK(g_gfx.render_distance == high->render_distance && g_gfx.light_shafts);
+    CHECK(g_gfx.fog && g_gfx.fog_level.density > 0.0f);
     g_settings.render_distance = 5;
     g_settings.dynamic_resolution = 1;
     gfx_apply();

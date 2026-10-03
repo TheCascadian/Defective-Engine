@@ -19,8 +19,11 @@
 #define MOUNTAIN_HEIGHT_START 110.0f
 #define SNOWLINE 150.0f
 #define TREELINE 128.0f
+#define STONE_BLOB_DEPTH 48 /* below this the rock is plain; the blob noise is only worth its cost where the player digs */
+#define ALT_JITTER 28.0f   /* blocks; how far altitude thresholds (mountain start, tree line, snow line) are dithered */
+#define BIOME_JITTER 0.11f  /* climate noise units; the width of the blended band between two biomes */
 #define LINE_WOBBLE 10.0f   /* tree and snow lines move by up to this many blocks so they never read as a ruled stripe */
-#define STEEP_SLOPE 2       /* height step to a neighbouring column that exposes bare rock */
+#define STEEP_SLOPE 5.0f    /* local relief before ordinary soil gives way to exposed rock */
 
 typedef enum { BIOME_OCEAN, BIOME_BEACH, BIOME_DESERT, BIOME_TUNDRA, BIOME_SWAMP, BIOME_FOREST, BIOME_PLAINS, BIOME_MOUNTAIN, BIOME_COUNT } Biome;
 
@@ -55,6 +58,8 @@ typedef struct GenConfig {
     int sea_level, deep_level;
     u16 stone, deep, dirt, grass, sand, sandstone, gravel, snow, mud, water;
     /* Decoration roles are optional: a world generation file that omits one simply has none of that feature. */
+    /* Ground variety: each is optional, and a world generation file without it falls back to the plain block. */
+    u16 coarse_dirt, podzol, red_sand, clay, andesite, granite, moss;
     u16 log, leaves, tall_grass, flower_red, flower_yellow, mushroom, dead_bush, coal, iron, gold, diamond;
 } GenConfig;
 
@@ -94,10 +99,14 @@ static GenOreDef g_ores[MAX_WORLDGEN_ORES];
 static GenFeatureDef g_features[MAX_WORLDGEN_FEATURES];
 static GenStructureDef g_structures[MAX_WORLDGEN_STRUCTURES];
 static int g_biome_count, g_ore_count, g_feature_count, g_structure_count;
+/* True when the table holds the built-in biomes, whose indices match the Biome enum; the hand-tuned rules for rivers,
+ * tree lines, plants and trees apply to them. Biomes defined by a mod are driven by their data alone. */
+static bool g_default_biomes;
+static bool custom_biomes(void) { return g_biome_count > 0 && !g_default_biomes; }
 
 static GenConfig C;
 static struct {
-    fnl_state cont, mount, ridge, hills, detail, temp, humid, cave_a, cave_b, cheese;
+    fnl_state cont, cont_warp, cont2, coast, river2, river3, river_side, mount, belt, ridge, hills, detail, river, river_warp, river_wiggle, warp, blend, patch_a, patch_b, blob, temp, humid, cave_a, cave_b, cheese;
     i64 seed;
     bool ready;
 } N;
@@ -259,6 +268,7 @@ int gen_structure_count(void) { return g_structure_count; }
 int registry_load_worldgen_config(void) {
     int errors_before = data_error_count();
     g_biome_count = g_ore_count = g_feature_count = g_structure_count = 0;
+    g_default_biomes = false;
     memset(g_biomes, 0, sizeof g_biomes);
     memset(g_ores, 0, sizeof g_ores);
     memset(g_features, 0, sizeof g_features);
@@ -308,6 +318,13 @@ int registry_load_worldgen_config(void) {
         C.snow = role_block(roles, "snow", rel, owner);
         C.mud = role_block(roles, "mud", rel, owner);
         C.water = role_block(roles, "water", rel, owner);
+        C.coarse_dirt = optional_role_block(roles, "coarse_dirt", rel, owner);
+        C.podzol = optional_role_block(roles, "podzol", rel, owner);
+        C.red_sand = optional_role_block(roles, "red_sand", rel, owner);
+        C.clay = optional_role_block(roles, "clay", rel, owner);
+        C.andesite = optional_role_block(roles, "andesite", rel, owner);
+        C.granite = optional_role_block(roles, "granite", rel, owner);
+        C.moss = optional_role_block(roles, "moss", rel, owner);
         C.log = optional_role_block(roles, "log", rel, owner);
         C.leaves = optional_role_block(roles, "leaves", rel, owner);
         C.tall_grass = optional_role_block(roles, "tall_grass", rel, owner);
@@ -324,7 +341,7 @@ int registry_load_worldgen_config(void) {
     parse_ore_array(json_get(root, "ores"), rel, owner);
     parse_feature_array(json_get(root, "features"), rel, owner);
     parse_structure_array(json_get(root, "structures"), rel, owner);
-    if (!g_biome_count) add_default_biomes();
+    if (!g_biome_count) { add_default_biomes(); g_default_biomes = true; }
     if (!g_ore_count) add_default_ores();
     C.loaded = data_error_count() == errors_before;
     json_free(root);
@@ -412,6 +429,7 @@ static void parse_structure_array(const Json *items, const char *rel, const char
 
 static void parse_worldgen_data(void) {
     g_biome_count = g_ore_count = g_feature_count = g_structure_count = 0;
+    g_default_biomes = false;
     memset(g_biomes, 0, sizeof g_biomes);
     memset(g_ores, 0, sizeof g_ores);
     memset(g_features, 0, sizeof g_features);
@@ -438,10 +456,41 @@ void gen_init(u64 seed) {
     int s = (int)(hash64(seed) & 0x7FFFFFFF);
     N.seed = (i64)(hash64(seed ^ 0xDEC0DEull) & 0x7FFFFFFFFFFFull);
     N.cont = make_noise(s + 1, 0.0009f, 3);
-    N.mount = make_noise(s + 2, 0.0014f, 2);
+    N.mount = make_noise(s + 2, 0.0010f, 2);
+    /* Continent shape: a large fractal warp bends the landmasses into bays and peninsulas, a second scale adds
+     * archipelagos and inland seas, and a fine coast noise (applied only near sea level) roughens the shorelines. */
+    N.cont_warp = make_noise(s + 21, 0.00055f, 3);
+    N.cont_warp.domain_warp_type = FNL_DOMAIN_WARP_OPENSIMPLEX2;
+    N.cont_warp.domain_warp_amp = 750.0f;
+    N.cont_warp.fractal_type = FNL_FRACTAL_DOMAIN_WARP_PROGRESSIVE;
+    N.cont2 = make_noise(s + 22, 0.0024f, 2);
+    N.coast = make_noise(s + 23, 0.0085f, 4);
+    N.river2 = make_noise(s + 24, 0.0046f, 1);
+    N.river2.noise_type = FNL_NOISE_OPENSIMPLEX2S;
+    N.river3 = make_noise(s + 25, 0.0105f, 1);
+    N.river3.noise_type = FNL_NOISE_OPENSIMPLEX2S;
+    N.river_side = make_noise(s + 26, 0.0020f, 1);
+    N.belt = make_noise(s + 11, 0.00055f, 2);
     N.ridge = make_noise(s + 3, 0.0042f, 3);
     N.detail = make_noise(s + 4, 0.021f, 3);
-    N.hills = make_noise(s + 10, 0.0065f, 3);
+    N.hills = make_noise(s + 10, 0.0038f, 3);
+    /* Use a smooth, warped flow field for the river mask instead of Voronoi cells. Cellular noise creates hard
+     * polygonal seams at the drainage edges, which read as sharply angular terrain facets. */
+    N.river = make_noise(s + 12, 0.0018f, 1);
+    N.river.noise_type = FNL_NOISE_OPENSIMPLEX2S;
+    N.river_warp = make_noise(s + 14, 0.0011f, 2);
+    N.river_warp.domain_warp_type = FNL_DOMAIN_WARP_OPENSIMPLEX2;
+    N.river_warp.domain_warp_amp = 520.0f;
+    N.river_wiggle = make_noise(s + 15, 0.0030f, 2);
+    N.river_wiggle.domain_warp_type = FNL_DOMAIN_WARP_OPENSIMPLEX2;
+    N.river_wiggle.domain_warp_amp = 110.0f;
+    N.warp = make_noise(s + 13, 0.0007f, 1);
+    N.warp.domain_warp_type = FNL_DOMAIN_WARP_OPENSIMPLEX2;
+    N.warp.domain_warp_amp = 150.0f;
+    N.blend = make_noise(s + 16, 0.045f, 2);
+    N.patch_a = make_noise(s + 17, 0.011f, 2);
+    N.patch_b = make_noise(s + 18, 0.052f, 2);
+    N.blob = make_noise(s + 19, 0.040f, 2);
     N.temp = make_noise(s + 5, 0.0007f, 2);
     N.humid = make_noise(s + 6, 0.0009f, 2);
     N.cave_a = make_noise(s + 7, 0.016f, 1);
@@ -459,30 +508,111 @@ int gen_sea_level(void) { return C.sea_level; }
 
 static float smooth01(float t) { t = CLAMP(t, 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); }
 
-float gen_height_at(float x, float z) {
-    float cont = fnlGetNoise2D(&N.cont, x, z);
+static void terrain_coordinates(float x, float z, float *wx, float *wz) {
+    *wx = x;
+    *wz = z;
+    fnlDomainWarp2D(&N.warp, wx, wz);
+}
+
+/* Continent value, roughly -1 (deep ocean) to 1 (inland); everything that asks "is this land" goes through here. */
+static float continent_at(float wx, float wz) {
+    float x = wx, z = wz;
+    fnlDomainWarp2D(&N.cont_warp, &x, &z);
+    float c = fnlGetNoise2D(&N.cont, x, z) * 0.78f + fnlGetNoise2D(&N.cont2, x, z) * 0.30f;
+    /* Coast roughness fades with distance from the shoreline (c about 0.0 to 0.1), so interiors and deep sea stay smooth. */
+    float near_coast = 1.0f - smooth01(fabsf(c - 0.05f) / 0.28f);
+    return c + fnlGetNoise2D(&N.coast, x, z) * 0.17f * near_coast;
+}
+
+static float terrain_base_height(float wx, float wz) {
+    float cont = continent_at(wx, wz);
     float sea = (float)C.sea_level;
-    float h = sea + 4.0f + cont * 30.0f + (cont < 0 ? cont * 24.0f : 0.0f);
-    float mask = smooth01((fnlGetNoise2D(&N.mount, x, z) - 0.05f) / 0.5f) * smooth01((cont + 0.1f) * 4.0f);
-    float r = 1.0f - fabsf(fnlGetNoise2D(&N.ridge, x, z));
-    h += mask * (28.0f + 95.0f * r * r);
-    /* Rolling hills break up the broad continental slope; they fade out in the ocean so shelves stay smooth. */
-    h += fnlGetNoise2D(&N.hills, x, z) * 13.0f * smooth01((cont + 0.25f) * 3.0f);
-    h += fnlGetNoise2D(&N.detail, x, z) * (3.0f + 6.0f * mask);
+    float land = smooth01((cont + 0.17f) / 0.40f);
+    float h = sea - 32.0f + land * 47.0f + cont * 8.0f;
+    float mountain_region = smooth01((fnlGetNoise2D(&N.mount, wx, wz) + 0.12f) / 0.65f);
+    float belt_signal = 1.0f - fabsf(fnlGetNoise2D(&N.belt, wx, wz));
+    float belt = smooth01((belt_signal - 0.48f) / 0.32f) * land * mountain_region;
+    float ridge = 1.0f - fabsf(fnlGetNoise2D(&N.ridge, wx, wz));
+    h += land * mountain_region * 12.0f + belt * (24.0f + 74.0f * ridge * ridge);
+    h += fnlGetNoise2D(&N.hills, wx, wz) * 8.0f * land;
+    h += fnlGetNoise2D(&N.detail, wx, wz) * (1.25f + 2.75f * belt);
     return h;
 }
 
+static float river_strength_at(float wx, float wz) {
+    float rx = wx, rz = wz;
+    fnlDomainWarp2D(&N.river_warp, &rx, &rz);
+    fnlDomainWarp2D(&N.river_wiggle, &rx, &rz); /* large bends first, then small meanders, so no stretch stays straight */
+    /* The shoreline sits at a land factor of about 0.68, not 0.5. Keeping the river band around that coastal threshold
+     * prevents the generator from treating broad inland land as a flooded coastal plain. */
+    float n1 = fnlGetNoise2D(&N.river, rx, rz);
+    float river_axis = 1.0f - fabsf(n1);
+    float flow = smooth01((river_axis - 0.93f) / 0.05f);
+    /* Tributaries: each lower order is a finer river line that only exists near the order above it, and only on one
+     * bank (chosen by a slow noise), so it reads as a stream joining the river and not as a second crossing river. */
+    float side = fnlGetNoise2D(&N.river_side, rx, rz) > 0.0f ? n1 : -n1;
+    float near1 = smooth01((river_axis - 0.45f) / 0.30f) * smooth01((side + 0.03f) / 0.07f);
+    float n2 = fnlGetNoise2D(&N.river2, rx, rz);
+    float flow2 = smooth01((1.0f - fabsf(n2) - 0.915f) / 0.05f) * near1;
+    float side2 = fnlGetNoise2D(&N.river_side, rx + 900.0f, rz - 900.0f) > 0.0f ? n2 : -n2;
+    float near2 = smooth01((1.0f - fabsf(n2) - 0.55f) / 0.30f) * smooth01((side2 + 0.03f) / 0.07f) * near1;
+    float flow3 = smooth01((1.0f - fabsf(fnlGetNoise2D(&N.river3, rx, rz)) - 0.91f) / 0.05f) * near2;
+    flow = MAX(flow, MAX(flow2, flow3));
+    float land = smooth01((continent_at(wx, wz) + 0.17f) / 0.40f);
+    float shore = smooth01((land - 0.55f) / 0.10f);
+    float highland = smooth01((fnlGetNoise2D(&N.mount, wx, wz) + 0.12f) / 0.65f);
+    return flow * shore * (1.0f - 0.85f * highland);
+}
+
+/* Water surface of a river: the local terrain height defines the bed, and the river only cuts a notch into that bed.
+ * It must never float above the actual terrain at the same column or the ocean appears to drift inland. */
+static float river_surface_at(float wx, float wz, float base) {
+    float cont = continent_at(wx, wz);
+    float land = smooth01((cont + 0.17f) / 0.40f);
+    float mountain = smooth01((fnlGetNoise2D(&N.mount, wx, wz) + 0.12f) / 0.65f);
+    float broad_height = (float)C.sea_level - 32.0f + land * 47.0f + cont * 8.0f + land * mountain * 12.0f;
+    float target = MAX((float)C.sea_level, broad_height - 3.0f);
+    /* A river cannot create a water plane that sits above the terrain it is cutting into. This keeps the water at the
+     * same elevation as the local landform instead of letting the sea drape across broad inland plateaus. */
+    return MIN(target, base - 1.0f);
+}
+
+/* River strength after the terrain test: a river exists only where the ground is near its water surface. Where the
+ * land stands well above the water the channel would be a deep dry notch, so it fades out and the river begins as
+ * the ground comes down to it. */
+static float river_channel_at(float wx, float wz, float base) {
+    float strength = river_strength_at(wx, wz);
+    if (strength <= 0.0f) return 0.0f;
+    float river_surface = river_surface_at(wx, wz, base);
+    return strength * smooth01((16.0f - (base - river_surface)) / 10.0f);
+}
+
+float gen_height_at(float x, float z) {
+    float wx, wz;
+    terrain_coordinates(x, z, &wx, &wz);
+    float base = terrain_base_height(wx, wz);
+    float channel = river_channel_at(wx, wz, base);
+    float bed = MIN(river_surface_at(wx, wz, base) - 3.0f, base);
+    return base + channel * (bed - base);
+}
+
 static int biome_index_at(float x, float z, float h) {
-    if (g_biome_count == 0) {
+    if (!custom_biomes()) {
         float sea = (float)C.sea_level;
         if (h < sea) return BIOME_OCEAN;
         float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
         float m = fnlGetNoise2D(&N.humid, x, z);
-        if (h > MOUNTAIN_HEIGHT_START) return BIOME_MOUNTAIN;
-        if (h < sea + 2.5f && t > -0.3f) return BIOME_BEACH;
+        /* Fine-grained jitter on both climate axes breaks every boundary into interleaved patches, so one biome
+         * thins out into the next over a stretch instead of ending on a line. */
+        t += fnlGetNoise2D(&N.blend, x, z) * BIOME_JITTER;
+        m += fnlGetNoise2D(&N.blend, x + 5000.0f, z - 5000.0f) * BIOME_JITTER;
+        /* Altitude thresholds are dithered too, so a biome change with height is a ragged transition and not a level line. */
+        float hj = fnlGetNoise2D(&N.blend, x - 3000.0f, z + 3000.0f) * ALT_JITTER;
+        if (h + hj > MOUNTAIN_HEIGHT_START) return BIOME_MOUNTAIN;
+        if (h + hj * 0.25f < sea + 2.5f && t > -0.3f) return BIOME_BEACH;
         if (t < -0.3f) return BIOME_TUNDRA;
         if (t > 0.3f && m < 0.05f) return BIOME_DESERT;
-        if (m > 0.35f && h < sea + 8.0f) return BIOME_SWAMP;
+        if (m > 0.35f && h + hj * 0.5f < sea + 8.0f) return BIOME_SWAMP;
         return m > 0.0f ? BIOME_FOREST : BIOME_PLAINS;
     }
     float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
@@ -555,29 +685,62 @@ static float snowline_at(float x, float z) { return SNOWLINE + fnlGetNoise2D(&N.
 /* Mountains are meadow below the tree line, rock above it and snow on the upper slopes; any biome shows bare
  * rock where the ground is steep, which is what makes cliffs and ridges read as mountain rather than as a
  * green heap. Distant voxel tiles use the same rules, so near and far terrain are made of the same blocks. */
-static u16 surface_block(int biome_index, int y, float detail, bool steep, float treeline, float snowline) {
-    if (g_biome_count > 0) {
+static u16 pick(u16 variant, u16 plain) { return variant == STATE_AIR ? plain : variant; }
+
+static u16 rock_block(float patch) {
+    if (patch > 0.25f) return pick(C.andesite, C.stone);
+    if (patch < -0.25f) return pick(C.granite, C.stone);
+    return C.stone;
+}
+
+/* patch is a broad noise (patches tens of blocks across) and speck a fine one; between them each biome mixes several
+ * ground blocks, so no stretch of land is a single flat colour. */
+static u16 surface_block(int biome_index, int y, float detail, float slope, float river, float treeline, float snowline, float patch, float speck) {
+    if (custom_biomes()) {
         const GenBiomeDef *b = &g_biomes[biome_index];
-        if (steep && b->surface_state != C.sand && b->surface_state != C.water && b->surface_state != C.sandstone) return C.stone;
+        if (slope >= STEEP_SLOPE && b->surface_state != C.sand && b->surface_state != C.water && b->surface_state != C.sandstone) return C.stone;
         return b->surface_state != STATE_MISSING ? b->surface_state : C.grass;
     }
     Biome b = (Biome)biome_index;
-    if (steep && b != BIOME_OCEAN && b != BIOME_BEACH && b != BIOME_DESERT) return C.stone;
+    if (river > 0.55f && b != BIOME_OCEAN) return speck > 0.3f ? pick(C.clay, C.gravel) : C.gravel;
+    if (river > 0.4f && b != BIOME_OCEAN && b != BIOME_DESERT) return C.mud;
+    if (slope >= STEEP_SLOPE && b != BIOME_OCEAN && b != BIOME_BEACH) return b == BIOME_DESERT ? C.sandstone : rock_block(patch);
     switch (b) {
-    case BIOME_OCEAN: return detail > 0.15f ? C.gravel : C.sand;
-    case BIOME_BEACH: case BIOME_DESERT: return C.sand;
-    case BIOME_TUNDRA: return C.snow;
-    case BIOME_SWAMP: return y <= C.sea_level + 3 ? C.mud : C.grass;
+    case BIOME_OCEAN:
+        if (patch > 0.45f) return pick(C.clay, C.sand);
+        return detail > 0.15f || speck > 0.5f ? C.gravel : C.sand;
+    case BIOME_BEACH: return speck > 0.5f ? C.gravel : (patch < -0.5f && speck > 0.0f ? C.sandstone : C.sand);
+    case BIOME_DESERT:
+        if (patch > 0.3f) return pick(C.red_sand, C.sand);
+        if (patch < -0.45f && speck > -0.1f) return C.sandstone;
+        return speck > 0.62f ? C.gravel : C.sand;
+    case BIOME_TUNDRA:
+        if (patch > 0.5f) return C.gravel;
+        if (patch > 0.28f && speck > 0.25f) return rock_block(patch);
+        return C.snow;
+    case BIOME_SWAMP:
+        if (y <= C.sea_level + 1 && speck > 0.1f) return pick(C.clay, C.mud);
+        if (y <= C.sea_level + 3) return C.mud;
+        return patch > 0.2f ? pick(C.moss, C.grass) : (speck > 0.55f ? C.mud : C.grass);
+    case BIOME_FOREST:
+        if (patch > 0.1f) return pick(C.podzol, C.grass);
+        if (patch < -0.55f) return pick(C.moss, C.grass);
+        return speck > 0.62f ? pick(C.coarse_dirt, C.grass) : C.grass;
+    case BIOME_PLAINS:
+        if (patch > 0.55f && speck > 0.0f) return pick(C.coarse_dirt, C.grass);
+        return speck > 0.78f ? pick(C.coarse_dirt, C.grass) : C.grass;
     case BIOME_MOUNTAIN:
-        if ((float)y > snowline) return C.snow;
-        if ((float)y > treeline) return detail > 0.35f ? C.gravel : C.stone;
-        return C.grass;
+        float yj = (float)y + (speck + patch) * ALT_JITTER * 0.4f;
+        if (yj > snowline) return detail > 0.25f ? C.snow : rock_block(patch);
+        if (yj > treeline) return detail > 0.15f ? C.gravel : rock_block(patch);
+        if (speck > 0.72f) return rock_block(patch);
+        return patch > 0.35f && speck > 0.3f ? pick(C.coarse_dirt, C.grass) : C.grass;
     default: return C.grass;
     }
 }
 
 static u16 subsurface_block(int biome_index) {
-    if (g_biome_count > 0) {
+    if (custom_biomes()) {
         const GenBiomeDef *b = &g_biomes[biome_index];
         return b->subsurface_state != STATE_MISSING ? b->subsurface_state : C.dirt;
     }
@@ -652,7 +815,7 @@ static u16 ore_at(int wx, int y, int wz, int depth, int biome_index) {
 }
 
 static u16 plant_for(int biome_index, u64 roll) {
-    if (g_biome_count > 0) return STATE_AIR;
+    if (custom_biomes()) return STATE_AIR;
     Biome b = (Biome)biome_index;
     unsigned pct = (unsigned)(roll % 100);
     switch (b) {
@@ -677,7 +840,7 @@ static void place_plants(const GenScratch *s, u16 *states, int cx, int cz) {
             if (states[at] != STATE_AIR) continue;
             int biome_index = s->biome[col];
             bool sandy = states[below] == C.sand;
-            if (states[below] != C.grass && !(g_biome_count == 0 && (Biome)biome_index == BIOME_DESERT && sandy)) continue;
+            if (states[below] != C.grass && states[below] != C.podzol && states[below] != C.moss && !(!custom_biomes() && (Biome)biome_index == BIOME_DESERT && sandy)) continue;
             u16 plant = plant_for(biome_index, hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z));
             if (plant != STATE_AIR) states[at] = plant;
         }
@@ -754,7 +917,7 @@ static void put_if_air(u16 *states, int cx, int cz, int wx, int y, int wz, u16 s
 }
 
 static int tree_percent(int biome_index) {
-    if (g_biome_count > 0) return 0;
+    if (custom_biomes()) return 0;
     Biome b = (Biome)biome_index;
     switch (b) {
     case BIOME_FOREST: return 100;
@@ -766,9 +929,12 @@ static int tree_percent(int biome_index) {
 }
 
 static bool tree_ground_ok(int wx, int wz, float h, int biome_index) {
-    if (g_biome_count > 0) return false;
+    if (custom_biomes()) return false;
     Biome b = (Biome)biome_index;
     if (h <= (float)C.sea_level + 1.0f) return false;
+    float tx, tz;
+    terrain_coordinates((float)wx, (float)wz, &tx, &tz);
+    if (river_channel_at(tx, tz, h) > 0.1f) return false;
     if (b == BIOME_MOUNTAIN && h > treeline_at((float)wx, (float)wz) - TREE_TREELINE_MARGIN) return false;
     int fh = (int)floorf(h);
     static const int off[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -794,7 +960,7 @@ static void build_tree(u16 *states, int cx, int cz, int wx, int wz, int base_y, 
 }
 
 static void place_trees(u16 *states, int cx, int cz) {
-    if (C.log == STATE_AIR || C.leaves == STATE_AIR || g_biome_count > 0) return;
+    if (C.log == STATE_AIR || C.leaves == STATE_AIR || custom_biomes()) return;
     int x0 = cx * CHUNK_SIZE - TREE_MARGIN, z0 = cz * CHUNK_SIZE - TREE_MARGIN, span = CHUNK_SIZE + 2 * TREE_MARGIN;
     for (int wz = z0; wz < z0 + span; wz++)
         for (int wx = x0; wx < x0 + span; wx++) {
@@ -818,27 +984,37 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
             int h = s->height[col];
             int bi = s->biome[col];
             float detail = fnlGetNoise2D(&N.detail, (float)(cx * CHUNK_SIZE + x) * 3.1f, (float)(cz * CHUNK_SIZE + z) * 3.1f);
-            int step = 0;
+            float step = 0.0f;
             for (int k = 0; k < 4; k++) {
                 int nx = CLAMP(x + (k == 0) - (k == 1), 0, CHUNK_SIZE - 1), nz = CLAMP(z + (k == 2) - (k == 3), 0, CHUNK_SIZE - 1);
-                step = MAX(step, abs(s->height[(nz << 5) | nx] - h));
+                step = MAX(step, (float)abs(s->height[(nz << 5) | nx] - h));
             }
-            bool steep = step >= STEEP_SLOPE;
-            float treeline = treeline_at((float)(cx * CHUNK_SIZE + x), (float)(cz * CHUNK_SIZE + z));
-            float snowline = snowline_at((float)(cx * CHUNK_SIZE + x), (float)(cz * CHUNK_SIZE + z));
+            float wx = (float)(cx * CHUNK_SIZE + x), wz = (float)(cz * CHUNK_SIZE + z), warped_x, warped_z;
+            terrain_coordinates(wx, wz, &warped_x, &warped_z);
+            float river_base = terrain_base_height(warped_x, warped_z);
+            float river = river_channel_at(warped_x, warped_z, river_base);
+            float river_level = river_surface_at(warped_x, warped_z, river_base);
+            float treeline = treeline_at(wx, wz);
+            float snowline = snowline_at(wx, wz);
+            float patch = fnlGetNoise2D(&N.patch_a, wx, wz), speck = fnlGetNoise2D(&N.patch_b, wx, wz);
             for (int ly = 0; ly < H; ly++) {
                 int y = y0 + ly;
                 u16 st;
                 if (y > h) {
-                    st = y <= C.sea_level ? C.water : STATE_AIR;
+                    st = y <= C.sea_level || (river > 0.55f && (float)y <= river_level) ? C.water : STATE_AIR;
                 } else {
                     int depth = h - y;
-                    if (depth == 0) st = surface_block(bi, y, detail, steep, treeline, snowline);
+                    if (depth == 0) st = surface_block(bi, y, detail, step, river, treeline, snowline, patch, speck);
                     else if (depth <= SUBSURFACE_DEPTH) st = subsurface_block(bi);
                     else st = y < C.deep_level ? C.deep : C.stone;
                     if (st == C.stone) {
                         u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth, bi);
                         if (ore != STATE_AIR) st = ore;
+                        else if (!custom_biomes() && depth <= STONE_BLOB_DEPTH) {
+                            float blob = fnlGetNoise3D(&N.blob, wx, (float)y * 1.3f, wz);
+                            if (blob > 0.42f) st = pick(C.andesite, C.stone);
+                            else if (blob < -0.42f) st = pick(C.granite, C.stone);
+                        }
                     }
                     /* No carving near the surface or on the band floor keeps caves sealed from the sky and from the filler below. */
                     if (depth >= CAVE_MIN_DEPTH && ly > 2 && cave_at(s, x, ly, z) > 0.0f) st = STATE_AIR;
@@ -875,7 +1051,7 @@ void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
     int s = 1 << shift, sea_top = (int)floorf((float)C.sea_level / (float)s);
     float min_h[LOD_PAD * LOD_PAD];
     int biome[LOD_PAD * LOD_PAD];
-    float wx[LOD_PAD * LOD_PAD], wz[LOD_PAD * LOD_PAD];
+    float wx[LOD_PAD * LOD_PAD], wz[LOD_PAD * LOD_PAD], river_channel[LOD_PAD * LOD_PAD];
     g->vmin = INT_MAX;
     g->vmax = sea_top;
     for (int zp = 0; zp < LOD_PAD; zp++)
@@ -884,34 +1060,47 @@ void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
             lod_sample_column(shift, cx * CHUNK_SIZE + xp - 1, cz * CHUNK_SIZE + zp - 1, &min_h[i], &wx[i], &wz[i]);
             biome[i] = biome_index_at(wx[i], wz[i], min_h[i]);
             g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
+            g->water_top[i] = sea_top;
+            float warped_x, warped_z;
+            terrain_coordinates(wx[i], wz[i], &warped_x, &warped_z);
+            float river_base = terrain_base_height(warped_x, warped_z);
+            river_channel[i] = river_channel_at(warped_x, warped_z, river_base);
+            if (river_channel[i] > 0.55f) {
+                float river_surface = river_surface_at(warped_x, warped_z, river_base);
+                g->water_top[i] = MAX(sea_top, (int)floorf(river_surface / (float)s));
+            }
             if (xp >= 1 && xp <= CHUNK_SIZE && zp >= 1 && zp <= CHUNK_SIZE) {
                 g->vmin = MIN(g->vmin, g->top[i]);
-                g->vmax = MAX(g->vmax, g->top[i]);
+                g->vmax = MAX(g->vmax, MAX(g->top[i], g->water_top[i]));
             }
         }
     for (int zp = 0; zp < LOD_PAD; zp++)
         for (int xp = 0; xp < LOD_PAD; xp++) {
-            int i = zp * LOD_PAD + xp, step = 0;
+            int i = zp * LOD_PAD + xp;
+            float step = 0.0f;
             for (int k = 0; k < 4; k++) {
                 int nx = CLAMP(xp + (k == 0) - (k == 1), 0, LOD_PAD - 1), nz = CLAMP(zp + (k == 2) - (k == 3), 0, LOD_PAD - 1);
-                step = MAX(step, abs(g->top[nz * LOD_PAD + nx] - g->top[i]));
+                step = MAX(step, (float)abs(g->top[nz * LOD_PAD + nx] - g->top[i]) * (float)s);
             }
             float detail = fnlGetNoise2D(&N.detail, wx[i] * 3.1f, wz[i] * 3.1f);
             float y = (float)((g->top[i] + 1) * s);
-            g->surf[i] = surface_block(biome[i], (int)y, detail, step >= STEEP_SLOPE, treeline_at(wx[i], wz[i]), snowline_at(wx[i], wz[i]));
+            float warped_x, warped_z;
+            terrain_coordinates(wx[i], wz[i], &warped_x, &warped_z);
+            g->surf[i] = surface_block(biome[i], (int)y, detail, step, river_channel[i], treeline_at(wx[i], wz[i]), snowline_at(wx[i], wz[i]),
+                                   fnlGetNoise2D(&N.patch_a, wx[i], wz[i]), fnlGetNoise2D(&N.patch_b, wx[i], wz[i]));
             g->sub[i] = subsurface_block(biome[i]);
         }
 }
 
 void gen_lod_fill(int shift, int cy, const GenLodGrid *g, u16 *states) {
-    int s = 1 << shift, sea_top = (int)floorf((float)C.sea_level / (float)s);
+    int s = 1 << shift;
     for (int py = 0; py < LOD_PAD; py++) {
         int vy = cy * CHUNK_SIZE + py - 1;
         for (int zp = 0; zp < LOD_PAD; zp++)
             for (int xp = 0; xp < LOD_PAD; xp++) {
                 int i = zp * LOD_PAD + xp, top = g->top[i];
                 u16 st;
-                if (vy > top) st = vy <= sea_top ? C.water : STATE_AIR;
+                if (vy > top) st = vy <= g->water_top[i] ? C.water : STATE_AIR;
                 else if (vy == top) st = g->surf[i];
                 else if (vy >= top - 1) st = g->sub[i];
                 else st = vy * s < C.deep_level ? C.deep : C.stone;
@@ -927,10 +1116,11 @@ void gen_lod_light(int shift, int cy, const GenLodGrid *g, u16 *light) {
     int s = 1 << shift;
     for (int py = 0; py < LOD_PAD; py++) {
         int vy = cy * CHUNK_SIZE + py - 1;
-        int depth_blocks = C.sea_level - (vy * s + s / 2);
         for (int zp = 0; zp < LOD_PAD; zp++)
             for (int xp = 0; xp < LOD_PAD; xp++) {
-                bool wet = vy > g->top[zp * LOD_PAD + xp] && depth_blocks > 0;
+                int i = zp * LOD_PAD + xp;
+                bool wet = vy > g->top[i] && vy <= g->water_top[i];
+                int depth_blocks = (g->water_top[i] - vy) * s + s / 2;
                 int sky = wet ? CLAMP(LOD_SEA_SKY_LIGHT - depth_blocks * LOD_WATER_OPACITY, 0, 15) : 15;
                 light[(py * LOD_PAD + zp) * LOD_PAD + xp] = LIGHT_PACK(sky, 0, 0, 0);
             }

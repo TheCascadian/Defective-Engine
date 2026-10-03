@@ -5,7 +5,11 @@
   "clouds": true,
   "stars": true,
   "light_shafts": true,
+  "godrays": "high",
+  "fog": true,
+  "fog_quality": "high",
   "dynamic_resolution": false,
   "min_scale": 0.8,
-  "target_fps": 60
+  "target_fps": 60,
+  "shadows": "high"
 }

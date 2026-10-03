@@ -1,0 +1,10 @@
+{
+  "name": "High",
+  "order": 2,
+  "resolution": 4096,
+  "cascades": 3,
+  "taps": 12,
+  "distance": 256,
+  "softness": 1.8,
+  "bias": 0.1
+}

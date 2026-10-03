@@ -81,6 +81,9 @@ mods/
     data/<namespace>/worldgen/default.json    world generation settings
     data/<namespace>/atmosphere/default.json  sky colours, day length, clouds and weather
     data/<namespace>/presets/<id>.json        quality presets
+    data/<namespace>/shadows/<id>.json        shadow quality levels
+    data/<namespace>/godrays/<id>.json        light-shaft quality levels
+    data/<namespace>/fog/<id>.json            near-plane fog quality levels
     data/<namespace>/entities/<id>.json       entity types
     assets/dfe/shaders/<name>.vert|.frag      shader pack: replaces an engine shader
     assets/<namespace>/textures/block/<name>.png
@@ -313,6 +316,9 @@ Weather darkens and greys these colours and pulls the fog in; a mod does not nee
   "clouds": true,
   "stars": true,
   "light_shafts": false,
+  "fog": true,
+  "fog_quality": "medium",
+  "shadows": "low",
   "dynamic_resolution": true,
   "min_scale": 0.6,
   "target_fps": 60
@@ -326,11 +332,15 @@ Weather darkens and greys these colours and pulls the fog in; a mod does not nee
 | `far_chunks` | Extra chunks of coarse distant terrain beyond the render distance, 0 (off) to 64. |
 | `clouds`, `stars` | Draw the cloud layer and the night stars. |
 | `light_shafts` | A screen-space shaft effect toward the sun, marched at quarter resolution and applied in the resolve pass. It still needs the scene drawn offscreen, so the base game enables it only on High. |
+| `godrays` | The id of a file under `data/<namespace>/godrays/` controlling light-shaft samples and strength. Empty follows `light_shafts`; an unknown id disables the effect. |
+| `fog` | Enables near-plane fog that adds local haze and dust independently of the distant sky fog. |
+| `fog_quality` | The id of a file under `data/<namespace>/fog/`; empty uses the default quality. |
+| `shadows` | The id of a file under `data/<namespace>/shadows/`; empty disables cascaded sun shadows. |
 | `dynamic_resolution` | Let the controller change the render scale to hold `target_fps`. |
 | `min_scale` | The lowest render scale the controller may choose, 0.4 to 1. Below 0.4 the picture is too soft to play. |
 | `target_fps` | The frame rate the controller tries to hold, 15 to 240. |
 
-A preset with a mistake is reported on the error screen and ignored. The player's own choices in `settings.json` (render distance, dynamic resolution, render scale, field of view, vertical sync) take precedence over the preset, and a value left at "preset" follows it.
+A preset with a mistake is reported on the error screen and ignored. The player's own choices in `settings.json` (render distance, dynamic resolution, render scale, field of view, vertical sync, shadows, godrays and fog) take precedence over the preset, and a value left at "preset" follows it. Quality level files contain data-driven renderer settings; the base files under `data/base/{shadows,godrays,fog}` are complete examples.
 
 ### Entities
 
@@ -372,6 +382,7 @@ Every shader the engine draws with is an ordinary asset, so a mod replaces one b
 | `post.vert`, `post.frag` | The resolve pass that scales the scene to the window. The engine skips it at full scale without shafts to save a full-screen copy, but it always runs while a mod replaces `post.frag`, so a grading shader is applied at every setting. The cost of that pass is paid by every player of the pack. The file is compiled three times: plain, with `SHAFTS` (the resolve, which reads the shaft mask) and with `SHAFT_MASK` (a quarter-resolution march toward the sun that writes one brightness value). A replacement that does not contain the text `SHAFT_MASK` is treated as not supporting light shafts, and they are switched off for it. To keep them, copy the engine's file and edit its final colour step. |
 | `entity.vert`, `entity.frag` | Entities. |
 | `sky.vert`, `sky.frag` | The sky, stars, sun, moon, clouds and the rain layer, selected by `PASS_SKY` and `PASS_RAIN`. Shaders can `#include` other files through the same virtual filesystem. |
+| `shadow.glsl` | Shared shadow sampling code included by terrain and entity shaders. A mod can replace it to change shadow filtering without replacing the complete terrain shader. |
 | `ui.vert`, `ui.frag`, `debug_line.vert`, `debug_line.frag` | Menus, the HUD and debug lines. |
 
 Read the engine's file first and keep its `in`, `out` and `uniform` names: the engine sets uniforms by name, and a uniform a shader does not declare is simply skipped. A shader that fails to compile is reported with the compiler's message. At launch the game stops with that message; during a reload the previous program keeps running.
@@ -393,6 +404,7 @@ Because later mods win, replacing base content needs no special syntax: provide 
 | World generation settings | `data/base/worldgen/default.json` |
 | The day cycle and weather | `data/base/atmosphere/default.json` |
 | A quality preset | `data/base/presets/low.json` |
+| Shadow, godray or fog quality | `data/base/{shadows,godrays,fog}/<id>.json` |
 | The hopper | `data/base/entities/hopper.json` |
 | The final image grade | `assets/dfe/shaders/post.frag` |
 

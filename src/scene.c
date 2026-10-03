@@ -29,6 +29,9 @@ static struct {
     GLuint ibo;
     Shader shader[LAYER_COUNT];
     Shader lod_shader[LAYER_COUNT];
+    Shader shadow_shader[2]; /* opaque and cutout casters */
+    Chunk **casters;
+    int caster_n, caster_cap;
     bool ready;
     u32 frame;
     u64 resident_granules;
@@ -202,10 +205,19 @@ static bool load_shaders(Shader out[LAYER_COUNT], bool lod) {
     return true;
 }
 
+static bool load_shadow_shaders(Shader out[2]) {
+    static const char *const defs[2] = {"#define SHADOW 1\n#define PASS_OPAQUE 1\n", "#define SHADOW 1\n#define PASS_CUTOUT 1\n"};
+    static const char *const names[2] = {"shadow_opaque", "shadow_cutout"};
+    for (int l = 0; l < 2; l++)
+        if (!shader_load(&out[l], names[l], "assets/dfe/shaders/chunk.vert", "assets/dfe/shaders/chunk.frag", defs[l])) return false;
+    return true;
+}
+
 bool scene_init(void) {
     memset(&S, 0, sizeof S);
     if (!build_index_buffer()) return false;
-    if (!load_shaders(S.shader, false) || !load_shaders(S.lod_shader, true)) return false;
+    if (!load_shaders(S.shader, false) || !load_shaders(S.lod_shader, true) || !load_shadow_shaders(S.shadow_shader)) return false;
+    if (!shadow_gl_init()) return false;
     page_init(&S.pages[S.page_count++]);
     if (!lod_init()) return false;
     if (!atmosphere_gl_init()) return false;
@@ -214,13 +226,16 @@ bool scene_init(void) {
 }
 
 bool scene_reload_shaders(void) {
-    Shader fresh[2][LAYER_COUNT];
+    Shader fresh[2][LAYER_COUNT], fresh_shadow[2];
     memset(fresh, 0, sizeof fresh);
-    if (!load_shaders(fresh[0], false) || !load_shaders(fresh[1], true)) {
+    memset(fresh_shadow, 0, sizeof fresh_shadow);
+    if (!load_shaders(fresh[0], false) || !load_shaders(fresh[1], true) || !load_shadow_shaders(fresh_shadow)) {
         for (int v = 0; v < 2; v++)
             for (int l = 0; l < LAYER_COUNT; l++) if (fresh[v][l].program) shader_destroy(&fresh[v][l]);
+        for (int l = 0; l < 2; l++) if (fresh_shadow[l].program) shader_destroy(&fresh_shadow[l]);
         return false;
     }
+    for (int l = 0; l < 2; l++) { shader_destroy(&S.shadow_shader[l]); S.shadow_shader[l] = fresh_shadow[l]; }
     for (int l = 0; l < LAYER_COUNT; l++) {
         shader_destroy(&S.shader[l]); S.shader[l] = fresh[0][l];
         shader_destroy(&S.lod_shader[l]); S.lod_shader[l] = fresh[1][l];
@@ -232,10 +247,12 @@ void scene_shutdown(void) {
     if (!S.ready) return;
     for (int i = 0; i < S.page_count; i++) page_destroy(&S.pages[i]);
     for (int l = 0; l < LAYER_COUNT; l++) { shader_destroy(&S.shader[l]); shader_destroy(&S.lod_shader[l]); }
+    for (int l = 0; l < 2; l++) shader_destroy(&S.shadow_shader[l]);
+    shadow_gl_shutdown();
     lod_shutdown();
     atmosphere_gl_shutdown();
     glDeleteBuffers(1, &S.ibo);
-    free(S.visible); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
+    free(S.visible); free(S.casters); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
     free(S.slot_list); free(S.draw_count); free(S.draw_index); free(S.draw_base);
     memset(&S, 0, sizeof S);
 }
@@ -420,9 +437,85 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     atmosphere_set_uniforms(sh);
     float fog_start, fog_end;
     fog_range(rd, &fog_start, &fog_end);
+    shadow_set_uniforms(sh);
     atmosphere_adjust_fog(&fog_start, &fog_end);
     glUniform1f(shader_uniform(sh, "u_fog_start"), fog_start);
     glUniform1f(shader_uniform(sh, "u_fog_end"), fog_end);
+    float near_start = 4.0f, near_end = 28.0f, near_density = 0.0f;
+    if (g_gfx.fog) {
+        const FogLevel *l = &g_gfx.fog_level;
+        near_start = l->near_start;
+        near_end = l->near_end;
+        float daylight = 0.55f + 0.45f * g_atmo.sun_vis + 0.20f * g_atmo.moon_vis;
+        float shade = 0.70f + 0.60f * (1.0f - CLAMP(g_atmo.shade_strength, 0.0f, 1.0f));
+        float shafts = 1.0f + (g_gfx.light_shafts ? 0.45f * g_gfx.godray.strength : 0.0f);
+        near_density = l->density * daylight * shade * shafts * l->sun_boost;
+    }
+    glUniform1f(shader_uniform(sh, "u_near_fog_density"), near_density);
+    glUniform1f(shader_uniform(sh, "u_near_fog_start"), near_start);
+    glUniform1f(shader_uniform(sh, "u_near_fog_end"), near_end);
+}
+
+/* Draws every meshed chunk near the camera into the shadow cascades, from the sun's point of view. Casters are not
+ * limited to the camera's view: a tree behind the player still shades the ground in front of them. */
+static void render_shadows(const Camera *cam, double time_s) {
+    int cascades = shadow_prepare(cam, g_atmo.shade_dir);
+    if (!cascades) return;
+    perf_gpu_begin(GPU_OPAQUE);
+    S.caster_n = 0;
+    int lo, hi;
+    gen_band(&lo, &hi);
+    int reach = (int)ceilf((shadow_cascade_radius(cascades - 1) * 1.6f + 32.0f) / 32.0f);
+    int ccx = ifloor(cam->pos.x / 32.0f), ccz = ifloor(cam->pos.z / 32.0f);
+    for (int cz = ccz - reach; cz <= ccz + reach; cz++)
+        for (int cx = ccx - reach; cx <= ccx + reach; cx++)
+            for (int cy = lo - 1; cy <= hi + VIS_VERTICAL_ABOVE; cy++) {
+                Chunk *c = world_chunk(cx, cy, cz);
+                if (!c || !(c->flags & CF_HAS_MESH)) continue;
+                if (S.caster_n == S.caster_cap) {
+                    S.caster_cap = S.caster_cap ? S.caster_cap * 2 : 1024;
+                    S.casters = xrealloc(S.casters, (size_t)S.caster_cap * sizeof(Chunk *));
+                }
+                S.casters[S.caster_n++] = c;
+            }
+    /* The shadow draws are not part of what the player sees, so they stay out of the statistics. */
+    SceneStats saved = g_scene_stats;
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f, 4.0f);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    for (int i = 0; i < cascades; i++) {
+        M4 vp = shadow_begin_cascade(i);
+        float limit = shadow_cascade_radius(i) * 1.6f + 48.0f;
+        for (int l = 0; l < 2; l++) {
+            Shader *sh = &S.shadow_shader[l];
+            shader_use(sh);
+            int bx = ifloor(cam->pos.x), by = ifloor(cam->pos.y), bz = ifloor(cam->pos.z);
+            glUniform3i(shader_uniform(sh, "u_cam_base"), bx, by, bz);
+            glUniform3f(shader_uniform(sh, "u_cam_frac"), cam->pos.x - (float)bx, cam->pos.y - (float)by, cam->pos.z - (float)bz);
+            glUniformMatrix4fv(shader_uniform(sh, "u_viewproj"), 1, GL_FALSE, vp.m);
+            glUniform1f(shader_uniform(sh, "u_time"), (float)time_s);
+            glUniform1i(shader_uniform(sh, "u_origins"), 1);
+            glUniform1i(shader_uniform(sh, "u_tex"), 0);
+            glUniform1i(shader_uniform(sh, "u_anim"), 2);
+            glUniform1i(shader_uniform(sh, "u_shadow_map"), 3);
+            glUniform1i(shader_uniform(sh, "u_shadow_count"), 0);
+            ensure_slot_list(S.caster_n);
+            int n = 0;
+            for (int k = 0; k < S.caster_n; k++) {
+                Chunk *c = S.casters[k];
+                float dx = ((float)c->cx + 0.5f) * 32.0f - cam->pos.x, dz = ((float)c->cz + 0.5f) * 32.0f - cam->pos.z;
+                if (fabsf(dx) > limit || fabsf(dz) > limit) continue;
+                S.slot_list[n++] = &c->mesh[l == 0 ? LAYER_OPAQUE : LAYER_CUTOUT];
+            }
+            draw_slots(S.slot_list, n, l, false);
+        }
+    }
+    shadow_end();
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glEnable(GL_CULL_FACE);
+    g_scene_stats = saved;
+    perf_gpu_end();
 }
 
 void scene_render(const Camera *cam, double time_s) {
@@ -438,6 +531,8 @@ void scene_render(const Camera *cam, double time_s) {
     glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_array);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, g_tex.gl_anim);
+    render_shadows(cam, time_s);
+    glActiveTexture(GL_TEXTURE0);
     glPolygonMode(GL_FRONT_AND_BACK, g_scene_cfg.wireframe ? GL_LINE : GL_FILL);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);

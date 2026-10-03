@@ -1,0 +1,10 @@
+{
+  "name": "Low",
+  "order": 0,
+  "taps": 8,
+  "divisor": 4,
+  "density": 0.80,
+  "decay": 0.92,
+  "strength": 0.24,
+  "jitter": 1.0
+}

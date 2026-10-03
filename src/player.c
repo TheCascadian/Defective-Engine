@@ -163,6 +163,7 @@ static void horizontal_wish(const Player *p, const PlayerInput *in, float speed,
 
 /* Tries to climb a low ledge: lift the box, repeat the blocked horizontal move, and settle back down. */
 static bool try_step_up(Player *p, int axis, float delta) {
+    if (g_settings.auto_jump_off) return false;
     Player t = *p;
     if (move_axis(&t, 1, STEP_HEIGHT)) return false;
     if (move_axis(&t, axis, delta)) return false;
@@ -295,8 +296,9 @@ V3 player_find_spawn(void) {
         for (int k = 0; k < (r == 0 ? 1 : 8); k++) {
             float a = (float)k * (TAU_F / 8.0f);
             float x = cosf(a) * (float)r, z = sinf(a) * (float)r;
-            float h = gen_height_at(x, z);
-            if (h >= (float)(sea + SPAWN_MIN_HEIGHT_ABOVE_SEA)) return v3(floorf(x) + 0.5f, floorf(h) + 1.0f + 0.01f, floorf(z) + 0.5f);
+            float sx = floorf(x) + 0.5f, sz = floorf(z) + 0.5f;
+            float h = gen_height_at(sx, sz);
+            if (h >= (float)(sea + SPAWN_MIN_HEIGHT_ABOVE_SEA)) return v3(sx, floorf(h) + 1.0f + 0.01f, sz);
         }
     }
     LOGW("no land within %d blocks of origin; spawning over water", SPAWN_SEARCH_RADIUS);

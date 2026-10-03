@@ -1,0 +1,8 @@
+{
+  "name": "Medium",
+  "order": 1,
+  "density": 0.34,
+  "near_start": 4.0,
+  "near_end": 24.0,
+  "sun_boost": 1.0
+}

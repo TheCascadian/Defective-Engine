@@ -14,7 +14,6 @@
 
 #define PAD MESH_PAD
 #define UNIT 16
-#define FLUID_DROP 2
 #define FACE_CROSS_A 6
 #define FACE_CROSS_B 7
 #define PLANT_JITTER 3
@@ -43,14 +42,14 @@ static MeshVertex *vbuf_grow(VBuf *b, u32 add) {
 typedef struct FaceDesc {
     u16 light[4];
     u16 tex;
-    u8 valid, layer, tint, wind, ao[4], extra[4], fluid_top;
+    u8 valid, layer, tint, wind, ao[4], extra[4];
     u8 uni_u, uni_v;
 } FaceDesc;
 
 /* Everything that must match for two faces to share a quad. */
 static bool desc_equal(const FaceDesc *a, const FaceDesc *b) {
     return a->tex == b->tex && a->layer == b->layer && a->tint == b->tint && a->wind == b->wind &&
-           a->fluid_top == b->fluid_top && !memcmp(a->light, b->light, sizeof a->light) &&
+           !memcmp(a->light, b->light, sizeof a->light) &&
            !memcmp(a->ao, b->ao, sizeof a->ao) && !memcmp(a->extra, b->extra, sizeof a->extra);
 }
 
@@ -132,8 +131,6 @@ static bool build_face(Ctx *cx, int d, const int p[3], FaceDesc *f) {
     bool fluid = def->shape == SHAPE_FLUID;
     corner_values(in, d, p, f, !fluid);
     if (fluid) {
-        int above = g_state_block[in->states[pidx(p[0], p[1] + 1, p[2])]];
-        f->fluid_top = above != g_state_block[a];
         int bucket = fluid_depth_bucket(in, p[0], p[1], p[2]);
         for (int c = 0; c < 4; c++) f->extra[c] = (u8)bucket;
     } else {
@@ -171,12 +168,6 @@ static void emit_face_quad(Ctx *cx, int d, int slice, int u0, int v0, int w, int
         ao[c] = cells[c]->ao[c];
         ex[c] = cells[c]->extra[c];
         lt[c] = cells[c]->light[c];
-    }
-    if (f->fluid_top && d != DIR_NY) {
-        /* The surface sits slightly below the cell top: the whole top face, or the upper edge of a side face. */
-        int max_y = MAX(MAX(pos[0][1], pos[1][1]), MAX(pos[2][1], pos[3][1]));
-        for (int c = 0; c < 4; c++)
-            if (d == DIR_PY || pos[c][1] == max_y) pos[c][1] -= FLUID_DROP;
     }
     int order[4] = {0, 1, 2, 3};
     if (ao[0] + ao[2] < ao[1] + ao[3]) { order[0] = 1; order[1] = 2; order[2] = 3; order[3] = 0; }

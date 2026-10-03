@@ -19,14 +19,13 @@
 #define UP_THRESHOLD 0.72          /* grow back only with this much headroom, so the scale does not oscillate */
 #define MAX_DROP_PER_STEP 0.15f
 #define SWAP_SHARE_GPU_BOUND 0.3   /* without timer queries, a long swap wait means the GPU is the limit */
-#define SHAFT_STRENGTH 0.30f
-#define SHAFT_MASK_DIVISOR 2       /* mask is half size per axis, a quarter of the pixels */
+#define SHAFT_DEFAULT_DIVISOR 2    /* mask size while shafts are off */
 #define SHAFT_FACING_MIN 0.05f     /* shafts fade in as the sun comes within this of the screen edge direction */
 
 static struct {
     GLuint fbo, color, depth, vao;
     GLuint mask_fbo, mask_tex;    /* quarter-pixel-count shaft brightness */
-    int mask_w, mask_h;
+    int mask_w, mask_h, mask_div;
     int w, h;
     Shader blit, shafts, mask;
     float scale;
@@ -125,15 +124,17 @@ static GLuint make_texture(GLint internal, GLenum format, GLenum type, int w, in
 
 /* Returns false when the driver refuses the target; the caller then draws straight to the window. */
 static bool ensure_target(void) {
-    if (P.fbo && P.w == g_win.fb_width && P.h == g_win.fb_height) return true;
+    int div = g_gfx.light_shafts ? g_gfx.godray.divisor : SHAFT_DEFAULT_DIVISOR;
+    if (P.fbo && P.w == g_win.fb_width && P.h == g_win.fb_height && P.mask_div == div) return true;
     release_target();
+    P.mask_div = div;
     P.w = g_win.fb_width;
     P.h = g_win.fb_height;
     P.color = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, P.w, P.h, GL_LINEAR);
     /* Depth is only ever compared against the far plane, so nearest filtering is both cheaper and exact. */
     P.depth = make_texture(GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, P.w, P.h, GL_NEAREST);
-    P.mask_w = MAX(1, P.w / SHAFT_MASK_DIVISOR);
-    P.mask_h = MAX(1, P.h / SHAFT_MASK_DIVISOR);
+    P.mask_w = MAX(1, P.w / div);
+    P.mask_h = MAX(1, P.h / div);
     P.mask_tex = make_texture(GL_R8, GL_RED, GL_UNSIGNED_BYTE, P.mask_w, P.mask_h, GL_LINEAR);
     glGenFramebuffers(1, &P.mask_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, P.mask_fbo);
@@ -166,7 +167,7 @@ static float compute_shafts(const Camera *cam, V3 *uv_out, float aspect) {
     float nx = v3_dot(d, cam->right) / (vz * t * aspect), ny = v3_dot(d, cam->up) / (vz * t);
     *uv_out = v3(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, 0);
     float fade = smoothstepf(SHAFT_FACING_MIN, 0.5f, vz);
-    return SHAFT_STRENGTH * g_atmo.sun_vis * fade * (1.0f - g_atmo.rain_amt) * (1.0f - g_atmo.underwater);
+    return g_gfx.godray.strength * g_atmo.sun_vis * fade * (1.0f - g_atmo.rain_amt) * (1.0f - g_atmo.underwater);
 }
 
 void post_begin_scene(const Camera *cam) {
@@ -197,6 +198,10 @@ static void draw_shaft_mask(V3 sun_uv) {
     glUniform2f(shader_uniform(&P.mask, "u_scale"), (float)MAX(1, (int)((float)P.w * P.scale)) / (float)P.w, (float)MAX(1, (int)((float)P.h * P.scale)) / (float)P.h);
     glUniform2f(shader_uniform(&P.mask, "u_texel"), 1.0f / (float)P.w, 1.0f / (float)P.h);
     glUniform2f(shader_uniform(&P.mask, "u_sun_uv"), sun_uv.x, sun_uv.y);
+    glUniform1i(shader_uniform(&P.mask, "u_shaft_taps"), g_gfx.godray.taps);
+    glUniform1f(shader_uniform(&P.mask, "u_shaft_density"), g_gfx.godray.density);
+    glUniform1f(shader_uniform(&P.mask, "u_shaft_decay"), g_gfx.godray.decay);
+    glUniform1f(shader_uniform(&P.mask, "u_shaft_jitter"), g_gfx.godray.jitter);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, g_win.fb_width, g_win.fb_height);

@@ -74,6 +74,7 @@ add_library(dfe_engine STATIC
   src/settings.c
   src/post.c
   src/reload.c
+  src/ui_widgets.c
   src/menu.c
   src/bench.c
   src/entity.c
@@ -91,6 +92,9 @@ add_library(dfe_engine STATIC
   src/script.c
   src/console.c
   src/player.c
+  src/juice.c
+  src/shadow.c
+  src/godray.c
   src/inventory.c
   src/interact.c
   src/server.c

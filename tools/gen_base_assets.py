@@ -110,6 +110,27 @@ def make_textures():
     ice = noisy((150, 190, 235), 0.1, 19, alpha=190)
     save(ice, "ice")
     save(speckle(noisy((82, 64, 50), 0.2, 20), (60, 46, 36), 14, 21), "mud")
+    coarse = noisy((112, 80, 56), 0.28, 30)
+    speckle(coarse, (150, 140, 130), 22, 31)
+    speckle(coarse, (84, 60, 42), 16, 32)
+    save(coarse, "coarse_dirt")
+    pod_top = speckle(noisy((96, 66, 38), 0.22, 33), (70, 48, 28), 20, 34)
+    speckle(pod_top, (128, 92, 52), 10, 35)
+    save(pod_top, "podzol_top")
+    pod_side = noisy((121, 85, 58), 0.25, 36)
+    rng = random.Random(37)
+    for x in range(SIZE):
+        for y in range(3 + rng.randrange(3)):
+            k = 1.0 + (rng.random() - 0.5) * 0.25
+            pod_side.putpixel((x, y), (clamp(96 * k), clamp(66 * k), clamp(38 * k), 255))
+    save(pod_side, "podzol_side")
+    save(speckle(noisy((196, 112, 58), 0.14, 38), (170, 90, 44), 14, 39), "red_sand")
+    save(speckle(noisy((158, 164, 178), 0.08, 40), (140, 146, 160), 12, 41), "clay")
+    save(speckle(noisy((138, 138, 136), 0.16, 42), (112, 112, 112), 18, 43), "andesite")
+    gran = speckle(noisy((152, 108, 94), 0.18, 44), (120, 80, 70), 16, 45)
+    save(speckle(gran, (186, 146, 130), 12, 46), "granite")
+    moss = noisy((84, 122, 46), 0.22, 47)
+    save(speckle(moss, (60, 96, 34), 18, 48), "moss_block")
     log_side = noisy((102, 80, 50), 0.25, 22)
     for x in range(0, SIZE, 4):
         for y in range(SIZE):
@@ -246,6 +267,14 @@ def make_blocks():
     cube("snow", hardness=0.2, tool="shovel", sound="snow")
     cube("ice", layer="translucent", light={"opacity": 1}, hardness=0.5, sound="glass", friction=0.2)
     cube("mud", hardness=0.5, tool="shovel", sound="mud")
+    cube("coarse_dirt", hardness=0.5, tool="shovel", sound="dirt")
+    block("podzol", textures={"up": "base:block/podzol_top", "down": "base:block/dirt", "side": "base:block/podzol_side"},
+          hardness=0.5, tool="shovel", drops="base:dirt", sound="dirt")
+    cube("red_sand", hardness=0.5, tool="shovel", sound="sand")
+    cube("clay", hardness=0.6, tool="shovel", sound="dirt")
+    cube("andesite", hardness=1.5, tool="pick", sound="stone")
+    cube("granite", hardness=1.5, tool="pick", sound="stone")
+    cube("moss_block", hardness=0.3, tool="shovel", sound="grass")
     block("log", textures={"up": "base:block/log_top", "down": "base:block/log_top", "side": "base:block/log_side"}, hardness=2.0, tool="axe", sound="wood")
     block("leaves", textures=all_tex("leaves"), layer="cutout", tint="foliage", wind=True, light={"opacity": 1}, hardness=0.2, sound="grass")
     cube("planks", hardness=2.0, tool="axe", sound="wood")
@@ -277,6 +306,8 @@ def make_worldgen():
             "stone": "base:stone", "deep_stone": "base:deep_stone", "dirt": "base:dirt", "grass": "base:grass_block",
             "sand": "base:sand", "sandstone": "base:sandstone", "gravel": "base:gravel", "snow": "base:snow",
             "mud": "base:mud", "water": "base:water",
+            "coarse_dirt": "base:coarse_dirt", "podzol": "base:podzol", "red_sand": "base:red_sand", "clay": "base:clay",
+            "andesite": "base:andesite", "granite": "base:granite", "moss": "base:moss_block",
         },
         "far_colors": {
             "ocean": [40, 80, 150], "beach": [222, 207, 150], "desert": [222, 200, 140], "tundra": [235, 240, 245],

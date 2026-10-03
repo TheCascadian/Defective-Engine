@@ -688,6 +688,7 @@ float gen_height_at(float x, float z);
 #define LOD_PAD 34
 typedef struct GenLodGrid {
     int top[LOD_PAD * LOD_PAD];      /* voxel index of the surface voxel */
+    int water_top[LOD_PAD * LOD_PAD]; /* highest sea or river water voxel */
     u16 surf[LOD_PAD * LOD_PAD], sub[LOD_PAD * LOD_PAD];
     int vmin, vmax;                  /* voxel index range inside the tile that holds any surface or water */
 } GenLodGrid;
@@ -729,6 +730,21 @@ void mesh_input_free(MeshInput *in);
 #define CONN_BIT(a, b) (1u << conn_pair_index(a, b))
 int conn_pair_index(int a, int b);
 static inline bool chunk_faces_connected(u16 conn, int a, int b) { return a == b || (conn & CONN_BIT(a, b)) != 0; }
+
+/* --------------------------------------------------------------- shadow.c */
+
+/* Cascaded sun shadow maps. scene.c draws the casters; this unit owns the map, the matrices and the uniforms. */
+bool shadow_gl_init(void);
+void shadow_gl_shutdown(void);
+/* Fits the cascades around the camera for the given light direction (towards the light). Returns the cascade
+ * count, 0 when shadows are off or the light is too low to cast a useful shadow. */
+int shadow_prepare(const Camera *cam, V3 light_dir);
+/* Half width of cascade i in blocks. */
+float shadow_cascade_radius(int i);
+/* Binds and clears cascade i and returns its light matrix (applied to camera-relative positions). */
+M4 shadow_begin_cascade(int i);
+void shadow_end(void);
+void shadow_set_uniforms(Shader *sh);
 
 /* ---------------------------------------------------------------- scene.c */
 
@@ -784,10 +800,57 @@ typedef struct Preset {
     char id[PRESET_ID_MAX];
     char name[48];
     int render_distance, far_chunks;
-    bool clouds, stars, light_shafts, dynamic_resolution;
+    bool clouds, stars, light_shafts, dynamic_resolution, fog;
     float min_scale;         /* lowest render scale the dynamic controller may pick */
     float target_fps;        /* frame rate the controller tries to hold */
+    char shadows[PRESET_ID_MAX]; /* shadow quality level id from data/<namespace>/shadows, empty for none */
+    char godrays[PRESET_ID_MAX]; /* godray level id from data/<namespace>/godrays; empty falls back on light_shafts */
+    char fog_quality[PRESET_ID_MAX]; /* fog quality level id from data/<namespace>/fog, empty follows the default */
 } Preset;
+
+#define MAX_SHADOW_LEVELS 8
+#define MAX_CASCADES 3
+
+/* A shadow quality level, loaded from data/<namespace>/shadows/<id>.json. */
+typedef struct ShadowLevel {
+    char id[PRESET_ID_MAX];
+    char name[48];
+    int order;               /* position in the options menu, low to high */
+    int resolution;          /* shadow map size per cascade, in texels */
+    int cascades;            /* 1 to MAX_CASCADES; each one covers a larger area around the camera */
+    int taps;                /* soft-edge samples per pixel, 1 is a single hardware-filtered sample */
+    float distance;          /* how far from the camera shadows reach, in blocks */
+    float softness;          /* edge blur radius in shadow texels */
+    float bias;              /* depth offset in blocks that prevents self-shadowing speckle */
+} ShadowLevel;
+
+#define MAX_GODRAY_LEVELS 8
+
+/* A godray (light shaft) quality level, loaded from data/<namespace>/godrays/<id>.json. The numbers are handed to
+ * post.frag as uniforms, so a replacement shader can use them or ignore them. */
+typedef struct GodrayLevel {
+    char id[PRESET_ID_MAX];
+    char name[48];
+    int order;               /* position in the options menu, low to high */
+    int taps;                /* samples marched toward the sun per pixel */
+    int divisor;             /* the march runs at 1/divisor of the window size per axis */
+    float density;           /* share of the way to the sun the march covers */
+    float decay;             /* weight kept by each further sample */
+    float strength;          /* brightness of the shafts */
+    float jitter;            /* 0 to 1, per-pixel start offset that hides banding */
+} GodrayLevel;
+
+/* A near-plane fog quality level, tuned for the near distance where haze, dust and shadowy gloom become visible. */
+#define MAX_FOG_LEVELS 8
+typedef struct FogLevel {
+    char id[PRESET_ID_MAX];
+    char name[48];
+    int order;               /* position in the options menu, low to high */
+    float density;           /* 0 to 1.2, multiplied by the day/night lighting and shaft strength */
+    float near_start;        /* nearest visible fog distance in blocks */
+    float near_end;          /* distance where the fog fades into the distant haze */
+    float sun_boost;          /* how much sunlight increases the fog when the sun is up */
+} FogLevel;
 
 /* What the player chose, saved to settings.json. Fields at their "automatic" value follow the preset. */
 typedef struct Settings {
@@ -797,6 +860,14 @@ typedef struct Settings {
     float render_scale;      /* fixed scale used while dynamic resolution is off, 0.5 to 1 */
     float fov_deg;
     bool vsync;
+    bool view_bob_off, motion_fx_off; /* camera feel switches; both effects are on unless the player turns them off */
+    bool shadows_off;        /* shadows are on unless the player turns them off */
+    char shadow_quality[PRESET_ID_MAX]; /* shadow level id, empty follows the preset */
+    bool godrays_off;        /* godrays follow the preset unless the player turns them off */
+    char godray_quality[PRESET_ID_MAX]; /* godray level id, empty follows the preset */
+    bool fog_off;            /* near-plane fog follows the preset unless the player turns it off */
+    char fog_quality[PRESET_ID_MAX]; /* fog level id, empty follows the preset */
+    bool auto_jump_off;      /* stepping up one-block ledges without jumping; false (on) unless the player turns it off */
 } Settings;
 extern Settings g_settings;
 
@@ -806,10 +877,27 @@ typedef struct GraphicsConfig {
     bool clouds, stars, light_shafts, dynamic_resolution;
     float min_scale, fixed_scale, target_ms, fov_deg;
     bool vsync;
+    bool shadows;            /* false when the player turned them off, the preset has none, or there is no window */
+    ShadowLevel shadow;
+    GodrayLevel godray;      /* valid while light_shafts is true */
+    bool fog;                /* near-plane fog is active */
+    FogLevel fog_level;      /* valid while fog is true */
 } GraphicsConfig;
 extern GraphicsConfig g_gfx;
 
 int registry_load_presets(void);
+int registry_load_shadow_levels(void);
+int registry_load_godray_levels(void);
+int registry_load_fog_levels(void);
+int godray_level_count(void);
+const GodrayLevel *godray_level_at(int i);
+const GodrayLevel *godray_level_find(const char *id);
+int fog_level_count(void);
+const FogLevel *fog_level_at(int i);
+const FogLevel *fog_level_find(const char *id);
+int shadow_level_count(void);
+const ShadowLevel *shadow_level_at(int i);
+const ShadowLevel *shadow_level_find(const char *id);
 int preset_count(void);
 const Preset *preset_at(int i);
 const Preset *preset_find(const char *id);
@@ -1044,6 +1132,9 @@ bool player_box_blocked(V3 feet);
 bool box_blocked(V3 feet, float half_width, float height);
 /* Dry land close to the origin, found from the height function so it works before any chunk exists. */
 V3 player_find_spawn(void);
+/* Camera feel (juice.c): offsets the camera for bobbing, landing and step smoothing; the fov scale widens it while sprinting. */
+void juice_update(Camera *cam, const Player *p, float dt, bool walking_view);
+float juice_fov_scale(void);
 extern Player g_player;
 
 /* ---------------------------------------------------------------- entity.c */

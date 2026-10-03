@@ -1,0 +1,10 @@
+{
+  "name": "Medium",
+  "order": 1,
+  "resolution": 2048,
+  "cascades": 3,
+  "taps": 6,
+  "distance": 160,
+  "softness": 1.6,
+  "bias": 0.12
+}

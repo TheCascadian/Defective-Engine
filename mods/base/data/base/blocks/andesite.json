@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/andesite"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone"
+}

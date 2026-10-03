@@ -1,0 +1,8 @@
+{
+  "name": "High",
+  "order": 2,
+  "density": 0.50,
+  "near_start": 2.5,
+  "near_end": 20.0,
+  "sun_boost": 1.25
+}

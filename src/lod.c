@@ -234,7 +234,7 @@ static void build_coverage(const Camera *cam) {
     int ox = fcx - half, oz = fcz - half;
     if (dim * dim > L.cover_cap) {
         L.cover_cap = dim * dim;
-        L.cover = xrealloc(L.cover, (size_t)L.cover_cap);
+        L.cover = xrealloc(L.cover, (size_t)L.cover_cap * 2);
         L.cover_tmp = xrealloc(L.cover_tmp, (size_t)L.cover_cap);
     }
     memset(L.cover_tmp, 255, (size_t)dim * dim);
@@ -268,19 +268,21 @@ static void build_coverage(const Camera *cam) {
                     if (nv > worst) worst = nv;
                 }
             }
-            L.cover[z * dim + x] = worst;
+            int i = z * dim + x;
+            L.cover[i * 2] = L.cover_tmp[i];
+            L.cover[i * 2 + 1] = worst;
         }
     L.cover_dim = dim; L.cover_origin_x = ox; L.cover_origin_z = oz;
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, L.cover_tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     if (dim != L.cover_gl_dim) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, dim, dim, 0, GL_RED, GL_UNSIGNED_BYTE, L.cover);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, dim, dim, 0, GL_RG, GL_UNSIGNED_BYTE, L.cover);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         L.cover_gl_dim = dim;
     } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, dim, dim, GL_RED, GL_UNSIGNED_BYTE, L.cover);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, dim, dim, GL_RG, GL_UNSIGNED_BYTE, L.cover);
     }
     glActiveTexture(GL_TEXTURE0);
 }

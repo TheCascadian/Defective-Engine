@@ -1,0 +1,11 @@
+{
+  "textures": {
+    "up": "base:block/podzol_top",
+    "down": "base:block/dirt",
+    "side": "base:block/podzol_side"
+  },
+  "hardness": 0.5,
+  "tool": "shovel",
+  "drops": "base:dirt",
+  "sound": "dirt"
+}

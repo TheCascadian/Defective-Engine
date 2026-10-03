@@ -50,11 +50,14 @@ Settings are available from the title screen and the pause menu and are saved to
 
 | Setting | Meaning |
 |---------|---------|
-| Preset | Low, Medium or High, defined by data files (see the modding guide). A preset sets render distance, far terrain, clouds, stars, light shafts and the dynamic resolution target. |
+| Preset | Low, Medium or High, defined by data files (see the modding guide). A preset sets render distance, far terrain, clouds, stars, fog, shadows, light shafts and the dynamic resolution target. |
 | Render distance | Chunks of full detail around the player. "preset" follows the preset. |
 | Dynamic resolution | Lowers the render scale when the GPU cannot hold the target frame time and raises it again when there is headroom. "preset" follows the preset. |
 | Render scale | The fixed scale used while dynamic resolution is off. |
 | Field of view, Vertical sync | As named. |
+| Shadows, Godrays, Fog | On/off switches and quality levels for cascaded sun shadows, screen-space light shafts and near-plane atmospheric fog. Empty quality selections follow the preset. |
+
+The Controls page also contains auto-jump, view bobbing and motion-effects switches. Motion effects include landing dip, sprint FOV widening and smooth step-up movement.
 
 Precedence is preset, then saved settings, then command line options. Benchmarks ignore the saved settings so results are comparable between machines.
 
@@ -135,7 +138,7 @@ For a useful report, attach the table from `tools/perf_matrix.py`, the `gl:` lin
 
 ## Development workflow
 
-`--dev` reloads shaders, the atmosphere file, presets and entity types when their files change, and F5 or the `reload` console command does it on demand. A reload that has an error keeps the previous version running and prints the problem. Blocks, textures and scripts are not reloaded, because block ids are stored in every loaded chunk; restart the game to change them.
+`--dev` reloads shaders, the atmosphere file, presets, fog/godray/shadow quality files and entity types when their files change, and F5 or the `reload` console command does it on demand. A reload that has an error keeps the previous version running and prints the problem. Blocks, textures and scripts are not reloaded, because block ids are stored in every loaded chunk; restart the game to change them.
 
 ## Modding
 

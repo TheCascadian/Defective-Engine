@@ -13,30 +13,30 @@ uniform vec2 u_scale;             // share of the target that holds the scene, p
 uniform vec2 u_texel;             // one target texel in uv units
 uniform vec2 u_sun_uv;            // sun position over the window in 0..1
 uniform vec3 u_shaft_color;       // sun colour scaled by how strongly shafts show; zero disables them
+uniform int u_shaft_taps;         // SHAFT_MASK only: the godray level's numbers, from data/<namespace>/godrays/*.json
+uniform float u_shaft_density;
+uniform float u_shaft_decay;
+uniform float u_shaft_jitter;
 uniform sampler2D u_shaft_mask;   // SHAFTS only: output of the SHAFT_MASK pass
 
 out vec4 o_color;
 
 #if defined(SHAFT_MASK)
-const int TAPS = 14;
-const float DENSITY = 0.85;       // share of the way to the sun the march covers
-const float DECAY = 0.93;
-
 // Only open sky lights the shafts: a tap counts when it landed on the far plane, so terrain and trees cut them.
 float shaft_mask(vec2 uv) {
-    vec2 step_uv = (u_sun_uv - uv) * (DENSITY / float(TAPS));
+    vec2 step_uv = (u_sun_uv - uv) * (u_shaft_density / float(u_shaft_taps));
     // A little jitter per pixel hides the banding from so few taps.
-    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    float jitter = u_shaft_jitter * fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
     vec2 p = uv + step_uv * jitter;
     float weight = 1.0, sum = 0.0;
-    for (int i = 0; i < TAPS; i++) {
+    for (int i = 0; i < u_shaft_taps; i++) {
         vec2 q = clamp(p * u_scale, vec2(0.0), u_scale - u_texel * 0.5);
         float sky = step(0.99999, texture(u_depth, q).r);
         sum += sky * weight;
-        weight *= DECAY;
+        weight *= u_shaft_decay;
         p += step_uv;
     }
-    return sum / float(TAPS);
+    return sum / float(u_shaft_taps);
 }
 
 void main() {

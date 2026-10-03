@@ -223,6 +223,7 @@ static void drive_player(Camera *cam, double dt) {
     cam->pos = player_eye_render(&g_player);
     cam->yaw = g_player.yaw;
     cam->pitch = g_player.pitch;
+    juice_update(cam, &g_player, (float)dt, true);
     interact_update(&g_player, (float)dt, !menu && !g_player.dead && g_in.cursor_captured);
     server_set_focus(g_player.pos);
 }
@@ -488,7 +489,7 @@ static int run_viewer(void) {
         if (!menu_is_open()) entity_update((float)dt);
         tick_accumulator = MIN(tick_accumulator + dt, GAME_TICK_DT * MAX_TICKS_PER_FRAME);
         while (tick_accumulator >= GAME_TICK_DT) { if (!menu_is_open()) game_tick(); tick_accumulator -= GAME_TICK_DT; }
-        cam.fov_y = g_gfx.fov_deg * DEG2RAD;
+        cam.fov_y = g_gfx.fov_deg * DEG2RAD * (play ? juice_fov_scale() : 1.0f);
         cam.zfar = view_far_plane();
         camera_update(&cam, gl ? (float)g_win.fb_width / (float)MAX(g_win.fb_height, 1) : 16.0f / 9.0f);
 

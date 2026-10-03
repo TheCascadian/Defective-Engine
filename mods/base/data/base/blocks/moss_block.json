@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/moss_block"
+  },
+  "hardness": 0.3,
+  "tool": "shovel",
+  "sound": "grass"
+}

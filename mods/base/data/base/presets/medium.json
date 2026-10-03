@@ -5,7 +5,10 @@
   "clouds": true,
   "stars": true,
   "light_shafts": false,
+  "fog": true,
+  "fog_quality": "medium",
   "dynamic_resolution": false,
   "min_scale": 0.7,
-  "target_fps": 60
+  "target_fps": 60,
+  "shadows": "medium"
 }

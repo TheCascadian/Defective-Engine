@@ -19,9 +19,10 @@ out vec4 v_light;                  // sky, r, g, b in 0..1
 out float v_shade;                 // directional shade times ambient occlusion
 out vec3 v_tint;
 out vec3 v_rel;                    // camera relative position; distance and view angle are derived per fragment
+out vec3 v_normal;                 // face normal, for shadow bias
 out float v_water_depth;           // 0 for everything but water, else the depth bucket in 0..1
 #ifdef LOD
-uniform float u_sea;               // sea level in blocks; coarse water is clamped to it so it meets near water
+uniform float u_sea;               // sea level in blocks; only the coarse sea surface is clamped
 out vec2 v_cover_pos;              // world x, z in blocks for the coverage lookup
 flat out float v_lod_level;
 #endif
@@ -64,9 +65,10 @@ void main() {
     }
 #ifdef LOD
     if (((a_b >> 29) & 3u) == 3u) {
-        // Water tops sit at the voxel grid height, which can exceed sea level at coarse scale. Clamp them.
+        float scale = float(1 << origin.w);
         float wy = world_rel.y + float(u_cam_base.y) + u_cam_frac.y;
-        if (wy > u_sea - 0.125) world_rel.y -= wy - (u_sea - 0.125);
+        float top_voxel = floor((wy + 0.001) / scale) - 1.0;
+        if (top_voxel == floor(u_sea / scale)) world_rel.y -= wy - (u_sea + 1.0);
     }
     v_cover_pos = world_rel.xz + vec2(u_cam_base.xz) + u_cam_frac.xz;
     v_lod_level = float(origin.w);
@@ -88,5 +90,6 @@ void main() {
     v_shade = FACE_SHADE[face] * mix(1.0, 0.8 + 0.35 * sunlit, u_light_shade) * ao;
     v_tint = tint == 3u ? mix(u_tint[3], u_water_deep, float(extra) / 3.0) : u_tint[tint];
     v_water_depth = tint == 3u ? float(extra) / 3.0 : -1.0;
+    v_normal = FACE_NORMAL[face];
     v_rel = world_rel;
 }

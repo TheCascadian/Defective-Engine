@@ -8,6 +8,7 @@ in vec3 v_tint;
 // meshed into quads dozens of blocks wide, and a ratio such as y / dist is far from linear across one.
 in vec3 v_rel;
 in float v_water_depth;
+in vec3 v_normal;
 
 uniform sampler2DArray u_tex;
 uniform sampler2D u_anim;         // per layer: frame count, frames per 4 seconds
@@ -17,6 +18,9 @@ uniform float u_ambient;
 uniform vec3 u_fog_color;
 uniform float u_fog_start;
 uniform float u_fog_end;
+uniform float u_near_fog_density;
+uniform float u_near_fog_start;
+uniform float u_near_fog_end;
 uniform vec3 u_light_dir;
 uniform vec3 u_glint;             // colour and strength of the light that glints on water
 uniform ivec3 u_cam_base;
@@ -30,6 +34,8 @@ uniform int u_cover_dim;
 uniform ivec2 u_cover_origin;
 #endif
 
+#include "assets/dfe/shaders/shadow.glsl"
+
 out vec4 o_color;
 
 void main() {
@@ -37,7 +43,8 @@ void main() {
 #ifdef LOD
     ivec2 col = ivec2(floor(v_cover_pos / 32.0)) - u_cover_origin;
     if (all(greaterThanEqual(col, ivec2(0))) && all(lessThan(col, ivec2(u_cover_dim)))) {
-        float finest = texelFetch(u_cover, col, 0).r * 255.0;
+        vec2 coverage = texelFetch(u_cover, col, 0).rg * 255.0;
+        float finest = v_water_depth >= 0.0 ? coverage.r : coverage.g;
         if (finest < v_lod_level - 0.5) discard;
     }
 #endif
@@ -48,7 +55,13 @@ void main() {
 #ifdef PASS_CUTOUT
     if (tex.a < 0.5) discard;
 #endif
-    vec3 light = v_light.r * u_sky_color + v_light.gba;
+#ifdef SHADOW
+    o_color = vec4(0.0); // depth-only pass: the alpha test above is all that matters
+    return;
+#endif
+    // Only the direct light is shadowed; block light and the ambient floor stay, so shade is never pitch black.
+    float visibility = shadow_visibility(v_rel, v_normal, u_light_dir);
+    vec3 light = v_light.r * u_sky_color * (1.0 - u_shadow_strength * (1.0 - visibility)) + v_light.gba;
     light = max(light, vec3(u_ambient));
     light = min(light, vec3(1.0));
     vec3 albedo = tex.rgb * v_tint;
@@ -60,6 +73,13 @@ void main() {
     }
     vec3 rgb = albedo * light * v_shade;
     float fog = smoothstep(u_fog_start, u_fog_end, dist);
+    float near_fog = 0.0;
+    if (u_near_fog_density > 0.0) {
+        float fade = clamp((dist - u_near_fog_start) / max(u_near_fog_end - u_near_fog_start, 1.0), 0.0, 1.0);
+        float shadow_bias = mix(0.9, 1.8, 1.0 - visibility);
+        near_fog = clamp(u_near_fog_density * shadow_bias * (1.0 - fade * 0.6), 0.0, 1.0);
+        near_fog *= smoothstep(0.0, u_near_fog_end, dist);
+    }
     if (v_water_depth >= 0.0) {
         // Schlick-style reflection: water seen at a grazing angle mirrors the sky, which keeps a wide ocean from
         // reading as a black sheet and fades it into the horizon haze instead of ending at a hard edge.
@@ -75,6 +95,7 @@ void main() {
         rgb += u_glint * glint * 1.4 * (1.0 - fog);
     }
     rgb = mix(rgb, u_fog_color, fog);
+    if (near_fog > 0.0) rgb = mix(rgb, u_fog_color, near_fog);
 #ifdef PASS_TRANSLUCENT
     // Shallow water shows the bed through it; deep water is fully opaque. Any bed showing through deep water makes
     // the real chunks (lit bed) and the far tiles (differently lit bed) disagree, which draws their boundary as

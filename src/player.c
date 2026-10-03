@@ -22,8 +22,6 @@
 #define SWIM_UP_SPEED 3.6f
 #define WATER_SINK_SPEED 2.2f
 #define LAVA_SPEED_SCALE 0.4f
-#define GROUND_ACCEL 12.0f
-#define GROUND_BRAKE 24.0f
 #define AIR_ACCEL 2.0f
 #define AIR_DRAG 0.2f
 #define SWIM_RESPONSE 7.0f
@@ -34,6 +32,11 @@
 #define SPAWN_SEARCH_RADIUS 640
 #define SPAWN_SEARCH_STEP 16
 #define SPAWN_MIN_HEIGHT_ABOVE_SEA 2
+#define FALL_SAFE_DISTANCE 3.0f
+#define FALL_DAMAGE_PER_BLOCK 1.5f
+#define HURT_INVULNERABILITY 0.65f
+#define HURT_FLASH_TIME 0.8f
+#define LAVA_DAMAGE_INTERVAL 1.0f
 
 Player g_player;
 
@@ -43,10 +46,37 @@ void player_init(Player *p, V3 feet) {
     p->half_width = HALF_WIDTH;
     p->height = PLAYER_HEIGHT;
     p->render_eye_height = PLAYER_EYE;
+    p->health = PLAYER_MAX_HEALTH;
+    p->fall_peak_y = feet.y;
 }
 
 V3 player_eye(const Player *p) { return v3(p->pos.x, p->pos.y + (p->crouched ? PLAYER_CROUCH_EYE : PLAYER_EYE), p->pos.z); }
 V3 player_eye_render(const Player *p) { return v3(p->pos.x, p->pos.y + p->render_eye_height, p->pos.z); }
+
+void player_hurt(Player *p, float damage) {
+    if (damage <= 0.0f || p->dead || p->invulnerability_timer > 0.0f || (p == &g_player && g_creative)) return;
+    p->health = MAX(p->health - damage, 0.0f);
+    p->hurt_timer = HURT_FLASH_TIME;
+    p->invulnerability_timer = HURT_INVULNERABILITY;
+    if (p->health <= 0.0f) p->dead = true;
+}
+
+bool player_teleport(Player *p, V3 feet) {
+    if (!isfinite(feet.x) || !isfinite(feet.y) || !isfinite(feet.z) || box_blocked(feet, p->half_width, p->height)) return false;
+    p->pos = feet;
+    p->vel = v3(0, 0, 0);
+    p->on_ground = false;
+    p->fall_peak_y = feet.y;
+    p->jump_buffer = 0.0f;
+    return true;
+}
+
+void player_respawn(Player *p, V3 feet) {
+    float yaw = p->yaw, pitch = p->pitch;
+    player_init(p, feet);
+    p->yaw = yaw;
+    p->pitch = pitch;
+}
 
 static bool cell_blocks(int x, int y, int z) {
     u16 s = world_get_state(x, y, z);
@@ -186,12 +216,12 @@ static void step_climb(Player *p, const PlayerInput *in, float dt) {
 static void step_walk(Player *p, const PlayerInput *in, float dt) {
     float wx, wz, speed = (in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED) * (in->speed_scale > 0 ? in->speed_scale : 1.0f);
     horizontal_wish(p, in, speed, &wx, &wz);
-    bool has_wish = fabsf(wx) + fabsf(wz) > 1e-4f;
     if (p->on_ground) {
-        float accel = has_wish ? GROUND_ACCEL : GROUND_BRAKE * ground_friction(p);
-        approach_accel(&p->vel.x, wx, accel, dt);
-        approach_accel(&p->vel.z, wz, accel, dt);
+        float grip = CLAMP(ground_friction(p), 0.5f, 1.1f);
+        p->vel.x = wx * grip;
+        p->vel.z = wz * grip;
     } else {
+        bool has_wish = fabsf(wx) + fabsf(wz) > 1e-4f;
         float accel = has_wish ? AIR_ACCEL : AIR_DRAG;
         approach_accel(&p->vel.x, wx, accel, dt);
         approach_accel(&p->vel.z, wz, accel, dt);
@@ -205,6 +235,8 @@ static void step_walk(Player *p, const PlayerInput *in, float dt) {
 }
 
 static void physics_step(Player *p, const PlayerInput *in, float dt) {
+    if (p->dead) return;
+    bool was_ground = p->on_ground;
     if (in->crouch) {
         p->crouched = true;
         p->height = PLAYER_CROUCH_HEIGHT;
@@ -219,11 +251,25 @@ static void physics_step(Player *p, const PlayerInput *in, float dt) {
     else if (on_climbable(p)) step_climb(p, in, dt);
     else step_walk(p, in, dt);
     collide_and_move(p, dt);
+    if (p->on_ground) {
+        if (!was_ground) player_hurt(p, MAX(p->fall_peak_y - p->pos.y - FALL_SAFE_DISTANCE, 0.0f) * FALL_DAMAGE_PER_BLOCK);
+        p->fall_peak_y = p->pos.y;
+    } else p->fall_peak_y = MAX(p->fall_peak_y, p->pos.y);
+    p->hurt_timer = MAX(p->hurt_timer - dt, 0.0f);
+    p->invulnerability_timer = MAX(p->invulnerability_timer - dt, 0.0f);
+    if (p->in_lava) {
+        p->lava_damage_timer -= dt;
+        if (p->lava_damage_timer <= 0.0f) {
+            player_hurt(p, 4.0f);
+            p->lava_damage_timer = LAVA_DAMAGE_INTERVAL;
+        }
+    } else p->lava_damage_timer = 0.0f;
     if (p->flying && p->on_ground) p->flying = false; /* landing ends flight, as the player expects */
     p->jump_buffer = MAX(p->jump_buffer - dt, 0.0f);
 }
 
 void player_step(Player *p, const PlayerInput *in, float dt) {
+    if (p->dead) { p->vel = v3(0, 0, 0); return; }
     if (in->toggle_fly) {
         p->flying = !p->flying;
         p->vel.y = 0;

@@ -605,9 +605,9 @@ void chunk_set_light(Chunk *c, int idx, u16 light);
 #define SAVE_INV_SLOTS 36 /* matches INV_SLOTS; inventory.c asserts it */
 #define SAVE_BLOCK_NAME_LEN 64
 typedef struct SaveMeta {
-    bool has_player, flying;
+    bool has_player, flying, dead;
     double x, y, z, day_time;
-    float yaw, pitch;
+    float yaw, pitch, health;
     bool has_inventory, creative;
     int selected;
     /* Items are stored by block name so ids and states never leak into save data. */
@@ -993,6 +993,7 @@ int script_error_count(void);
 #define PLAYER_EYE 1.62f
 #define PLAYER_CROUCH_HEIGHT 1.0f
 #define PLAYER_CROUCH_EYE 0.9f
+#define PLAYER_MAX_HEALTH 20.0f
 
 typedef struct PlayerInput {
     float forward, strafe; /* -1..1 along the view direction and across it */
@@ -1005,13 +1006,17 @@ typedef struct Player {
     V3 vel;
     float yaw, pitch;
     float render_eye_height, jump_buffer;
-    bool on_ground, in_water, head_in_water, flying, in_lava, crouched;
+    float health, hurt_timer, invulnerability_timer, lava_damage_timer, fall_peak_y;
+    bool on_ground, in_water, head_in_water, flying, in_lava, crouched, dead;
     float half_width, height; /* collision box; set by player_init, entities override them */
 } Player;
 
 void player_init(Player *p, V3 feet);
 V3 player_eye(const Player *p);
 V3 player_eye_render(const Player *p);
+void player_hurt(Player *p, float damage);
+bool player_teleport(Player *p, V3 feet);
+void player_respawn(Player *p, V3 feet);
 /* Advances the player by dt seconds (at most one physics step of 1/60 s per call is exact; larger dt is split). */
 void player_step(Player *p, const PlayerInput *in, float dt);
 /* True when a player box with its feet at `feet` overlaps a solid block or an unloaded column. */

@@ -545,11 +545,14 @@ Built-in commands:
 | `getblock x y z` | Show the state at a position. |
 | `setblock x y z block` | Place a block or state, as the player. Fires the cancellable events. |
 | `gamemode creative\|survival` | Switch mode. Creative has instant breaking, a block palette and flight (F). Survival uses hardness, drops and consumes placed blocks. |
+| `tp x y z`, `teleport x y z` | Move the player to a loaded, unobstructed position and clear their velocity. |
 | `give block [count]` | Add items to the inventory. |
 | `lua code` | Run a Lua statement or expression in the sandbox and print the result. |
 | `spawn type [x y z]` | Spawn an entity three blocks in front of the player, or at the given position. |
 | `entities` | List entity types and how many entities are alive. |
 | `reload` | Reload shaders, the atmosphere file, presets and entity types now. |
+
+Survival players have 20 health. Hard falls and lava deal damage; a short invulnerability window prevents a single impact from being counted repeatedly. The HUD shows remaining health and a fading hit overlay, and Space respawns at the world's spawn after death. Existing saves without a health field load at full health.
 
 A line that matches no command fires the `command` event before the game prints "unknown command".
 

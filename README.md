@@ -35,6 +35,8 @@ Starting `dfe` with no world option opens the title screen. It lists the folders
 
 The world and the day cycle stop while the pause menu is open.
 
+Ground movement starts and stops with the movement keys; in air, horizontal steering is weaker. Space jumps once per press, Left Alt crouches, falls and lava can hurt in survival, and Space respawns after death.
+
 ### Settings
 
 Settings are available from the title screen and the pause menu and are saved to `settings.json` in the working directory. Each change applies immediately.

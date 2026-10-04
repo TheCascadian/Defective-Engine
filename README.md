@@ -36,7 +36,7 @@ Starting `dfe` with no world option opens the title screen. It lists the folders
 | F | Toggle flight (creative mode) |
 | Left, right, middle mouse | Break, place, pick block |
 | E | Inventory |
-| Esc | Pause menu: Resume, Settings, Save and quit. Esc again resumes. |
+| Esc | Pause menu: Resume, Settings, Save and exit to menu, Save and quit. Esc again resumes. |
 | Grave key | Console (`help` lists commands) |
 | F3, F4, F5 | Debug overlay page, wireframe, reload shaders and data |
 
@@ -143,3 +143,15 @@ For a useful report, attach the table from `tools/perf_matrix.py`, the `gl:` lin
 ## Modding
 
 See [docs/MODDING.md](docs/MODDING.md) for the complete guide and API reference. Example mods are in `examples/mods`.
+
+### Mod development tools
+
+Validate a mod folder, run its data/registry validation check, or package it as a zip:
+
+```
+./build/dfe mod validate path/to/mod
+./build/dfe mod test path/to/mod
+./build/dfe mod package path/to/mod -o mymod.dfe.zip
+```
+
+`test` currently performs the same manifest and JSON registry validation as `validate`; it does not launch the game or execute Lua gameplay tests. JSON schemas for manifests, items, recipes, loot tables, tags and saves are in [sdk/schemas](sdk/schemas).

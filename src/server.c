@@ -254,6 +254,8 @@ static void run_due_ticks(void) {
 }
 
 void server_tick(void) {
+    dfe_event_t ev = {.name = "tick", .dt = GAME_TICK_DT};
+    event_fire(&ev);
     run_due_ticks();
     run_random_ticks();
     S.tick++;

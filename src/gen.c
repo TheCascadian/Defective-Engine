@@ -106,7 +106,7 @@ static bool custom_biomes(void) { return g_biome_count > 0 && !g_default_biomes;
 
 static GenConfig C;
 static struct {
-    fnl_state cont, cont_warp, cont2, coast, river2, river3, river_side, mount, belt, ridge, hills, detail, river, river_warp, river_wiggle, warp, blend, patch_a, patch_b, blob, temp, humid, cave_a, cave_b, cheese;
+    fnl_state cont, cont_warp, cont2, coast, ocean, ocean_warp, river2, river3, river_side, mount, belt, ridge, hills, detail, river, river_warp, river_wiggle, warp, blend, patch_a, patch_b, blob, temp, humid, cave_a, cave_b, cheese;
     i64 seed;
     bool ready;
 } N;
@@ -465,6 +465,12 @@ void gen_init(u64 seed) {
     N.cont_warp.fractal_type = FNL_FRACTAL_DOMAIN_WARP_PROGRESSIVE;
     N.cont2 = make_noise(s + 22, 0.0024f, 2);
     N.coast = make_noise(s + 23, 0.0085f, 4);
+    /* Salt water has its own, much broader world-space field.  It is intentionally not derived from continents:
+     * terrain decides the seabed, while this field decides where an open ocean exists. */
+    N.ocean = make_noise(s + 27, 0.00032f, 2);
+    N.ocean_warp = make_noise(s + 28, 0.00022f, 2);
+    N.ocean_warp.domain_warp_type = FNL_DOMAIN_WARP_OPENSIMPLEX2;
+    N.ocean_warp.domain_warp_amp = 520.0f;
     N.river2 = make_noise(s + 24, 0.0046f, 1);
     N.river2.noise_type = FNL_NOISE_OPENSIMPLEX2S;
     N.river3 = make_noise(s + 25, 0.0105f, 1);
@@ -508,20 +514,42 @@ int gen_sea_level(void) { return C.sea_level; }
 
 static float smooth01(float t) { t = CLAMP(t, 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); }
 
+static float terrain_base_height(float wx, float wz);
+
 static void terrain_coordinates(float x, float z, float *wx, float *wz) {
     *wx = x;
     *wz = z;
     fnlDomainWarp2D(&N.warp, wx, wz);
 }
 
-/* Continent value, roughly -1 (deep ocean) to 1 (inland); everything that asks "is this land" goes through here. */
+/* The continental field is deliberately kept separate from coastline detail.  The latter may make a shore irregular,
+ * but it must never decide whether an area belongs to the open ocean: using it for that purpose turns isolated low
+ * patches on land into full sea-level water columns. */
+static float continent_macro_at(float wx, float wz) {
+    return fnlGetNoise2D(&N.cont, wx, wz) * 0.78f + fnlGetNoise2D(&N.cont2, wx, wz) * 0.30f;
+}
+
+/* Continent value, roughly -1 (deep ocean) to 1 (inland); terrain uses the detailed version for natural shores. */
 static float continent_at(float wx, float wz) {
     float x = wx, z = wz;
     fnlDomainWarp2D(&N.cont_warp, &x, &z);
-    float c = fnlGetNoise2D(&N.cont, x, z) * 0.78f + fnlGetNoise2D(&N.cont2, x, z) * 0.30f;
+    float c = continent_macro_at(x, z);
     /* Coast roughness fades with distance from the shoreline (c about 0.0 to 0.1), so interiors and deep sea stay smooth. */
     float near_coast = 1.0f - smooth01(fabsf(c - 0.05f) / 0.28f);
     return c + fnlGetNoise2D(&N.coast, x, z) * 0.17f * near_coast;
+}
+
+/* This broad field distinguishes open-ocean basins from isolated low terrain. */
+static float ocean_field_at(float x, float z) {
+    fnlDomainWarp2D(&N.ocean_warp, &x, &z);
+    return fnlGetNoise2D(&N.ocean, x, z);
+}
+
+static bool ocean_at(float x, float z) {
+    float wx, wz;
+    terrain_coordinates(x, z, &wx, &wz);
+    return terrain_base_height(wx, wz) < (float)C.sea_level
+        && continent_at(wx, wz) < 0.12f;
 }
 
 static float terrain_base_height(float wx, float wz) {
@@ -536,37 +564,42 @@ static float terrain_base_height(float wx, float wz) {
     h += land * mountain_region * 12.0f + belt * (24.0f + 74.0f * ridge * ridge);
     h += fnlGetNoise2D(&N.hills, wx, wz) * 8.0f * land;
     h += fnlGetNoise2D(&N.detail, wx, wz) * (1.25f + 2.75f * belt);
+    /* Blend ocean basins into a contoured lowland floor. A hard sea+1 clamp made rejected basins into enormous,
+     * perfectly level shelves; the soft blend keeps dry ground above water without erasing its terrain shape. */
+    float ocean = smooth01((0.08f - ocean_field_at(wx, wz)) / 0.30f);
+    float dry_floor = sea + 1.0f + (cont + 1.0f)
+                    + (fnlGetNoise2D(&N.hills, wx, wz) + 1.0f)
+                    + (fnlGetNoise2D(&N.detail, wx, wz) + 1.0f) * 0.5f;
+    float dry_height = MAX(h, dry_floor);
+    h = dry_height + (h - dry_height) * ocean;
     return h;
-}
-
-/* The public query starts life as a deliberately dry, pure terrain query. The routed drainage builder fills this
- * contract in the next task; exposing it now lets every consumer migrate to one result rather than inventing its own
- * water rule. */
-void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
-    float wx, wz;
-    terrain_coordinates(x, z, &wx, &wz);
-    (void)terrain_base_height(wx, wz);
-    memset(out, 0, sizeof *out);
 }
 
 static float river_strength_at(float wx, float wz) {
     float rx = wx, rz = wz;
     fnlDomainWarp2D(&N.river_warp, &rx, &rz);
     fnlDomainWarp2D(&N.river_wiggle, &rx, &rz); /* large bends first, then small meanders, so no stretch stays straight */
-    /* The shoreline sits at a land factor of about 0.68, not 0.5. Keeping the river band around that coastal threshold
-     * prevents the generator from treating broad inland land as a flooded coastal plain. */
+    /* Each drainage order gets its own broad control values.  These vary its width, which bank receives tributaries
+     * and how far away they can join, avoiding a repeated three-contour pattern. */
+    float main_shape = fnlGetNoise2D(&N.river_side, rx - 1900.0f, rz + 700.0f);
+    float branch_shape = fnlGetNoise2D(&N.river_side, rx + 1300.0f, rz - 2300.0f);
+    float twig_shape = fnlGetNoise2D(&N.river_side, rx - 3700.0f, rz - 1100.0f);
     float n1 = fnlGetNoise2D(&N.river, rx, rz);
     float river_axis = 1.0f - fabsf(n1);
-    float flow = smooth01((river_axis - 0.93f) / 0.05f);
-    /* Tributaries: each lower order is a finer river line that only exists near the order above it, and only on one
-     * bank (chosen by a slow noise), so it reads as a stream joining the river and not as a second crossing river. */
-    float side = fnlGetNoise2D(&N.river_side, rx, rz) > 0.0f ? n1 : -n1;
-    float near1 = smooth01((river_axis - 0.45f) / 0.30f) * smooth01((side + 0.03f) / 0.07f);
+    float flow = smooth01((river_axis - (0.915f + 0.035f * main_shape)) / (0.040f + 0.018f * (1.0f - main_shape * main_shape)));
+    /* Tributaries are permitted in uneven catchments on either bank.  The control field changes only over long
+     * distances, so they converge into the parent stream instead of forming a predictable parallel lattice. */
+    float side = n1 * (branch_shape >= 0.0f ? 1.0f : -1.0f);
+    float near1 = smooth01((river_axis - (0.36f + 0.16f * branch_shape)) / (0.24f + 0.10f * (1.0f - fabsf(branch_shape))))
+                * smooth01((side + 0.10f + 0.12f * main_shape) / 0.20f);
     float n2 = fnlGetNoise2D(&N.river2, rx, rz);
-    float flow2 = smooth01((1.0f - fabsf(n2) - 0.915f) / 0.05f) * near1;
-    float side2 = fnlGetNoise2D(&N.river_side, rx + 900.0f, rz - 900.0f) > 0.0f ? n2 : -n2;
-    float near2 = smooth01((1.0f - fabsf(n2) - 0.55f) / 0.30f) * smooth01((side2 + 0.03f) / 0.07f) * near1;
-    float flow3 = smooth01((1.0f - fabsf(fnlGetNoise2D(&N.river3, rx, rz)) - 0.91f) / 0.05f) * near2;
+    float axis2 = 1.0f - fabsf(n2);
+    float flow2 = smooth01((axis2 - (0.890f + 0.055f * branch_shape)) / 0.055f) * near1;
+    float side2 = n2 * (twig_shape >= 0.0f ? 1.0f : -1.0f);
+    float near2 = smooth01((axis2 - (0.42f + 0.14f * twig_shape)) / 0.26f)
+                * smooth01((side2 + 0.10f + 0.10f * branch_shape) / 0.20f) * near1;
+    float axis3 = 1.0f - fabsf(fnlGetNoise2D(&N.river3, rx, rz));
+    float flow3 = smooth01((axis3 - (0.885f + 0.060f * twig_shape)) / 0.060f) * near2;
     flow = MAX(flow, MAX(flow2, flow3));
     float land = smooth01((continent_at(wx, wz) + 0.17f) / 0.40f);
     float shore = smooth01((land - 0.55f) / 0.10f);
@@ -574,36 +607,57 @@ static float river_strength_at(float wx, float wz) {
     return flow * shore * (1.0f - 0.85f * highland);
 }
 
-/* Water surface of a river: the local terrain height defines the bed, and the river only cuts a notch into that bed.
- * It must never float above the actual terrain at the same column or the ocean appears to drift inland. */
-static float river_surface_at(float wx, float wz, float base) {
-    float cont = continent_at(wx, wz);
-    float land = smooth01((cont + 0.17f) / 0.40f);
-    float mountain = smooth01((fnlGetNoise2D(&N.mount, wx, wz) + 0.12f) / 0.65f);
-    float broad_height = (float)C.sea_level - 32.0f + land * 47.0f + cont * 8.0f + land * mountain * 12.0f;
-    float target = MAX((float)C.sea_level, broad_height - 3.0f);
-    /* A river cannot create a water plane that sits above the terrain it is cutting into. This keeps the water at the
-     * same elevation as the local landform instead of letting the sea drape across broad inland plateaus. */
-    return MIN(target, base - 1.0f);
+/* Keep only channel-mask samples that continue to a lower channel sample. The fixed candidate order makes ties
+ * deterministic; selecting by terrain alone would let noise-painted rivers cut straight across hillsides. */
+static bool river_downstream_at(float x, float z, float base, float *out_x, float *out_z, float *out_height) {
+    static const float dirs[8][2] = {
+        {1.0f, 0.0f}, {0.70710678f, 0.70710678f}, {0.0f, 1.0f}, {-0.70710678f, 0.70710678f},
+        {-1.0f, 0.0f}, {-0.70710678f, -0.70710678f}, {0.0f, -1.0f}, {0.70710678f, -0.70710678f}
+    };
+    float lowest = base - 0.25f;
+    bool found = false;
+    for (int i = 0; i < 8; i++) {
+        float nx = x + dirs[i][0] * 2.0f, nz = z + dirs[i][1] * 2.0f;
+        float wx, wz;
+        terrain_coordinates(nx, nz, &wx, &wz);
+        float height = terrain_base_height(wx, wz);
+        if (height >= lowest || river_strength_at(wx, wz) < 0.58f) continue;
+        lowest = height;
+        *out_x = nx;
+        *out_z = nz;
+        *out_height = height;
+        found = true;
+    }
+    return found;
 }
 
-/* River strength after the terrain test: a river exists only where the ground is near its water surface. Where the
- * land stands well above the water the channel would be a deep dry notch, so it fades out and the river begins as
- * the ground comes down to it. */
-static float river_channel_at(float wx, float wz, float base) {
-    float strength = river_strength_at(wx, wz);
-    if (strength <= 0.0f) return 0.0f;
-    float river_surface = river_surface_at(wx, wz, base);
-    return strength * smooth01((16.0f - (base - river_surface)) / 10.0f);
+/* A channel is permitted only where the terrain-side river mask is strong enough to cut a real bed. Its water plane
+ * follows the local bank instead of the continental/sea plane, so a river cannot turn a lowland into an inland sea. */
+void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
+    float wx, wz;
+    terrain_coordinates(x, z, &wx, &wz);
+    float base = terrain_base_height(wx, wz);
+    float channel = river_strength_at(wx, wz);
+    memset(out, 0, sizeof *out);
+    if (channel < 0.58f) return;
+    float downstream_height;
+    if (!river_downstream_at(x, z, base, &out->downstream_x, &out->downstream_z, &downstream_height)) return;
+    float water_y = MIN(base, downstream_height) - 0.75f;
+    if (water_y >= (float)C.sea_level + 48.0f) return;
+    out->channel = channel;
+    out->type = channel > 0.84f ? 3 : (channel > 0.70f ? 2 : 1);
+    out->water_y = water_y;
+    out->bed_y = out->water_y - (1.5f + channel * 2.5f);
+    out->wet = true;
 }
 
 float gen_height_at(float x, float z) {
     float wx, wz;
     terrain_coordinates(x, z, &wx, &wz);
     float base = terrain_base_height(wx, wz);
-    float channel = river_channel_at(wx, wz, base);
-    float bed = MIN(river_surface_at(wx, wz, base) - 3.0f, base);
-    return base + channel * (bed - base);
+    GenHydrologySample hydro;
+    gen_hydrology_at(x, z, &hydro);
+    return hydro.wet ? hydro.bed_y : base;
 }
 
 static int biome_index_at(float x, float z, float h) {
@@ -944,7 +998,9 @@ static bool tree_ground_ok(int wx, int wz, float h, int biome_index) {
     if (h <= (float)C.sea_level + 1.0f) return false;
     float tx, tz;
     terrain_coordinates((float)wx, (float)wz, &tx, &tz);
-    if (river_channel_at(tx, tz, h) > 0.1f) return false;
+    GenHydrologySample hydro;
+    gen_hydrology_at((float)wx, (float)wz, &hydro);
+    if (hydro.channel > 0.1f) return false;
     if (b == BIOME_MOUNTAIN && h > treeline_at((float)wx, (float)wz) - TREE_TREELINE_MARGIN) return false;
     int fh = (int)floorf(h);
     static const int off[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -999,11 +1055,11 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                 int nx = CLAMP(x + (k == 0) - (k == 1), 0, CHUNK_SIZE - 1), nz = CLAMP(z + (k == 2) - (k == 3), 0, CHUNK_SIZE - 1);
                 step = MAX(step, (float)abs(s->height[(nz << 5) | nx] - h));
             }
-            float wx = (float)(cx * CHUNK_SIZE + x), wz = (float)(cz * CHUNK_SIZE + z), warped_x, warped_z;
-            terrain_coordinates(wx, wz, &warped_x, &warped_z);
-            float river_base = terrain_base_height(warped_x, warped_z);
-            float river = river_channel_at(warped_x, warped_z, river_base);
-            float river_level = river_surface_at(warped_x, warped_z, river_base);
+            float wx = (float)(cx * CHUNK_SIZE + x), wz = (float)(cz * CHUNK_SIZE + z);
+            GenHydrologySample hydro;
+            gen_hydrology_at(wx, wz, &hydro);
+            float river = hydro.channel;
+            bool ocean = ocean_at(wx, wz);
             float treeline = treeline_at(wx, wz);
             float snowline = snowline_at(wx, wz);
             float patch = fnlGetNoise2D(&N.patch_a, wx, wz), speck = fnlGetNoise2D(&N.patch_b, wx, wz);
@@ -1011,7 +1067,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                 int y = y0 + ly;
                 u16 st;
                 if (y > h) {
-                    st = y <= C.sea_level || (river > 0.55f && (float)y <= river_level) ? C.water : STATE_AIR;
+                    st = (ocean && y <= C.sea_level) || (hydro.wet && (float)y <= hydro.water_y) ? C.water : STATE_AIR;
                 } else {
                     int depth = h - y;
                     if (depth == 0) st = surface_block(bi, y, detail, step, river, treeline, snowline, patch, speck);
@@ -1070,15 +1126,12 @@ void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
             lod_sample_column(shift, cx * CHUNK_SIZE + xp - 1, cz * CHUNK_SIZE + zp - 1, &min_h[i], &wx[i], &wz[i]);
             biome[i] = biome_index_at(wx[i], wz[i], min_h[i]);
             g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
-            g->water_top[i] = sea_top;
-            float warped_x, warped_z;
-            terrain_coordinates(wx[i], wz[i], &warped_x, &warped_z);
-            float river_base = terrain_base_height(warped_x, warped_z);
-            river_channel[i] = river_channel_at(warped_x, warped_z, river_base);
-            if (river_channel[i] > 0.55f) {
-                float river_surface = river_surface_at(warped_x, warped_z, river_base);
-                g->water_top[i] = MAX(sea_top, (int)floorf(river_surface / (float)s));
-            }
+            GenHydrologySample hydro;
+            gen_hydrology_at(wx[i], wz[i], &hydro);
+            river_channel[i] = hydro.channel;
+            bool ocean = ocean_at(wx[i], wz[i]);
+            g->water_top[i] = ocean ? sea_top : g->top[i];
+            if (hydro.wet) g->water_top[i] = MAX(g->top[i], (int)floorf(hydro.water_y / (float)s));
             if (xp >= 1 && xp <= CHUNK_SIZE && zp >= 1 && zp <= CHUNK_SIZE) {
                 g->vmin = MIN(g->vmin, g->top[i]);
                 g->vmax = MAX(g->vmax, MAX(g->top[i], g->water_top[i]));

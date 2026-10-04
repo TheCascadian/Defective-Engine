@@ -25,6 +25,7 @@ typedef enum MenuScreen { SCREEN_NONE, SCREEN_PAUSE, SCREEN_SETTINGS } MenuScree
 
 static MenuScreen g_screen = SCREEN_NONE;
 static bool g_quit_requested;
+static bool g_return_to_title_requested;
 static bool g_settings_live; /* true when the world exists, so gfx_apply may push values to the scene */
 static int g_s = 1;          /* GUI scale */
 static UIWState g_settings_ui;
@@ -47,7 +48,12 @@ static const int DYN_CHOICES[] = {-1, 1, 0}; /* automatic, on, off */
 #define COL_RED rgba(255, 85, 85, 255)
 #define COL_BLACK rgba(0, 0, 0, 255)
 
-static void gui_scale(int width, int height) { g_s = CLAMP(MIN(width / 320, height / 240), 1, 4); }
+static void gui_scale(int width, int height) {
+    int automatic = CLAMP(MIN(width / 320, height / 360), 1, 4);
+    /* Automatic mode adapts to the viewport. An explicit player choice is authoritative:
+     * oversized menus are intentional and must never be silently reduced to fit. */
+    g_s = g_settings.ui_scale < 0 ? automatic : CLAMP(g_settings.ui_scale, 1, 4);
+}
 
 /* ----------------------------------------------------------- look and feel */
 
@@ -89,6 +95,12 @@ static void ensure_tiles(void) {
     if (g_dirt_tex) return;
     g_dirt_tex = make_tile(134, 96, 67, 0x1234u, 14);
     g_grass_tex = make_tile(92, 150, 52, 0x9876u, 12);
+}
+
+void menu_gl_shutdown(void) {
+    if (g_dirt_tex) glDeleteTextures(1, &g_dirt_tex);
+    if (g_grass_tex) glDeleteTextures(1, &g_grass_tex);
+    g_dirt_tex = g_grass_tex = 0;
 }
 
 /* Fills a rectangle with a repeating 32 GUI px tile, tinted by `tint`. */
@@ -217,6 +229,20 @@ static void step_dynamic(int step) {
     g_settings.dynamic_resolution = DYN_CHOICES[wrap(index_of_int(DYN_CHOICES, n, g_settings.dynamic_resolution) + step, n)];
 }
 
+static void step_ui_scale(int step) {
+    static const int choices[] = {-1, 1, 2, 3, 4};
+    int cur = 0;
+    for (int i = 0; i < ARRAY_LEN(choices); i++) if (g_settings.ui_scale == choices[i]) cur = i;
+    g_settings.ui_scale = choices[wrap(cur + step, ARRAY_LEN(choices))];
+}
+
+static const char *ui_scale_label(void) {
+    static char label[8];
+    if (g_settings.ui_scale < 0) return "Auto";
+    snprintf(label, sizeof label, "%dx", g_settings.ui_scale);
+    return label;
+}
+
 /* Position 0 follows the preset; 1..n are the shadow levels, low to high. */
 static void step_shadow_quality(int step) {
     int n = shadow_level_count() + 1, cur = 0;
@@ -248,8 +274,9 @@ static int option_button(int id, float x, float y, const char *label, const char
 
 static void screen_title(float cx, float y, const char *title) { mc_text_centered(cx, y, text_size() * 1.2f, COL_WHITE, title); }
 
-/* The controls page is a sub-screen of options, so the title menu and the pause menu both reach it. */
+/* These pages are sub-screens of Options, so the title menu and pause menu share the same flow. */
 static bool g_in_controls;
+static bool g_in_graphics;
 
 /* Data page: wiping every world needs two separate confirmations. Stage 0 is the page, 1 the first warning, 2 the last. */
 static bool g_in_data;
@@ -341,15 +368,14 @@ static bool controls_rows(float cx, int height) {
     return false;
 }
 
-/* Draws the options screen centred on cx and returns true when Done was pressed. */
-static bool settings_rows(float cx, int height) {
+/* Draws the graphics screen centred on cx and returns true when Done was pressed. */
+static bool graphics_rows(float cx, int height) {
     if (g_in_controls) return controls_rows(cx, height);
-    if (g_in_data) return data_rows(cx, height);
     char v[64];
     bool changed = false;
     const Preset *p = preset_find(g_settings.preset);
     int step;
-    screen_title(cx, U(15), "Options");
+    screen_title(cx, U(15), "Graphics Settings");
     UIWStack rows = uiw_vstack((UIWRect){cx - U(155), U(40), U(310), 0}, U(4));
     UIWRect row = uiw_stack_next(&rows, U(BTN_H));
     UIWStack cells = uiw_hstack(row, U(10));
@@ -429,16 +455,41 @@ static bool settings_rows(float cx, int height) {
     float y = rows.cursor - rows.gap + U(2);
     mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, "Right click steps backwards. Render scale applies while dynamic resolution is off.");
     if (changed) settings_changed();
-    float controls_y = y + U(22);
-    if (button(cx - U(WIDE_W) * 0.5f, controls_y, U(WIDE_W), "Controls...", true)) g_in_controls = true;
-    float data_y = controls_y + U(BTN_PITCH);
-    if (button(cx - U(WIDE_W) * 0.5f, data_y, U(WIDE_W), "Data...", true)) g_in_data = true;
-    float done_y = MAX(data_y + U(BTN_PITCH), (float)height - U(34));
+    float done_y = MAX(y + U(22), (float)height - U(34));
+    return button(cx - U(WIDE_W) * 0.5f, done_y, U(WIDE_W), "Done", true);
+}
+
+/* The options hub keeps navigation and player-facing preferences separate from rendering controls. */
+static bool settings_rows(float cx, int height) {
+    if (g_in_controls) return controls_rows(cx, height);
+    if (g_in_graphics) return graphics_rows(cx, height);
+    if (g_in_data) return data_rows(cx, height);
+    screen_title(cx, U(15), "Options");
+    UIWStack rows = uiw_vstack((UIWRect){cx - U(155), U(40), U(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, U(BTN_H));
+    UIWStack cells = uiw_hstack(row, U(10));
+    UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if (option_button(24, left.x, left.y, "UI Scale", ui_scale_label())) {
+        step_ui_scale(1);
+        settings_changed();
+        gui_scale(g_win.width, g_win.height);
+    }
+    if (button(right.x, right.y, right.w, "Graphics Settings...", true)) g_in_graphics = true;
+    row = uiw_stack_next(&rows, U(BTN_H));
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if (button(left.x, left.y, left.w, "Controls...", true)) g_in_controls = true;
+    if (button(right.x, right.y, right.w, "Data...", true)) g_in_data = true;
+    mc_text_centered(cx, rows.cursor + U(5), text_size() * 0.85f, COL_GREY, "UI scale is applied immediately and saved when leaving Options.");
+    float done_y = MAX(rows.cursor + U(24), (float)height - U(34));
     return button(cx - U(WIDE_W) * 0.5f, done_y, U(WIDE_W), "Done", true);
 }
 
 static void leave_settings(void) {
     g_in_controls = false;
+    g_in_graphics = false;
     g_in_data = false;
     g_wipe_stage = 0;
     /* Benchmarks never reach a menu, but the guard keeps a script from overwriting a player's file by accident. */
@@ -450,6 +501,7 @@ static void leave_settings(void) {
 bool menu_is_open(void) { return g_screen != SCREEN_NONE; }
 
 bool menu_quit_requested(void) { return g_quit_requested; }
+bool menu_return_to_title_requested(void) { return g_return_to_title_requested; }
 
 void menu_set_open(bool open) {
     if (open == menu_is_open()) return;
@@ -463,6 +515,7 @@ static bool settings_step_back(void) {
     if (g_in_data && g_wipe_stage) { g_wipe_stage = 0; return true; }
     if (g_in_data) { g_in_data = false; return true; }
     if (g_in_controls) { g_in_controls = false; return true; }
+    if (g_in_graphics) { g_in_graphics = false; return true; }
     return false;
 }
 
@@ -484,6 +537,11 @@ void menu_draw(int width, int height) {
         y += U(BTN_PITCH);
         if (button(bx, y, U(WIDE_W), "Options...", true)) g_screen = SCREEN_SETTINGS;
         y += U(BTN_PITCH) + U(8);
+        if (button(bx, y, U(WIDE_W), "Save and Exit to Menu", true)) {
+            g_return_to_title_requested = true;
+            window_request_close();
+        }
+        y += U(BTN_PITCH);
         if (button(bx, y, U(WIDE_W), "Save and Quit Game", true)) { g_quit_requested = true; window_request_close(); }
     } else if (settings_rows(cx, height)) {
         leave_settings();
@@ -768,6 +826,7 @@ static void title_main(TitleState *t, int width, int height) {
 }
 
 bool menu_title(char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
+    g_return_to_title_requested = false;
     TitleState t = {0};
     t.last_click = -1;
     t.splash = SPLASHES[(u64)(time_now_s() * 1000.0) % ARRAY_LEN(SPLASHES)];

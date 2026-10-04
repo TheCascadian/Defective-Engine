@@ -158,6 +158,8 @@ int entity_spawn(const char *type_id, V3 pos) {
     int ti = type_index(type_id);
     if (ti < 0) { LOGW("unknown entity type \"%s\". Types are named namespace:file, for example base:hopper; the console command 'entities' lists them.", type_id); return 0; }
     if (g_entity_count >= MAX_ENTITIES) { LOGW("entity limit of %d reached; remove some before spawning more", MAX_ENTITIES); return 0; }
+    dfe_event_t ev = {.name = "entity_spawn", .text = type_id};
+    if (event_fire(&ev)) return 0;
     Entity *e = &g_entities[g_entity_count++];
     memset(e, 0, sizeof *e);
     e->id = g_next_id++;

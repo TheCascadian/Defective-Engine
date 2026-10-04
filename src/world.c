@@ -499,7 +499,7 @@ static void gen_job_run(void *data, int worker) {
         Chunk *c = chunk_create(j->cx, j->lo + k, j->cz);
         chunk_pack_from(c, wb->states + (size_t)k * CHUNK_VOL);
         chunk_set_light_from(c, wb->light + (size_t)k * CHUNK_VOL);
-        c->flags = CF_GENERATED;
+        c->flags = CF_GENERATED | CF_SAVE_DIRTY | CF_PERSISTENT;
         j->chunks[k] = c;
     }
 }

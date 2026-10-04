@@ -1,7 +1,7 @@
 /* Defective Engine native plugin API, version 1.
  *
- * This header is the only stable surface a native plugin may rely on. The Lua bindings
- * are written against the same dfe_api_t table, so anything Lua can do a plugin can do.
+ * This header is the only stable surface a native plugin may rely on. Lua scripts share
+ * these core world/event calls and also have additional Lua-only helpers.
  *
  * Compatibility rules:
  *  - Fields are only ever appended. Existing fields never change type or meaning.
@@ -51,6 +51,8 @@ typedef struct dfe_event_t {
     uint16_t state;
     double dt;
     const char *text;
+    int entity_id;
+    float damage;
 } dfe_event_t;
 
 /* Returns nonzero to cancel a cancellable event or to mark a command as handled. */

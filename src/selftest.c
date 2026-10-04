@@ -79,6 +79,16 @@ static void test_base(void) {
     CHECK(fabs(percentile_of(vals, 5, 50) - 3.0) < 1e-9 && fabs(percentile_of(vals, 5, 100) - 5.0) < 1e-9);
 }
 
+static void test_content_registry(void) {
+    content_reset();
+    CHECK(content_register("item", "test:coin") >= 0);
+    CHECK(content_register("item", "test:coin") >= 0);
+    CHECK(content_count("item") == 1);
+    CHECK(!strcmp(content_id_at("item", 0), "test:coin"));
+    CHECK(!strcmp(content_kind("test:coin"), "item"));
+    CHECK(content_register("item", "not-namespaced") < 0);
+}
+
 static void test_vfs(void) {
     /* Two roots: the later one must win for a shared path while unique files stay visible. */
     char a[] = "selftest_vfs_a", b[] = "selftest_vfs_b";
@@ -195,6 +205,12 @@ static void test_mod_storage(void) {
     CHECK(mod_storage_get("beta", "flag") != NULL && mod_storage_get("beta", "flag")->boolean == true);
     CHECK(mod_storage_get("alpha", "coins") == NULL);
     CHECK(mod_storage_get("alpha", "missing") == NULL);
+    Container chest; CHECK(container_open("alpha", "chest", &chest, 3));
+    CHECK(chest.slots == 3 && container_add_item(&chest, "base:stone", 5) == 5);
+    CHECK(container_close("alpha", "chest", &chest));
+    Container restored; CHECK(container_open("alpha", "chest", &restored, 1));
+    CHECK(restored.slots == 3 && restored.slot[0].count == 0);
+    CHECK(container_close("alpha", "chest", &restored));
     save_close();
     remove("selftest_mod_storage/world.json");
     remove("selftest_mod_storage/region");
@@ -490,7 +506,7 @@ static void test_world_light(void) {
     jobs_shutdown();
 }
 
-/* Edits survive a save, unload and reload, and untouched columns are not written at all. */
+/* Generated terrain and edits survive a save, unload and reload. */
 static void remove_tree_files(const char *dir) {
     char path[600];
     StrList names = {0};
@@ -541,6 +557,13 @@ static void test_save_roundtrip(void) {
     jobs_init(2);
     CHECK(save_open(dir, 12345));
     CHECK(save_seed() == 99); /* an existing world keeps its own seed */
+    SavedColumn untouched = {0};
+    bool found_untouched = save_load_column(1, 1, &untouched);
+    CHECK(found_untouched);
+    if (found_untouched) {
+        for (int k = 0; k <= untouched.hi - untouched.lo; k++) chunk_destroy(untouched.chunks[k]);
+        free(untouched.chunks);
+    }
     world_init(save_seed());
     world_flush_generation(0, 0, 2);
     CHECK(world_get_state(5, ey + 3, 5) == want_state && want_state == crystal->default_state);
@@ -570,6 +593,7 @@ static void test_save_budget(void) {
     CHECK(save_open(dir, 7));
     world_init(save_seed());
     world_flush_generation(0, 0, SIDE / 2);
+    world_save_all();
     CHECK(world_dirty_columns() == 0);
     int ex[COLUMNS], ey[COLUMNS], ez[COLUMNS];
     u16 want[COLUMNS];
@@ -612,17 +636,19 @@ static void test_gen_determinism(void) {
     registry_load_worldgen_config();
     if (data_error_count()) { CHECK(false); return; }
     gen_init(777);
-    int above_sea = 0, below_sea = 0;
+    int above_sea = 0, below_sea = 0, sea_shelf_samples = 0;
     float min_height = 10000.0f, max_height = -10000.0f;
     for (int z = -1024; z <= 1024; z += 64)
         for (int x = -1024; x <= 1024; x += 64) {
             float h = gen_height_at((float)x, (float)z);
             if (h > (float)gen_sea_level()) above_sea++;
             else below_sea++;
+            if (h == (float)gen_sea_level() + 1.0f) sea_shelf_samples++;
             min_height = MIN(min_height, h);
             max_height = MAX(max_height, h);
         }
     CHECK(above_sea > 100 && below_sea > 100);
+    CHECK(sea_shelf_samples < 16);
     CHECK(max_height - min_height > 55.0f);
     /* A hydrology query is a pure world-generation input: repeated samples must agree and dry cells must not expose a
      * stale water surface. The production change this catches is a query that retains mutable generation state or
@@ -633,25 +659,47 @@ static void test_gen_determinism(void) {
     CHECK(!memcmp(&hydrology_a, &hydrology_b, sizeof hydrology_a));
     if (!hydrology_a.wet) CHECK(hydrology_a.channel == 0.0f && hydrology_a.bed_y == 0.0f && hydrology_a.water_y == 0.0f);
     else CHECK(hydrology_a.bed_y < hydrology_a.water_y);
-    bool found_river = false;
+    int routed_samples = 0, routed_steps = 0;
+    for (int z = -768; z <= 768; z += 32)
+        for (int x = -768; x <= 768; x += 32) {
+            GenHydrologySample sample;
+            gen_hydrology_at((float)x, (float)z, &sample);
+            if (!sample.wet) continue;
+            routed_samples++;
+            CHECK(sample.channel > 0.0f && sample.bed_y < sample.water_y);
+            CHECK(sample.water_y < (float)gen_sea_level() + 48.0f);
+            float downstream_x = sample.downstream_x, downstream_z = sample.downstream_z;
+            GenHydrologySample downstream;
+            gen_hydrology_at(downstream_x, downstream_z, &downstream);
+            if (downstream.wet) {
+                routed_steps++;
+                CHECK(downstream.water_y <= sample.water_y + 0.01f);
+            }
+        }
+    CHECK(routed_samples > 0);
+    CHECK(routed_steps > 0);
+    bool found_river = false, found_dry_below_sea = false, found_ocean = false;
     int sea_voxel = gen_sea_level();
     GenLodGrid lod;
-    for (int cz = -24; cz <= 24 && !found_river; cz += 4)
-        for (int cx = -24; cx <= 24 && !found_river; cx += 4) {
+    for (int cz = -24; cz <= 24 && !(found_river && found_dry_below_sea && found_ocean); cz += 4)
+        for (int cx = -24; cx <= 24 && !(found_river && found_dry_below_sea && found_ocean); cx += 4) {
             gen_lod_grid(0, cx, cz, &lod);
-            for (int z = 1; z <= CHUNK_SIZE && !found_river; z++)
+            for (int z = 1; z <= CHUNK_SIZE; z++)
                 for (int x = 1; x <= CHUNK_SIZE; x++)
                     {
                         int i = z * LOD_PAD + x;
                         int water_top = lod.water_top[i];
                         int water_depth = water_top - lod.top[i];
+                        if (lod.top[i] < sea_voxel && water_top == lod.top[i]) found_dry_below_sea = true;
+                        if (lod.top[i] < sea_voxel && water_top == sea_voxel) found_ocean = true;
                         if (water_top > sea_voxel && water_depth >= 1 && water_depth <= 6) {
                             found_river = true;
-                            break;
                         }
                     }
         }
     CHECK(found_river);
+    CHECK(found_dry_below_sea);
+    CHECK(found_ocean);
     int lo, hi;
     gen_band(&lo, &hi);
     size_t n = (size_t)(hi - lo + 1) * CHUNK_VOL;
@@ -1182,6 +1230,9 @@ static void test_inventory_save(u16 stone, u16 dirt) {
     Inventory a, b;
     inventory_clear(&a);
     a.slot[2].state = stone; a.slot[2].count = 33;
+    snprintf(a.slot[2].item_id, sizeof a.slot[2].item_id, "base:stone");
+    snprintf(a.slot[2].metadata, sizeof a.slot[2].metadata, "{\"custom\":true}");
+    a.slot[2].durability = 17;
     a.slot[20].state = dirt; a.slot[20].count = 64;
     a.selected = 4;
     static SaveMeta m;
@@ -1189,8 +1240,9 @@ static void test_inventory_save(u16 stone, u16 dirt) {
     inventory_store(&a, false, &m);
     bool creative = true;
     inventory_restore(&b, &creative, &m);
-    CHECK(!creative && b.selected == 4 && b.slot[2].state == stone && b.slot[2].count == 33 && b.slot[20].state == dirt && b.slot[20].count == 64);
+    CHECK(!creative && b.selected == 4 && b.slot[2].state == stone && b.slot[2].count == 33 && b.slot[2].durability == 17 && !strcmp(b.slot[2].metadata, "{\"custom\":true}") && b.slot[20].state == dirt && b.slot[20].count == 64);
     snprintf(m.inv_name[2], SAVE_BLOCK_NAME_LEN, "gone:missing_block"); /* a removed mod's item is dropped, not crashed on */
+    snprintf(m.inv_item[2], SAVE_BLOCK_NAME_LEN, "gone:missing_block");
     inventory_restore(&b, &creative, &m);
     CHECK(b.slot[2].count == 0 && b.slot[20].count == 64);
 }
@@ -1348,6 +1400,7 @@ static void test_gameplay(void) {
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
+        {"content", test_content_registry},
         {"jobs", test_jobs},
         {"palette", test_palette},
         {"json", test_json},

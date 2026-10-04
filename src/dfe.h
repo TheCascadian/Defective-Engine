@@ -20,6 +20,11 @@ typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
 
+#define DFE_ENGINE_VERSION "0.2.0"
+#define DFE_MOD_SCHEMA_VERSION 1
+#define DFE_CONTENT_SCHEMA_VERSION 1
+#define DFE_SAVE_SCHEMA_VERSION 2
+
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -176,6 +181,7 @@ bool dir_remove_all(const char *path);
 bool path_rename(const char *from, const char *to);
 i64 path_mtime(const char *path); /* seconds since the epoch, -1 when missing */
 void path_exe_dir(char *out, size_t cap);
+int modtool_run(int argc, char **argv);
 
 void vfs_reset(void);
 void vfs_add_root(const char *dir, const char *mod_id);
@@ -480,6 +486,18 @@ void registry_freeze_blocks(void);
 int registry_load_blocks(void);
 int registry_load_worldgen_config(void);
 
+/* Unified content registries. Definitions are loaded after blocks and are
+ * addressed by stable namespaced IDs rather than numeric registry positions. */
+void content_reset(void);
+int content_register(const char *kind, const char *id);
+int content_count(const char *kind);
+const char *content_id_at(const char *kind, int index);
+const char *content_kind(const char *id);
+int content_load_all(void);
+int content_reload(void);
+bool content_tag_contains(const char *registry, const char *tag_id, const char *id);
+int content_tag_count(void);
+
 static inline bool state_opaque(u16 s) { return (g_state_flags[s] & BF_OPAQUE) != 0; }
 static inline bool state_solid(u16 s) { return (g_state_flags[s] & BF_SOLID) != 0; }
 
@@ -521,7 +539,7 @@ void block_table_free(BlockNameTable *t);
 #define CF_HAS_MESH 16u
 #define CF_VIRTUAL 32u   /* no stored data, behaves as uniform air or filler */
 #define CF_MESHED_ONCE 64u
-#define CF_PERSISTENT 128u /* column is saved or edited, so light changes must reach the disk too */
+#define CF_PERSISTENT 128u /* column is persisted, so light changes must reach the disk too */
 
 typedef struct MeshSlot {
     i32 page;       /* arena page, -1 when empty */
@@ -566,12 +584,12 @@ typedef struct WorldStats {
 
 void world_init(u64 seed);
 void world_shutdown(void);
-/* Serialises at most SAVE_COLUMNS_PER_CALL edited columns so the main thread never spends a frame on a large backlog;
+/* Serialises at most SAVE_COLUMNS_PER_CALL dirty columns so the main thread never spends a frame on a large backlog;
  * the rest stay dirty for the next call. Called periodically. */
 void world_save_dirty(void);
-/* Writes every edited column by repeating world_save_dirty until nothing more can be saved. Called on exit. */
+/* Writes every dirty column by repeating world_save_dirty until nothing more can be saved. Called on exit. */
 void world_save_all(void);
-/* Number of ready columns with unsaved edits. */
+/* Number of ready columns with unsaved terrain or edits. */
 int world_dirty_columns(void);
 u64 world_seed(void);
 Chunk *world_chunk(int cx, int cy, int cz);
@@ -615,15 +633,23 @@ void chunk_set_light(Chunk *c, int idx, u16 light);
 
 #define SAVE_INV_SLOTS 36 /* matches INV_SLOTS; inventory.c asserts it */
 #define SAVE_BLOCK_NAME_LEN 64
+#define SAVE_ITEM_META_LEN 192
 typedef struct SaveMeta {
     bool has_player, flying, dead;
     double x, y, z, day_time;
     float yaw, pitch, health;
+    char player_id[64], player_name[64], player_state[192];
     bool has_inventory, creative;
     int selected;
     /* Items are stored by block name so ids and states never leak into save data. */
     char inv_name[SAVE_INV_SLOTS][SAVE_BLOCK_NAME_LEN];
+    char inv_item[SAVE_INV_SLOTS][SAVE_BLOCK_NAME_LEN];
+    char inv_meta[SAVE_INV_SLOTS][SAVE_ITEM_META_LEN];
     u8 inv_count[SAVE_INV_SLOTS];
+    u16 inv_durability[SAVE_INV_SLOTS];
+    char equip_item[4][SAVE_BLOCK_NAME_LEN];
+    char equip_meta[4][SAVE_ITEM_META_LEN];
+    u16 equip_durability[4];
 } SaveMeta;
 /* Mod-scoped save data. Each mod gets its own JSON object under the active world save. */
 bool mod_storage_set(const char *mod_id, const char *key, const Json *value);
@@ -683,6 +709,7 @@ int gen_sea_level(void);
 /* Shared terrain/water result for near chunks, decoration and distant LOD. A dry sample is all zeroes. */
 typedef struct GenHydrologySample {
     float channel, bed_y, water_y;
+    float downstream_x, downstream_z;
     u8 type;
     bool wet;
 } GenHydrologySample;
@@ -862,6 +889,7 @@ typedef struct FogLevel {
 /* What the player chose, saved to settings.json. Fields at their "automatic" value follow the preset. */
 typedef struct Settings {
     char preset[PRESET_ID_MAX];
+    int ui_scale;             /* -1 automatic, 1..4 explicit GUI scale */
     int render_distance;     /* chunks, 0 follows the preset */
     int dynamic_resolution;  /* -1 follows the preset, 0 off, 1 on */
     float render_scale;      /* fixed scale used while dynamic resolution is off, 0.5 to 1 */
@@ -917,6 +945,8 @@ void gfx_apply(void);
 /* menu.c: title screen, pause menu and settings screen. */
 bool menu_is_open(void);
 bool menu_quit_requested(void);
+bool menu_return_to_title_requested(void);
+void menu_gl_shutdown(void);
 void menu_set_open(bool open);
 /* Escape: settings go back to the pause menu, the pause menu resumes the game. */
 void menu_back(void);
@@ -1067,6 +1097,9 @@ void command_run(const char *line);
 int command_count(void);
 const char *command_name(int i);
 const char *command_help(int i);
+const char *command_syntax(int i);
+const char *command_permission(int i);
+int command_complete(const char *prefix, const char **out, int max);
 
 #define GAME_TICK_DT 0.05
 #define GAME_TICK_HZ 20
@@ -1116,6 +1149,7 @@ typedef struct PlayerInput {
 } PlayerInput;
 
 typedef struct Player {
+    char id[64], name[64], mod_state[192];
     V3 pos; /* centre of the feet */
     V3 vel;
     float yaw, pitch;
@@ -1184,13 +1218,40 @@ int entity_draw(const Camera *cam, float fog_start, float fog_end);
 typedef struct ItemStack {
     u16 state; /* the default state of the block this item places, STATE_AIR when the slot is empty */
     u8 count;
+    u16 durability;
+    char item_id[64];
+    char metadata[192];
 } ItemStack;
 
 typedef struct Inventory {
     ItemStack slot[INV_SLOTS]; /* the first INV_HOTBAR slots are the hotbar */
     ItemStack cursor;          /* the stack held by the mouse while the inventory screen is open */
+    ItemStack equipment[4];
     int selected;
 } Inventory;
+typedef struct ItemDef {
+    char id[64], place[64], kind[24], tags[8][64];
+    int tag_n, max_stack, durability, equip_slot;
+    float damage, protection;
+} ItemDef;
+const ItemDef *item_find(const char *id);
+const ItemDef *item_for_state(u16 state);
+int item_definition_count(void);
+const ItemDef *item_definition_at(int i);
+#define CONTAINER_MAX_SLOTS 54
+typedef struct Container { ItemStack slot[CONTAINER_MAX_SLOTS]; int slots; } Container;
+void container_init(Container *c, int slots);
+bool container_transfer(Container *c, Inventory *inv, int from, int to);
+int container_add_item(Container *c, const char *id, int count);
+bool container_save(const char *mod_id, const char *key, const Container *c);
+bool container_load(const char *mod_id, const char *key, Container *c);
+bool container_open(const char *mod_id, const char *key, Container *c, int slots);
+bool container_close(const char *mod_id, const char *key, const Container *c);
+int recipe_count(void);
+const char *recipe_id_at(int index);
+bool recipe_craft(Inventory *inv, const char *id);
+bool recipe_process(Inventory *inv, const char *id, float *duration);
+int loot_roll(const char *id, Rng *rng, Inventory *inv);
 extern Inventory g_inv;
 extern bool g_creative;
 
@@ -1207,6 +1268,11 @@ int inventory_count(const Inventory *inv, u16 state);
 bool inventory_take_one(Inventory *inv, int slot);
 /* Mouse semantics of an inventory slot: button 0 picks up, drops or swaps a whole stack, button 1 half or one. */
 void inventory_click(Inventory *inv, int slot, int button);
+int inventory_add_item(Inventory *inv, const char *item_id, int count);
+bool inventory_equip(Inventory *inv, int slot);
+float inventory_protection(const Inventory *inv);
+void inventory_damage_slot(Inventory *inv, int slot, int amount);
+void inventory_damage_equipment(Inventory *inv, int slot, int amount);
 /* Number of block items the registry offers, and the n-th one's state. Skips air and blocks marked "item": false. */
 int item_count(void);
 u16 item_state_at(int index);

@@ -108,6 +108,8 @@ static bool read_manifest(const char *folder, const char *manifest_path, ModInfo
     bool ok = false;
     do {
         if (root->type != JSON_OBJECT) { data_error(folder, "mod.json", 1, "the manifest must be a JSON object with at least \"id\" and \"version\"."); break; }
+        int schema = json_int(root, "schema", DFE_MOD_SCHEMA_VERSION);
+        if (schema != DFE_MOD_SCHEMA_VERSION) { data_error(folder, "mod.json", json_get(root, "schema") ? json_get(root, "schema")->line : 1, "uses mod schema %d but this engine supports schema %d.", schema, DFE_MOD_SCHEMA_VERSION); break; }
         const char *id = json_str(root, "id", "");
         if (!valid_id(id)) { data_error(folder, "mod.json", json_get(root, "id") ? json_get(root, "id")->line : 1, "\"id\" must be %d to 31 characters: lowercase letters, digits and underscores, starting with a letter.", MOD_ID_MIN); break; }
         snprintf(m->id, sizeof m->id, "%s", id);
@@ -329,12 +331,12 @@ typedef struct Sub {
 
 typedef struct Cmd {
     int handle;
-    char name[24], help[96], mod[32];
+    char name[24], help[96], syntax[96], permission[48], mod[32];
     dfe_command_fn fn;
     void *user;
 } Cmd;
 
-static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command", "random_tick"};
+static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command", "random_tick", "item_use", "entity_spawn", "entity_interact", "entity_damage", "entity_death", "inventory_change", "container_open", "container_close", "player_join", "player_leave", "player_damage", "player_death", "player_respawn"};
 static Sub g_subs[SUB_MAX];
 static int g_sub_count, g_next_handle = 1;
 static Cmd g_cmds[CMD_MAX];
@@ -349,7 +351,7 @@ static int event_index(const char *name) {
 static int api_subscribe(const char *event, dfe_event_fn fn, void *user, const char *mod_id) {
     int idx = event_index(event);
     if (idx < 0) {
-        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick.", mod_id, event);
+        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn.", mod_id, event);
         return 0;
     }
     if (g_sub_count >= SUB_MAX) { LOGE("[mod %s] too many event subscriptions (limit %d).", mod_id, SUB_MAX); return 0; }
@@ -368,7 +370,7 @@ bool event_fire(const dfe_event_t *ev) {
     int count = g_sub_count; /* handlers added while dispatching run from the next event */
     for (int i = 0; i < count; i++) {
         if (g_subs[i].event != idx) continue;
-        if (g_subs[i].fn(ev, g_subs[i].user)) return idx == 1 || idx == 2 || idx == 5;
+        if (g_subs[i].fn(ev, g_subs[i].user)) return idx == 1 || idx == 2 || idx == 5 || idx >= 7;
     }
     return false;
 }
@@ -453,6 +455,14 @@ void command_run(const char *line) {
 int command_count(void) { return g_cmd_count; }
 const char *command_name(int i) { return i >= 0 && i < g_cmd_count ? g_cmds[i].name : ""; }
 const char *command_help(int i) { return i >= 0 && i < g_cmd_count ? g_cmds[i].help : ""; }
+const char *command_syntax(int i) { return i >= 0 && i < g_cmd_count ? g_cmds[i].syntax : ""; }
+const char *command_permission(int i) { return i >= 0 && i < g_cmd_count ? g_cmds[i].permission : ""; }
+int command_complete(const char *prefix, const char **out, int max) {
+    if (!prefix || !out || max <= 0) return 0;
+    int n = 0; size_t len = strlen(prefix);
+    for (int i = 0; i < g_cmd_count && n < max; i++) if (!strncmp(g_cmds[i].name, prefix, len)) out[n++] = g_cmds[i].name;
+    return n;
+}
 
 /* ---------------------------------------------------------------- api table */
 

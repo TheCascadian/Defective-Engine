@@ -47,6 +47,8 @@ void player_init(Player *p, V3 feet) {
     p->height = PLAYER_HEIGHT;
     p->render_eye_height = PLAYER_EYE;
     p->health = PLAYER_MAX_HEALTH;
+    snprintf(p->id, sizeof p->id, "player");
+    snprintf(p->name, sizeof p->name, "Player");
     p->fall_peak_y = feet.y;
 }
 
@@ -55,10 +57,15 @@ V3 player_eye_render(const Player *p) { return v3(p->pos.x, p->pos.y + p->render
 
 void player_hurt(Player *p, float damage) {
     if (damage <= 0.0f || p->dead || p->invulnerability_timer > 0.0f || (p == &g_player && g_creative)) return;
+    dfe_event_t hit = {.name = p == &g_player ? "player_damage" : "entity_damage", .damage = damage};
+    if (event_fire(&hit)) return;
     p->health = MAX(p->health - damage, 0.0f);
     p->hurt_timer = HURT_FLASH_TIME;
     p->invulnerability_timer = HURT_INVULNERABILITY;
-    if (p->health <= 0.0f) p->dead = true;
+    if (p->health <= 0.0f) {
+        dfe_event_t death = {.name = p == &g_player ? "player_death" : "entity_death"};
+        if (!event_fire(&death)) p->dead = true;
+    }
 }
 
 bool player_teleport(Player *p, V3 feet) {
@@ -72,6 +79,8 @@ bool player_teleport(Player *p, V3 feet) {
 }
 
 void player_respawn(Player *p, V3 feet) {
+    dfe_event_t ev = {.name = p == &g_player ? "player_respawn" : "entity_spawn"};
+    if (event_fire(&ev)) return;
     float yaw = p->yaw, pitch = p->pitch;
     player_init(p, feet);
     p->yaw = yaw;

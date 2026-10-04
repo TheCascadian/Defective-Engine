@@ -95,6 +95,8 @@ static void update_placing(void) {
     if (!g_in.mouse_buttons[GLFW_MOUSE_BUTTON_RIGHT] || !it->target.hit || it->place_cooldown > 0) return;
     ItemStack *held = &g_inv.slot[g_inv.selected];
     if (!held->count) return;
+    dfe_event_t use = {.name="item_use", .x=(float)g_inv.selected, .y=(float)held->state, .text=held->item_id};
+    if (event_fire(&use)) return;
     it->place_cooldown = INTERACT_REPEAT_S;
     const RayHit *h = &it->target;
     /* Aiming at a replaceable block such as tall grass replaces it instead of building next to it. */

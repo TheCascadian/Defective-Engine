@@ -1,6 +1,6 @@
 /* World persistence. A world directory holds world.json (seed, player, block name table) and region files
- * with 16x16 columns each. Only columns that were edited are written: untouched terrain regenerates from the
- * seed, which keeps saves tiny and lets generation improve between versions without invalidating old worlds.
+ * with 16x16 columns each. Generated columns are written so terrain already seen by the player remains stable
+ * across generator changes; columns never generated still come from the world's seed.
  *
  * Columns are serialised on the main thread (chunk storage is main-thread-only), then compressed with LZ4 and
  * written by a worker job, so a save never stalls a frame. Block ids never reach the disk: every state is stored
@@ -19,11 +19,14 @@
 #define REGION_HEADER_BYTES 16
 #define REGION_ENTRY_BYTES 12
 #define REGION_DATA_START (REGION_HEADER_BYTES + REGION_COLS * REGION_ENTRY_BYTES)
+#define LEGACY_REGION_SHIFT 3
+#define LEGACY_REGION_COLS (1 << (2 * LEGACY_REGION_SHIFT))
+#define LEGACY_REGION_DATA_START (REGION_HEADER_BYTES + LEGACY_REGION_COLS * REGION_ENTRY_BYTES)
 #define REGION_CACHE 8
 #define COLUMN_MAGIC 0x31434644u /* "DFC1" */
 #define CHUNK_PALETTED 1u
 #define CHUNK_HAS_LIGHT 2u
-#define META_VERSION 1
+#define META_VERSION 2
 #define COMPACT_MIN_WASTE (1u << 20)
 #define MAX_COLUMN_LAYERS 4096
 
@@ -144,6 +147,9 @@ static bool meta_read(void) {
         S.meta.flying = json_bool(p, "flying", false);
         S.meta.health = (float)json_num(p, "health", PLAYER_MAX_HEALTH);
         S.meta.dead = json_bool(p, "dead", false);
+        snprintf(S.meta.player_id, sizeof S.meta.player_id, "%s", json_as_str(json_get(p, "id"), "player"));
+        snprintf(S.meta.player_name, sizeof S.meta.player_name, "%s", json_as_str(json_get(p, "name"), "Player"));
+        snprintf(S.meta.player_state, sizeof S.meta.player_state, "%s", json_as_str(json_get(p, "state"), ""));
     }
     const Json *inv = json_get(j, "inventory");
     if (inv) {
@@ -154,7 +160,17 @@ static bool meta_read(void) {
         for (int i = 0; slots && i < json_len(slots) && i < SAVE_INV_SLOTS; i++) {
             const Json *e = json_at(slots, i);
             snprintf(S.meta.inv_name[i], SAVE_BLOCK_NAME_LEN, "%s", json_as_str(json_get(e, "block"), ""));
+            snprintf(S.meta.inv_item[i], SAVE_BLOCK_NAME_LEN, "%s", json_as_str(json_get(e, "item"), S.meta.inv_name[i]));
+            snprintf(S.meta.inv_meta[i], SAVE_ITEM_META_LEN, "%s", json_as_str(json_get(e, "metadata"), ""));
             S.meta.inv_count[i] = (u8)CLAMP((int)json_num(e, "count", 0), 0, 255);
+            S.meta.inv_durability[i] = (u16)CLAMP((int)json_num(e, "durability", 0), 0, 65535);
+        }
+        const Json *equipment = json_get(inv, "equipment");
+        for (int i = 0; equipment && i < json_len(equipment) && i < 4; i++) {
+            const Json *e = json_at(equipment, i);
+            snprintf(S.meta.equip_item[i], SAVE_BLOCK_NAME_LEN, "%s", json_as_str(json_get(e, "item"), ""));
+            snprintf(S.meta.equip_meta[i], SAVE_ITEM_META_LEN, "%s", json_as_str(json_get(e, "metadata"), ""));
+            S.meta.equip_durability[i] = (u16)CLAMP((int)json_num(e, "durability", 0), 0, 65535);
         }
     }
     S.meta.day_time = json_num(j, "time", 0.3);
@@ -185,6 +201,9 @@ static bool meta_write(void) {
         jw_key(&w, "flying"); jw_bool(&w, S.meta.flying);
         jw_key(&w, "health"); jw_num(&w, S.meta.health);
         jw_key(&w, "dead"); jw_bool(&w, S.meta.dead);
+        jw_key(&w, "id"); jw_str(&w, S.meta.player_id[0] ? S.meta.player_id : "player");
+        jw_key(&w, "name"); jw_str(&w, S.meta.player_name[0] ? S.meta.player_name : "Player");
+        jw_key(&w, "state"); jw_str(&w, S.meta.player_state);
         jw_end_obj(&w);
     }
     if (S.meta.has_inventory) {
@@ -197,7 +216,20 @@ static bool meta_write(void) {
         for (int i = 0; i < SAVE_INV_SLOTS; i++) {
             jw_begin_obj(&w);
             jw_key(&w, "block"); jw_str(&w, S.meta.inv_name[i]);
+            jw_key(&w, "item"); jw_str(&w, S.meta.inv_item[i][0] ? S.meta.inv_item[i] : S.meta.inv_name[i]);
             jw_key(&w, "count"); jw_num(&w, S.meta.inv_count[i]);
+            jw_key(&w, "durability"); jw_num(&w, S.meta.inv_durability[i]);
+            jw_key(&w, "metadata"); jw_str(&w, S.meta.inv_meta[i]);
+            jw_end_obj(&w);
+        }
+        jw_end_arr(&w);
+        jw_key(&w, "equipment");
+        jw_begin_arr(&w);
+        for (int i = 0; i < 4; i++) {
+            jw_begin_obj(&w);
+            jw_key(&w, "item"); jw_str(&w, S.meta.equip_item[i]);
+            jw_key(&w, "durability"); jw_num(&w, S.meta.equip_durability[i]);
+            jw_key(&w, "metadata"); jw_str(&w, S.meta.equip_meta[i]);
             jw_end_obj(&w);
         }
         jw_end_arr(&w);
@@ -301,8 +333,68 @@ static Region *region_get(int rx, int rz) {
     fseek(slot->f, 0, SEEK_END);
     long size = ftell(slot->f);
     fseek(slot->f, 0, SEEK_SET);
-    if (fread(head, sizeof head, 1, slot->f) != 1 || head[0] != REGION_MAGIC || head[1] != REGION_VERSION ||
-        fread(slot->entries, sizeof slot->entries, 1, slot->f) != 1 || size < REGION_DATA_START) {
+    if (fread(head, sizeof head, 1, slot->f) != 1 || head[0] != REGION_MAGIC || head[1] != REGION_VERSION) {
+        LOGE("Region file %s is damaged or from a newer version. It was set aside as .bad and its columns will regenerate.", path);
+        fclose(slot->f);
+        slot->f = NULL;
+        char bad[620];
+        snprintf(bad, sizeof bad, "%s.bad", path);
+        remove(bad);
+        rename(path, bad);
+        memset(slot->entries, 0, sizeof slot->entries);
+        return slot;
+    }
+    if (size >= LEGACY_REGION_DATA_START && size < REGION_DATA_START) {
+        RegionEntry old[LEGACY_REGION_COLS];
+        if (fread(old, sizeof old, 1, slot->f) == 1) {
+            char tmp[620];
+            snprintf(tmp, sizeof tmp, "%s.migrate", path);
+            FILE *out = fopen(tmp, "wb");
+            if (out) {
+                Region n = {0};
+                n.rx = rx; n.rz = rz; n.f = out; n.file_end = REGION_DATA_START;
+                region_flush_header(&n);
+                bool ok = true;
+                for (int old_slot = 0; old_slot < LEGACY_REGION_COLS && ok; old_slot++) {
+                    RegionEntry e = old[old_slot];
+                    if (!e.comp_size) continue;
+                    if (e.offset < LEGACY_REGION_DATA_START || (u64)e.offset + e.comp_size > (u64)size) { ok = false; break; }
+                    u8 *blob = xmalloc(e.comp_size);
+                    fseek(slot->f, (long)e.offset, SEEK_SET);
+                    ok = fread(blob, 1, e.comp_size, slot->f) == e.comp_size;
+                    if (ok) {
+                        int x = old_slot & ((1 << LEGACY_REGION_SHIFT) - 1);
+                        int z = old_slot >> LEGACY_REGION_SHIFT;
+                        int new_slot = (z << REGION_SHIFT) | x;
+                        e.offset = n.file_end;
+                        fseek(out, (long)n.file_end, SEEK_SET);
+                        ok = fwrite(blob, 1, e.comp_size, out) == e.comp_size;
+                        n.entries[new_slot] = e;
+                        n.file_end += e.comp_size;
+                    }
+                    free(blob);
+                }
+                if (ok) region_flush_header(&n);
+                ok = fclose(out) == 0 && ok;
+                fclose(slot->f); slot->f = NULL;
+                if (ok) {
+                    remove(path);
+                    if (rename(tmp, path) == 0) {
+                        slot->f = fopen(path, "r+b");
+                        memcpy(slot->entries, n.entries, sizeof n.entries);
+                        slot->file_end = n.file_end;
+                        slot->exists = slot->f != NULL;
+                        return slot;
+                    }
+                }
+                remove(tmp);
+            }
+        }
+        LOGE("Legacy region file %s could not be migrated; its columns will regenerate.", path);
+        fclose(slot->f); slot->f = NULL;
+        return slot;
+    }
+    if (fread(slot->entries, sizeof slot->entries, 1, slot->f) != 1 || size < REGION_DATA_START) {
         LOGE("Region file %s is damaged or from a newer version. It was set aside as .bad and its columns will regenerate.", path);
         fclose(slot->f);
         slot->f = NULL;

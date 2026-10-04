@@ -232,6 +232,7 @@ static bool boot_content(bool with_gl) {
     registry_reset();
     int known_errors = data_error_count();
     registry_load_blocks();
+    content_load_all();
     registry_load_worldgen_config();
     registry_load_atmosphere();
     registry_load_presets();
@@ -417,6 +418,9 @@ static int run_viewer(void) {
             g_player.flying = m->flying && g_creative;
             g_player.health = CLAMP(m->health, 0.0f, PLAYER_MAX_HEALTH);
             g_player.dead = m->dead || g_player.health <= 0.0f;
+            snprintf(g_player.id, sizeof g_player.id, "%s", m->player_id[0] ? m->player_id : "player");
+            snprintf(g_player.name, sizeof g_player.name, "%s", m->player_name[0] ? m->player_name : "Player");
+            snprintf(g_player.mod_state, sizeof g_player.mod_state, "%s", m->player_state);
         } else {
             player_init(&g_player, player_find_spawn());
             g_player.yaw = cam.yaw;
@@ -424,6 +428,7 @@ static int run_viewer(void) {
         cam.pos = player_eye(&g_player);
         cam.yaw = g_player.yaw;
         cam.pitch = g_player.pitch;
+        { dfe_event_t ev = {.name = "player_join", .text = "player"}; event_fire(&ev); }
     }
     camera_update(&cam, 16.0f / 9.0f);
     double cold = load_world_around(&cam, rd);
@@ -561,6 +566,9 @@ static int run_viewer(void) {
             m->flying = g_player.flying;
             m->health = g_player.health;
             m->dead = g_player.dead;
+            snprintf(m->player_id, sizeof m->player_id, "%s", g_player.id);
+            snprintf(m->player_name, sizeof m->player_name, "%s", g_player.name);
+            snprintf(m->player_state, sizeof m->player_state, "%s", g_player.mod_state);
             hud_set_inventory_open(false);
             inventory_store(&g_inv, g_creative, m);
         } else {
@@ -569,6 +577,7 @@ static int run_viewer(void) {
         }
         m->day_time = game_time_get();
     }
+    if (play) { dfe_event_t ev = {.name = "player_leave", .text = "player"}; event_fire(&ev); }
     { dfe_event_t ev = {.name = "world_unload"}; event_fire(&ev); }
     server_shutdown();
     world_shutdown();
@@ -584,16 +593,22 @@ static int run_viewer(void) {
         perf_shutdown();
         hud_shutdown();
         textures_destroy();
+        menu_gl_shutdown();
         ui_shutdown();
         window_destroy();
     }
-    return 0;
+    return menu_return_to_title_requested() ? 2 : 0;
 }
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0); /* keep log lines ordered with stderr and visible if the process is killed */
+    if (argc >= 2 && !strcmp(argv[1], "mod")) return modtool_run(argc, argv);
     if (!parse_args(argc, argv)) return 2;
     if (!setup_vfs()) return 1;
     if (g_opt.selftest) return selftest_run() == 0 ? 0 : 1;
-    return run_viewer();
+    int result;
+    do {
+        result = run_viewer();
+    } while (result == 2);
+    return result;
 }

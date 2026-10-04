@@ -1,7 +1,7 @@
 /* Hot reload for the things that are safe to swap while the game runs: shaders, the atmosphere file and presets.
  *
- * Blocks, textures and scripts are not reloaded. Block ids are baked into every loaded chunk and the texture array
- * is built once, so changing either live would corrupt the world; a restart is the honest answer and takes seconds.
+ * Content registries and scripts are reloaded transactionally. Block ids, textures and compiled renderer assets
+ * remain stable because they are baked into live chunks and meshes; changing those live would corrupt the world.
  * Detection polls file times through the virtual filesystem, so it also sees edits inside mod folders. */
 #include "dfe.h"
 
@@ -27,6 +27,8 @@ bool hot_reload_now(void) {
     all_ok &= report("presets", registry_load_presets() == 0, before);
     before = data_error_count();
     all_ok &= report("entity types", registry_load_entities() == 0, before);
+    before = data_error_count();
+    all_ok &= report("content", content_reload() == 0, before);
     gfx_apply();
     return all_ok;
 }

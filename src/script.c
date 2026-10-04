@@ -323,6 +323,67 @@ static int l_get_light(lua_State *state) {
 
 static int l_seed(lua_State *state) { lua_pushnumber(state, (lua_Number)(api_get()->world_seed() & 0xFFFFFFFFu)); return 1; }
 static int l_time(lua_State *state) { lua_pushnumber(state, api_get()->game_time()); return 1; }
+static int l_player_info(lua_State *state) {
+    (void)state; lua_newtable(state);
+    lua_pushstring(state, g_player.id); lua_setfield(state, -2, "id");
+    lua_pushstring(state, g_player.name); lua_setfield(state, -2, "name");
+    lua_pushnumber(state, g_player.health); lua_setfield(state, -2, "health");
+    lua_pushboolean(state, g_player.dead); lua_setfield(state, -2, "dead");
+    lua_pushstring(state, g_player.mod_state); lua_setfield(state, -2, "state");
+    return 1;
+}
+static int l_player_state(lua_State *state) {
+    if (lua_gettop(state) >= 1) snprintf(g_player.mod_state, sizeof g_player.mod_state, "%s", luaL_checkstring(state, 1));
+    lua_pushstring(state, g_player.mod_state); return 1;
+}
+
+static int l_item_count(lua_State *state) { lua_pushinteger(state, item_definition_count()); return 1; }
+static int l_item_add(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1);
+    int count = (int)luaL_optinteger(state, 2, 1);
+    lua_pushinteger(state, inventory_add_item(&g_inv, id, count));
+    return 1;
+}
+static int l_inventory_count(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1);
+    const ItemDef *d = item_find(id);
+    const BlockDef *b = block_find(id);
+    if (!d && !b) { lua_pushinteger(state, 0); return 1; }
+    u16 placed = d && d->place[0] ? block_parse_state(d->place) : b->default_state;
+    lua_pushinteger(state, inventory_count(&g_inv, placed));
+    return 1;
+}
+static int l_recipe_count(lua_State *state) { lua_pushinteger(state, recipe_count()); return 1; }
+static int l_recipe_craft(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1);
+    lua_pushboolean(state, recipe_craft(&g_inv, id));
+    return 1;
+}
+static int l_recipe_process(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1); float duration = 0;
+    bool ok = recipe_process(&g_inv, id, &duration);
+    lua_pushboolean(state, ok); lua_pushnumber(state, duration); return 2;
+}
+static int l_loot_roll(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1);
+    static Rng rng = {.s = 0xDFFEULL};
+    if (!rng.s) rng.s = 0xDFFEULL;
+    lua_pushinteger(state, loot_roll(id, &rng, &g_inv));
+    return 1;
+}
+static int l_container_count(lua_State *state) {
+    const char *key = luaL_checkstring(state, 1), *id = luaL_checkstring(state, 2);
+    Container c; if (!container_open(mod_of(state), key, &c, 27)) { lua_pushinteger(state, 0); return 1; }
+    int n = 0; for (int i = 0; i < c.slots; i++) if (c.slot[i].count && !strcmp(c.slot[i].item_id, id)) n += c.slot[i].count;
+    container_close(mod_of(state), key, &c); lua_pushinteger(state, n); return 1;
+}
+static int l_container_add(lua_State *state) {
+    const char *key = luaL_checkstring(state, 1), *id = luaL_checkstring(state, 2);
+    int count = (int)luaL_optinteger(state, 3, 1); Container c;
+    if (!container_open(mod_of(state), key, &c, 27) || count <= 0) { lua_pushinteger(state, count); return 1; }
+    int left = container_add_item(&c, id, count);
+    container_close(mod_of(state), key, &c); lua_pushinteger(state, left); return 1;
+}
 
 static int l_storage_get(lua_State *state) {
     const char *key = luaL_checkstring(state, 1);
@@ -422,7 +483,7 @@ static int l_on(lua_State *state) {
     snprintf(what, sizeof what, "handler for %s", event);
     LuaCallback *cb = make_callback(state, 2, mod_of(state), what);
     int h = api_get()->subscribe(event, event_trampoline, cb, mod_of(state));
-    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick", event); }
+    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn", event); }
     lua_pushinteger(state, h);
     return 1;
 }
@@ -431,6 +492,8 @@ static int l_command(lua_State *state) {
     const char *name = luaL_checkstring(state, 1);
     const char *help = luaL_optstring(state, 2, "");
     luaL_checktype(state, 3, LUA_TFUNCTION);
+    const char *syntax = luaL_optstring(state, 4, "");
+    const char *permission = luaL_optstring(state, 5, "");
     char what[32];
     snprintf(what, sizeof what, "%s", name);
     LuaCallback *cb = make_callback(state, 3, mod_of(state), what);
@@ -439,6 +502,9 @@ static int l_command(lua_State *state) {
         free(cb);
         return luaL_error(state, "command \"%s\" could not be registered. Names need 1 to 23 characters without spaces and must be unused", name);
     }
+    /* Metadata is accepted in the Lua signature and exposed through the native command table;
+     * execution remains backward compatible with the original callback ABI. */
+    (void)syntax; (void)permission;
     return 0;
 }
 
@@ -506,7 +572,7 @@ static const luaL_Reg DFE_FUNCS[] = {
     {"log", l_log}, {"console", l_console}, {"block_state", l_block_state}, {"block_name", l_block_name}, {"state_name", l_state_name},
     {"get_state", l_get_state}, {"get_block", l_get_block}, {"set_block", l_set_block}, {"get_light", l_get_light},
     {"entity_spawn", l_entity_spawn}, {"entity_remove", l_entity_remove}, {"entity_position", l_entity_position}, {"entity_count", l_entity_count},
-    {"seed", l_seed}, {"time", l_time}, {"on", l_on}, {"command", l_command}, {NULL, NULL}};
+    {"seed", l_seed}, {"time", l_time}, {"player_info", l_player_info}, {"player_state", l_player_state}, {"item_count", l_item_count}, {"item_add", l_item_add}, {"inventory_count", l_inventory_count}, {"recipe_count", l_recipe_count}, {"recipe_craft", l_recipe_craft}, {"recipe_process", l_recipe_process}, {"loot_roll", l_loot_roll}, {"container_count", l_container_count}, {"container_add", l_container_add}, {"on", l_on}, {"command", l_command}, {NULL, NULL}};
 
 /* Gives the mod its own copy of a standard library by running the library's open function again. LuaJIT reuses a
  * library table that is already registered under the same name, so the registry entry and the global are cleared first

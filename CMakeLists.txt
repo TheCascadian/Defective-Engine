@@ -80,6 +80,7 @@ add_library(dfe_engine STATIC
   src/entity.c
   src/json.c
   src/registry.c
+  src/content.c
   src/world.c
   src/light.c
   src/gen.c
@@ -98,6 +99,7 @@ add_library(dfe_engine STATIC
   src/inventory.c
   src/interact.c
   src/server.c
+  src/modtool.c
   src/hud.c
   src/selftest.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)

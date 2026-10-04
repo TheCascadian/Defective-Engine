@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"DFE tag","type":"object","properties":{"replace":{"type":"boolean"},"values":{"type":"array","items":{"type":"string","pattern":"^#?[a-z0-9_]+:[a-z0-9_]+$"}}},"required":["values"],"additionalProperties":false}

@@ -140,6 +140,7 @@ void settings_defaults(void) {
     memset(&g_settings, 0, sizeof g_settings);
     snprintf(g_settings.preset, sizeof g_settings.preset, "%s", DEFAULT_PRESET);
     g_settings.dynamic_resolution = -1;
+    g_settings.ui_scale = -1;
     g_settings.render_scale = 1.0f;
     g_settings.fov_deg = DEFAULT_FOV;
     g_settings.vsync = true;
@@ -163,6 +164,7 @@ void settings_load(void) {
     snprintf(g_settings.preset, sizeof g_settings.preset, "%s", json_str(root, "preset", g_settings.preset));
     g_settings.render_distance = CLAMP(json_int(root, "render_distance", 0), 0, MAX_RENDER_DISTANCE);
     g_settings.dynamic_resolution = CLAMP(json_int(root, "dynamic_resolution", -1), -1, 1);
+    g_settings.ui_scale = CLAMP(json_int(root, "ui_scale", -1), -1, 4);
     g_settings.render_scale = CLAMP((float)json_num(root, "render_scale", 1.0), MIN_SCALE_FLOOR, 1.0f);
     g_settings.fov_deg = CLAMP((float)json_num(root, "fov", DEFAULT_FOV), MIN_FOV, MAX_FOV);
     g_settings.vsync = json_bool(root, "vsync", true);
@@ -181,8 +183,8 @@ void settings_load(void) {
 bool settings_save(void) {
     char text[768];
     int n = snprintf(text, sizeof text,
-                     "{\n  \"preset\": \"%s\",\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s\n}\n",
-                     g_settings.preset, g_settings.render_distance, g_settings.dynamic_resolution, g_settings.render_scale, g_settings.fov_deg,
+                     "{\n  \"preset\": \"%s\",\n  \"ui_scale\": %d,\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s\n}\n",
+                     g_settings.preset, g_settings.ui_scale, g_settings.render_distance, g_settings.dynamic_resolution, g_settings.render_scale, g_settings.fov_deg,
                      g_settings.vsync ? "true" : "false", g_settings.shadows_off ? "false" : "true", g_settings.shadow_quality,
                      g_settings.godrays_off ? "false" : "true", g_settings.godray_quality, g_settings.fog_off ? "false" : "true", g_settings.fog_quality,
                      g_settings.auto_jump_off ? "false" : "true", g_settings.view_bob_off ? "false" : "true", g_settings.motion_fx_off ? "false" : "true");

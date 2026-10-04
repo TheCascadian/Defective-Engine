@@ -6,8 +6,8 @@ Three tiers are available. Use the lowest tier that does the job.
 
 | Tier | What you write | Sandbox | Use it for |
 |------|----------------|---------|------------|
-| 1. Data and assets | JSON, PNG and GLSL files | Not applicable, no code runs | New blocks, textures, entity types, quality presets, world settings, shader packs, replacing base content |
-| 2. Lua scripts | `.lua` files | Yes, bounded memory and instructions | Commands, reacting to events, editing the world, spawning entities |
+| 1. Data and assets | JSON, PNG and GLSL files | Not applicable, no code runs | Blocks, items, recipes, loot tables, tags, textures, entity types, quality presets, world settings and shader packs |
+| 2. Lua scripts | `.lua` files | Yes, bounded memory and instructions | Commands, events, world edits, inventory and item operations, containers and entities |
 | 3. Native plugins | A C shared library | No, full privileges | Work that needs native speed or an external library |
 
 Contents
@@ -25,6 +25,7 @@ Contents
 11. [Developing with hot reload](#developing-with-hot-reload)
 12. [Performance and budgets for mod authors](#performance-and-budgets-for-mod-authors)
 13. [Limits and what is not available yet](#limits-and-what-is-not-available-yet)
+14. [Command-line tools and schemas](#command-line-tools-and-schemas)
 
 ---
 
@@ -78,6 +79,10 @@ mods/
   mymod/
     mod.json                 required manifest
     data/<namespace>/blocks/<name>.json       block definitions
+    data/<namespace>/items/<name>.json        item definitions
+    data/<namespace>/tags/<registry>/<name>.json  registry tags
+    data/<namespace>/recipes/<name>.json      crafting and processing recipes
+    data/<namespace>/loot_tables/<name>.json  loot tables
     data/<namespace>/worldgen/default.json    world generation settings
     data/<namespace>/atmosphere/default.json  sky colours, day length, clouds and weather
     data/<namespace>/presets/<id>.json        quality presets
@@ -118,6 +123,7 @@ A namespace is the first part of every id: in `base:stone`, `base` is the namesp
 | `version` | yes | Three numbers, `major.minor.patch`. |
 | `name` | no | Display name. Defaults to the id. |
 | `api` | no | The mod API major version the mod was written for. Defaults to the current one. A mod that targets a different major version is refused with a message. The current version is 1. |
+| `schema` | no | Manifest schema version. Defaults to 1; other versions are refused. |
 | `depends` | no | Array of dependency strings, at most 16. See below. |
 | `load_after` | no | Array of mod ids, at most 8. Load after these if they are installed, without requiring them. |
 | `script` | no | Path of the entry Lua script, relative to the mod folder. |
@@ -410,6 +416,31 @@ Because later mods win, replacing base content needs no special syntax: provide 
 
 The `retexture`, `highsea` and `warmgrade` example mods do exactly this.
 
+### Items, tags, recipes and loot tables
+
+These registries are loaded from each mod's `data/<namespace>/` directory. The file name supplies the id suffix, for example `data/mymod/items/iron_hat.json` defines `mymod:iron_hat`.
+
+An item definition can represent a stackable item, a placeable block item, or equipment:
+
+```json
+{
+  "type": "armor",
+  "slot": "head",
+  "durability": 200,
+  "protection": 2,
+  "max_stack": 1,
+  "tags": ["mymod:equipment"]
+}
+```
+
+`place` names a block placed by the item. `max_stack` is clamped to 1..64; durable and equipped items stack to one. Equipment slots are `head`, `chest`, `legs` and `feet`. Items may also define `damage` and `protection` values.
+
+Tag files live under `data/<namespace>/tags/<registry>/<name>.json`. For example, `data/mymod/tags/items/metal.json` can contain `{"values":["base:iron_ingot","#othermod:metal"]}`. Entries are namespaced ids or references to another tag prefixed with `#`; `replace: true` clears earlier contributions to the same tag.
+
+Recipes live under `data/<namespace>/recipes/`. `type` may be `shaped`, `shapeless` or `processing`; results use an item id and optional count. Shaped recipes use up to three rows of three characters and a `key` map. Shapeless and processing recipes use an `ingredients` array; an ingredient may be an item id or `#tag`, with an optional count. Processing recipes may set `time` in seconds. Loot tables live under `data/<namespace>/loot_tables/`; each `pools` entry names an item and may set `min`, `max` and `chance`.
+
+The JSON schemas under `sdk/schemas/` are editor aids for these files. Runtime validation remains authoritative and reports errors during startup.
+
 ---
 
 ## Tier 2: Lua scripting
@@ -476,12 +507,31 @@ A state is an integer that identifies one block with one set of property values.
 | `dfe.set_block(x, y, z, block)` | boolean | Sets the block. `block` is a name or state text (a string) or a state number. Raises an error for an unknown name. Returns `false` if the position is unloaded. Lighting updates automatically. Does not fire `block_place` or `block_break`. |
 | `dfe.get_light(x, y, z)` | four integers or `nil` | Sky, red, green and blue light, each 0 to 15. |
 
-#### World and time
+#### World, time and player
 
 | Function | Description |
 |----------|-------------|
 | `dfe.seed()` | The low 32 bits of the world seed as a number. |
 | `dfe.time()` | Simulated seconds since the world was created. It advances 0.05 seconds per game tick and is saved with the world. |
+| `dfe.player_info()` | Table containing the current player's `id`, `name`, `health`, `dead` and mod `state`. |
+| `dfe.player_state()` | Return the player's saved mod state string. |
+| `dfe.player_state(value)` | Set the player's saved mod state string. It is shared, not namespaced per mod. |
+
+#### Items, inventory and containers
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `dfe.item_count()` | integer | Number of loaded item definitions. |
+| `dfe.item_add(item_id, count)` | integer | Add items to the player inventory; returns the count that did not fit. `count` defaults to 1. |
+| `dfe.inventory_count(item_id)` | integer | Count the item or placeable block item in the player inventory. |
+| `dfe.recipe_count()` | integer | Number of loaded recipes. |
+| `dfe.recipe_craft(recipe_id)` | boolean | Craft one matching recipe from the player's inventory. |
+| `dfe.recipe_process(recipe_id)` | boolean, seconds | Process one matching recipe; the second return value is its configured duration. |
+| `dfe.loot_roll(table_id)` | integer | Roll a loaded loot table and add the results to the player's inventory; returns the number added. |
+| `dfe.container_count(key, item_id)` | integer | Count an item in this mod's save-backed container identified by `key`. |
+| `dfe.container_add(key, item_id, count)` | integer | Add items to that container; returns the count that did not fit. `count` defaults to 1. |
+
+Container keys are private to the calling mod and persist in the active world save. The inventory helpers operate on the active player; use the player-related events to react to changes. They do not expose arbitrary player position or movement control.
 
 #### Entities
 
@@ -530,6 +580,13 @@ end)
 | `world_unload` | Before a world closes | none | No |
 | `random_tick` | Each game tick, a few randomly chosen blocks near the player, for blocks with `random_tick: true` | `x`, `y`, `z`, `state` | No |
 | `command` | A console line matched no command | `text`, the full line | Yes: return true to mark it handled |
+| `item_use` | The player uses the held item | `x` (inventory slot), `y` (held block state), `text` (item id) | Yes |
+| `inventory_change` | An item is added by an engine/mod inventory helper | `text` (item id) | Yes: cancels that addition |
+| `container_open`, `container_close` | A mod opens or closes its save-backed container | `text` (`mod:key`) | Yes |
+| `player_join`, `player_leave` | A player session starts or ends | `text` (`player`) | No |
+| `player_damage`, `player_death`, `player_respawn` | The player is damaged, dies or respawns | `name` | Damage and death events can be cancelled |
+| `entity_spawn` | An entity is about to spawn | `text` (entity type id) | Yes |
+| `entity_damage`, `entity_death` | An entity is damaged or dies | `name` | Damage and death events can be cancelled |
 
 Every table also has a `name` field with the event name.
 
@@ -696,7 +753,7 @@ The README explains how to read the report and decide whether a frame is CPU or 
 
 Stated plainly so that mod authors can plan.
 
-* Mods cannot read or change the player or inventory from Lua yet. `block_place` and `block_break` fire for the player's own edits and for the `setblock` command.
+* Lua can read basic player information and per-mod player state, and can add/count inventory items, craft/process recipes, roll loot and use save-backed containers. It cannot read or change arbitrary player position or directly inspect individual inventory slots.
 * Lua world generators, data-driven biomes, ores and structures, and custom screens are planned and are not part of mod API 1. Block, texture, entity type, preset, atmosphere, shader and world setting data are available now.
 * Entities have no scripted behaviour, no health, no models beyond the two-box shape and no collision with the player or each other, and they are not saved with the world. Their movement is a wander; a mod that wants other behaviour can move them by removing and respawning, or wait for the behaviour API.
 * Mods can persist structured state under the active world save through `dfe.storage`. Data is namespaced by mod id and survives save/reload. The value is JSON-backed, so tables, arrays, booleans, numbers and strings are all valid. Block edits and player state persist because the world is saved, and the mod storage is part of the same save stream.
@@ -706,3 +763,17 @@ Stated plainly so that mod authors can plan.
 * Hot reload covers shaders, the atmosphere file, presets and entity types only; see [Developing with hot reload](#developing-with-hot-reload).
 * Only one mod can replace a given shader; the last in load order wins. There is no merging of shader changes.
 * Native plugins and the Windows build have not been tested on Windows yet.
+
+---
+
+## Command-line tools and schemas
+
+Run these commands from the repository root:
+
+```
+./build/dfe mod validate path/to/mod
+./build/dfe mod test path/to/mod
+./build/dfe mod package path/to/mod -o mymod.dfe.zip
+```
+
+`validate` checks the manifest and JSON registry files. `test` currently performs the same validation; it does not run the game or mod scripts. `package` validates first, then creates a zip archive (the `zip` utility must be installed). Schemas in `sdk/schemas/` cover mod manifests, items, recipes, loot tables, tags and save data. The runtime loader may enforce additional semantic rules beyond a JSON schema.

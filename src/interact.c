@@ -62,6 +62,30 @@ static float break_time(u16 state) {
     return g_creative ? 0.0f : b->hardness;
 }
 
+/* Left click on an entity hits it. Returns true while an entity is the nearer target so the block behind is not mined. */
+static bool update_attacking(const Player *p) {
+    Interact *it = &g_interact;
+    V3 dir = view_dir(p);
+    float dist = 0;
+    int id = entity_raycast(player_eye(p), dir, REACH_DISTANCE, &dist);
+    if (!g_in.mouse_buttons[GLFW_MOUSE_BUTTON_LEFT]) it->attack_latch = false;
+    if (!id || (it->target.hit && it->target.dist < dist)) return it->attack_latch;
+    if (g_in.mouse_buttons[GLFW_MOUSE_BUTTON_LEFT]) it->attack_latch = true;
+    if (g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && it->attack_cooldown <= 0.0f) {
+        const ItemStack *held = &g_inv.slot[g_inv.selected];
+        const ItemDef *d = held->count && held->item_id[0] ? item_find(held->item_id) : NULL;
+        float dmg = d ? MAX(d->damage, 1.0f) : 1.0f;
+        DamageSource src = {.kind = DAMAGE_PLAYER};
+        it->attack_cooldown = 0.4f;
+        if (entity_damage(id, g_creative ? 1000.0f : dmg, &src)) {
+            EntityInfo info;
+            if (entity_get(id, &info) && info.health > 0.0f)
+                entity_set_velocity(id, v3(info.vel.x + dir.x * 6.0f, MAX(info.vel.y, 0.0f) + 4.0f, info.vel.z + dir.z * 6.0f));
+        }
+    }
+    return true;
+}
+
 static void update_breaking(float dt) {
     Interact *it = &g_interact;
     bool held = g_in.mouse_buttons[GLFW_MOUSE_BUTTON_LEFT] && it->target.hit;
@@ -95,6 +119,12 @@ static void update_placing(void) {
     if (!g_in.mouse_buttons[GLFW_MOUSE_BUTTON_RIGHT] || !it->target.hit || it->place_cooldown > 0) return;
     ItemStack *held = &g_inv.slot[g_inv.selected];
     if (!held->count) return;
+    if (held->state == STATE_AIR) { /* a non-block item: only the item_use event applies */
+        dfe_event_t use = {.name="item_use", .x=(float)g_inv.selected, .y=0, .text=held->item_id};
+        it->place_cooldown = INTERACT_REPEAT_S;
+        event_fire(&use);
+        return;
+    }
     dfe_event_t use = {.name="item_use", .x=(float)g_inv.selected, .y=(float)held->state, .text=held->item_id};
     if (event_fire(&use)) return;
     it->place_cooldown = INTERACT_REPEAT_S;
@@ -122,10 +152,12 @@ void interact_update(const Player *p, float dt, bool active) {
     Interact *it = &g_interact;
     it->place_cooldown = MAX(it->place_cooldown - dt, 0.0f);
     it->break_cooldown = MAX(it->break_cooldown - dt, 0.0f);
+    it->attack_cooldown = MAX(it->attack_cooldown - dt, 0.0f);
     raycast_blocks(player_eye(p), view_dir(p), REACH_DISTANCE, false, &it->target);
     if (!active) { it->breaking = false; it->break_progress = 0; return; }
     select_hotbar();
-    update_breaking(dt);
+    if (update_attacking(p)) { it->breaking = false; it->break_progress = 0; }
+    else update_breaking(dt);
     update_placing();
     pick_block();
 }

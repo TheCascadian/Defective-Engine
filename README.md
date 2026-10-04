@@ -144,6 +144,16 @@ For a useful report, attach the table from `tools/perf_matrix.py`, the `gl:` lin
 
 See [docs/MODDING.md](docs/MODDING.md) for the complete guide and API reference. Example mods are in `examples/mods`.
 
+### Screens and UI
+
+The engine provides a generic screen system for building data-driven interfaces. Screens are registered with definitions and populated with widgets (buttons, labels, lists, bars, slots). Screens can be opened modally or stacked, support keyboard navigation and callbacks, and are owned by C code or Lua scripts.
+
+Icons are data-driven, atlased textures loaded from `assets/<modid>/ui/icons.json` and `icons.png`. Missing icons fall back to a "missing" placeholder. Icons support fractional rendering for progress bars and cooldowns.
+
+### Entities and Items
+
+Entities (mobs) are data-driven, defined in `data/<modid>/entities/<name>.json`. Items are registry entries with properties and icons. Both support loot tables and dynamic spawning.
+
 ### Mod development tools
 
 Validate a mod folder, run its data/registry validation check, or package it as a zip:

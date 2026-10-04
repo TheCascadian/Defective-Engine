@@ -8,6 +8,7 @@
  * screen is left. */
 #include "dfe.h"
 #include "ui_widgets.h"
+#include "ui.h"
 #include <GLFW/glfw3.h>
 #include <time.h>
 
@@ -120,7 +121,15 @@ static bool hovered(float x, float y, float w, float h) {
 
 static bool clicked(float x, float y, float w, float h, int button) { return g_in.mouse_pressed[button] && hovered(x, y, w, h); }
 
-static float text_size(void) { return 8.0f * (float)g_s; }
+/* Text scale grows the fixed menu layout only as far as the text needs: widths by max(1, scale), button height to the text height plus padding. */
+static float text_size(void) { return ui_snap_text(8.0f * (float)g_s * ui_ui_text_scale()); }
+static float width_factor(void) { return MAX(1.0f, ui_ui_text_scale()); }
+#define UW(n) ui_snap(U(n) * width_factor())
+/* Two buttons side by side span exactly one wide button. */
+static float half_w(void);
+#define BH() ceilf(MAX(U(BTN_H), text_size() + U(4)))
+#define PITCH() (BH() + U(4))
+static float half_w(void) { return (UW(WIDE_W) - U(4)) * 0.5f; }
 
 /* Menu text relies on the engine-wide shadow rule in ui_text. */
 static void mc_text(float x, float y, float size, u32 color, const char *text) { ui_text(x, y, size, color, text); }
@@ -130,7 +139,7 @@ static void mc_text_centered(float cx, float y, float size, u32 color, const cha
 }
 
 static bool button(float x, float y, float w, const char *label, bool enabled) {
-    return uiw_button(0, (UIWRect){x, y, w, U(BTN_H)}, label, enabled, text_size());
+    return uiw_button(0, (UIWRect){x, y, w, BH()}, label, enabled, text_size());
 }
 
 static int index_of_int(const int *list, int count, int value) {
@@ -200,8 +209,8 @@ static float draw_logo(float cx, float y, const char *splash) {
 /* -------------------------------------------------------- text input field */
 
 static void text_field(float cx, float y, int id, const char *label, char *value, bool active, bool names_only) {
-    float w = U(WIDE_W), x = cx - w * 0.5f, size = text_size();
-    uiw_text_field(id, (UIWRect){x, y, w, U(BTN_H)}, label, value, FIELD_CAP, active, names_only, size);
+    float w = UW(WIDE_W), x = cx - w * 0.5f, size = text_size();
+    uiw_text_field(id, (UIWRect){x, y, w, BH()}, label, value, FIELD_CAP, active, names_only, size);
 }
 
 /* ---------------------------------------------------------- options screen */
@@ -251,6 +260,13 @@ static void step_shadow_quality(int step) {
     snprintf(g_settings.shadow_quality, sizeof g_settings.shadow_quality, "%s", cur ? shadow_level_at(cur - 1)->id : "");
 }
 
+static void step_shadow_distance(int step) {
+    static const int choices[] = {0, 64, 96, 160, 256, 384, 512};
+    int cur = 0;
+    for (int i = 0; i < ARRAY_LEN(choices); i++) if (g_settings.shadow_distance == choices[i]) cur = i;
+    g_settings.shadow_distance = choices[wrap(cur + step, ARRAY_LEN(choices))];
+}
+
 static void step_godray_quality(int step) {
     int n = godray_level_count() + 1, cur = 0;
     for (int i = 0; i < godray_level_count(); i++) if (!strcmp(godray_level_at(i)->id, g_settings.godray_quality)) cur = i + 1;
@@ -269,7 +285,7 @@ static void step_fov(int step) { g_settings.fov_deg = (float)CLAMP((int)g_settin
 
 /* One "Label: value" button. Left click advances, right click goes back. */
 static int option_button(int id, float x, float y, const char *label, const char *value) {
-    return uiw_cycle_row(id, (UIWRect){x, y, U(150), U(BTN_H)}, label, value, true, text_size());
+    return uiw_cycle_row(id, (UIWRect){x, y, UW(150), BH()}, label, value, true, text_size());
 }
 
 static void screen_title(float cx, float y, const char *title) { mc_text_centered(cx, y, text_size() * 1.2f, COL_WHITE, title); }
@@ -277,6 +293,7 @@ static void screen_title(float cx, float y, const char *title) { mc_text_centere
 /* These pages are sub-screens of Options, so the title menu and pause menu share the same flow. */
 static bool g_in_controls;
 static bool g_in_graphics;
+static bool g_in_interface;
 
 /* Data page: wiping every world needs two separate confirmations. Stage 0 is the page, 1 the first warning, 2 the last. */
 static bool g_in_data;
@@ -315,7 +332,7 @@ static void delete_all_worlds(void) {
 }
 
 static bool data_rows(float cx, int height) {
-    float bx = cx - U(WIDE_W) * 0.5f;
+    float bx = cx - UW(WIDE_W) * 0.5f;
     int n = count_worlds();
     if (g_wipe_stage == 1 || g_wipe_stage == 2) {
         char line[128];
@@ -323,14 +340,14 @@ static bool data_rows(float cx, int height) {
         snprintf(line, sizeof line, g_wipe_stage == 1 ? "This will remove all %d saved worlds." : "Last chance: %d worlds will be lost forever. This cannot be undone.", n);
         mc_text_centered(cx, U(62), text_size(), COL_RED, line);
         float y = U(100);
-        if (uiw_button_action(g_wipe_stage == 1 ? 14 : 15, (UIWRect){bx, y, U(WIDE_W), U(BTN_H)},
+        if (uiw_button_action(g_wipe_stage == 1 ? 14 : 15, (UIWRect){bx, y, UW(WIDE_W), BH()},
                               g_wipe_stage == 1 ? "Yes, continue" : "Delete Everything", true, text_size(), COL_RED) == 1) {
             if (g_wipe_stage == 1) g_wipe_stage = 2;
             else { delete_all_worlds(); g_wipe_stage = 0; }
             return false;
         }
-        y += U(BTN_PITCH);
-        if (button(bx, y, U(WIDE_W), "Cancel", true)) g_wipe_stage = 0;
+        y += PITCH();
+        if (button(bx, y, UW(WIDE_W), "Cancel", true)) g_wipe_stage = 0;
         return false;
     }
     screen_title(cx, U(15), "Data");
@@ -340,31 +357,31 @@ static bool data_rows(float cx, int height) {
     } else {
         char label[64];
         snprintf(label, sizeof label, "Delete All Worlds (%d)", n);
-        if (button(bx, y, U(WIDE_W), label, n > 0)) { g_wipe_stage = 1; g_data_message[0] = 0; }
-        if (g_data_message[0]) mc_text_centered(cx, y + U(BTN_PITCH), text_size() * 0.9f, COL_GREY, g_data_message);
+        if (button(bx, y, UW(WIDE_W), label, n > 0)) { g_wipe_stage = 1; g_data_message[0] = 0; }
+        if (g_data_message[0]) mc_text_centered(cx, y + PITCH(), text_size() * 0.9f, COL_GREY, g_data_message);
     }
-    float done_y = MAX(y + U(BTN_PITCH) + U(30), (float)height - U(34));
-    if (button(bx, done_y, U(WIDE_W), "Done", true)) { g_in_data = false; g_data_message[0] = 0; }
+    float done_y = MAX(y + PITCH() + U(30), (float)height - U(34));
+    if (button(bx, done_y, UW(WIDE_W), "Done", true)) { g_in_data = false; g_data_message[0] = 0; }
     return false;
 }
 
 static bool controls_rows(float cx, int height) {
     screen_title(cx, U(15), "Controls");
-    UIWStack rows = uiw_vstack((UIWRect){cx - U(155), U(40), U(310), 0}, U(4));
-    UIWRect row = uiw_stack_next(&rows, U(BTN_H));
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, BH());
     UIWStack cells = uiw_hstack(row, U(10));
     UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     if (option_button(7, left.x, left.y, "Auto-Jump", g_settings.auto_jump_off ? "Off" : "On")) g_settings.auto_jump_off = !g_settings.auto_jump_off;
     if (option_button(8, right.x, right.y, "View Bobbing", g_settings.view_bob_off ? "Off" : "On")) g_settings.view_bob_off = !g_settings.view_bob_off;
-    row = uiw_stack_next(&rows, U(BTN_H));
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     if (option_button(9, left.x, left.y, "Motion Effects", g_settings.motion_fx_off ? "Off" : "On")) g_settings.motion_fx_off = !g_settings.motion_fx_off;
     float y = rows.cursor - rows.gap + U(2);
     mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, "Motion Effects: landing dip, sprint view widening and smooth stepping.");
     float done_y = MAX(y + U(30), (float)height - U(34));
-    if (button(cx - U(WIDE_W) * 0.5f, done_y, U(WIDE_W), "Done", true)) g_in_controls = false;
+    if (button(cx - UW(WIDE_W) * 0.5f, done_y, UW(WIDE_W), "Done", true)) g_in_controls = false;
     return false;
 }
 
@@ -376,8 +393,8 @@ static bool graphics_rows(float cx, int height) {
     const Preset *p = preset_find(g_settings.preset);
     int step;
     screen_title(cx, U(15), "Graphics Settings");
-    UIWStack rows = uiw_vstack((UIWRect){cx - U(155), U(40), U(310), 0}, U(4));
-    UIWRect row = uiw_stack_next(&rows, U(BTN_H));
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, BH());
     UIWStack cells = uiw_hstack(row, U(10));
     UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -386,7 +403,7 @@ static bool graphics_rows(float cx, int height) {
     else snprintf(v, sizeof v, "preset (%d)", p ? p->render_distance : 0);
     if ((step = option_button(2, right.x, right.y, "Render Distance", v))) { step_render_distance(step); changed = true; }
 
-    row = uiw_stack_next(&rows, U(30));
+    row = uiw_stack_next(&rows, MAX(U(30), text_size() * 1.9f));
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -399,14 +416,14 @@ static bool graphics_rows(float cx, int height) {
     if (uiw_slider(&g_settings_ui, 4, slider, &g_settings.render_scale, SCALE_MIN, SCALE_MAX, SCALE_STEP)) changed = true;
     uiw_tooltip(right, "Render scale (0.50 to 1.00)", text_size());
 
-    row = uiw_stack_next(&rows, U(BTN_H));
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     snprintf(v, sizeof v, "%d", (int)g_settings.fov_deg);
     if ((step = option_button(5, left.x, left.y, "FOV", v))) { step_fov(step); changed = true; }
     if ((step = option_button(6, right.x, right.y, "VSync", g_settings.vsync ? "On" : "Off"))) { g_settings.vsync = !g_settings.vsync; changed = true; }
-    row = uiw_stack_next(&rows, U(BTN_H));
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -417,7 +434,14 @@ static bool graphics_rows(float cx, int height) {
     if (sl) snprintf(v, sizeof v, "%s", sl->name);
     else snprintf(v, sizeof v, "Preset (%s)", auto_level ? auto_level->name : "none");
     if ((step = option_button(11, right.x, right.y, "Shadow Quality", v))) { step_shadow_quality(step); changed = true; }
-    row = uiw_stack_next(&rows, U(BTN_H));
+    row = uiw_stack_next(&rows, BH());
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if (g_settings.shadow_distance > 0) snprintf(v, sizeof v, "%d blocks", g_settings.shadow_distance);
+    else snprintf(v, sizeof v, "Preset");
+    if ((step = option_button(12, left.x, left.y, "Shadow Distance", v))) { step_shadow_distance(step); changed = true; }
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -435,7 +459,7 @@ static bool graphics_rows(float cx, int height) {
     if (gq) snprintf(v, sizeof v, "%s", gq->name);
     else snprintf(v, sizeof v, "Preset (%s)", auto_gl ? auto_gl->name : "none");
     if ((step = option_button(21, right.x, right.y, "Godray Quality", v))) { step_godray_quality(step); changed = true; }
-    row = uiw_stack_next(&rows, U(BTN_H));
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -456,17 +480,21 @@ static bool graphics_rows(float cx, int height) {
     mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, "Right click steps backwards. Render scale applies while dynamic resolution is off.");
     if (changed) settings_changed();
     float done_y = MAX(y + U(22), (float)height - U(34));
-    return button(cx - U(WIDE_W) * 0.5f, done_y, U(WIDE_W), "Done", true);
+    return button(cx - UW(WIDE_W) * 0.5f, done_y, UW(WIDE_W), "Done", true);
 }
 
-/* The options hub keeps navigation and player-facing preferences separate from rendering controls. */
-static bool settings_rows(float cx, int height) {
-    if (g_in_controls) return controls_rows(cx, height);
-    if (g_in_graphics) return graphics_rows(cx, height);
-    if (g_in_data) return data_rows(cx, height);
-    screen_title(cx, U(15), "Options");
-    UIWStack rows = uiw_vstack((UIWRect){cx - U(155), U(40), U(310), 0}, U(4));
-    UIWRect row = uiw_stack_next(&rows, U(BTN_H));
+/* Steps a float setting through lo..hi in 0.25 increments, wrapping. */
+static void step_scale(float *v, float lo, float hi, int step) {
+    int n = (int)((hi - lo) / 0.25f + 0.5f) + 1, cur = CLAMP((int)((*v - lo) / 0.25f + 0.5f), 0, n - 1);
+    *v = lo + 0.25f * (float)wrap(cur + step, n);
+}
+
+static bool interface_rows(float cx, int height) {
+    screen_title(cx, U(15), "Interface");
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    char v[16];
+    int step;
+    UIWRect row = uiw_stack_next(&rows, BH());
     UIWStack cells = uiw_hstack(row, U(10));
     UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
@@ -475,21 +503,49 @@ static bool settings_rows(float cx, int height) {
         settings_changed();
         gui_scale(g_win.width, g_win.height);
     }
-    if (button(right.x, right.y, right.w, "Graphics Settings...", true)) g_in_graphics = true;
-    row = uiw_stack_next(&rows, U(BTN_H));
+    snprintf(v, sizeof v, "%d%%", (int)(g_settings.ui_text_scale * 100.0f + 0.5f));
+    if ((step = option_button(30, right.x, right.y, "UI Text", v))) { step_scale(&g_settings.ui_text_scale, 0.75f, 2.0f, step); settings_changed(); }
+    snprintf(v, sizeof v, "%d%%", (int)(g_settings.hud_scale * 100.0f + 0.5f));
+    row = uiw_stack_next(&rows, BH());
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if ((step = option_button(31, left.x, left.y, "HUD Scale", v))) { step_scale(&g_settings.hud_scale, 0.5f, 3.0f, step); settings_changed(); }
+    snprintf(v, sizeof v, "%d%%", (int)(g_settings.hud_text_scale * 100.0f + 0.5f));
+    if ((step = option_button(32, right.x, right.y, "HUD Text", v))) { step_scale(&g_settings.hud_text_scale, 0.75f, 2.0f, step); settings_changed(); }
+    mc_text_centered(cx, rows.cursor + U(5), text_size() * 0.85f, COL_GREY, "Scales apply immediately and save when leaving Options.");
+    float done_y = MAX(rows.cursor + U(24), (float)height - U(34));
+    return button(cx - UW(WIDE_W) * 0.5f, done_y, UW(WIDE_W), "Done", true);
+}
+
+/* The options hub keeps navigation and player-facing preferences separate from rendering controls. */
+static bool settings_rows(float cx, int height) {
+    if (g_in_controls) return controls_rows(cx, height);
+    if (g_in_graphics) return graphics_rows(cx, height);
+    if (g_in_interface) return interface_rows(cx, height);
+    if (g_in_data) return data_rows(cx, height);
+    screen_title(cx, U(15), "Options");
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, BH());
+    UIWStack cells = uiw_hstack(row, U(10));
+    UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if (button(left.x, left.y, left.w, "Graphics Settings...", true)) g_in_graphics = true;
+    if (button(right.x, right.y, right.w, "Interface...", true)) g_in_interface = true;
+    row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     if (button(left.x, left.y, left.w, "Controls...", true)) g_in_controls = true;
     if (button(right.x, right.y, right.w, "Data...", true)) g_in_data = true;
-    mc_text_centered(cx, rows.cursor + U(5), text_size() * 0.85f, COL_GREY, "UI scale is applied immediately and saved when leaving Options.");
     float done_y = MAX(rows.cursor + U(24), (float)height - U(34));
-    return button(cx - U(WIDE_W) * 0.5f, done_y, U(WIDE_W), "Done", true);
+    return button(cx - UW(WIDE_W) * 0.5f, done_y, UW(WIDE_W), "Done", true);
 }
 
 static void leave_settings(void) {
     g_in_controls = false;
     g_in_graphics = false;
+    g_in_interface = false;
     g_in_data = false;
     g_wipe_stage = 0;
     /* Benchmarks never reach a menu, but the guard keeps a script from overwriting a player's file by accident. */
@@ -516,6 +572,7 @@ static bool settings_step_back(void) {
     if (g_in_data) { g_in_data = false; return true; }
     if (g_in_controls) { g_in_controls = false; return true; }
     if (g_in_graphics) { g_in_graphics = false; return true; }
+    if (g_in_interface) { g_in_interface = false; return true; }
     return false;
 }
 
@@ -528,21 +585,21 @@ void menu_back(void) {
 void menu_draw(int width, int height) {
     if (!menu_is_open()) return;
     gui_scale(width, height);
-    float cx = (float)width * 0.5f, bx = cx - U(WIDE_W) * 0.5f;
+    float cx = (float)width * 0.5f, bx = cx - UW(WIDE_W) * 0.5f;
     ui_rect_gradient(0, 0, (float)width, (float)height, rgba(16, 16, 16, 192), rgba(16, 16, 16, 208));
     if (g_screen == SCREEN_PAUSE) {
         float y = (float)height * 0.25f + U(24);
         screen_title(cx, y - U(34), "Game Menu");
-        if (button(bx, y, U(WIDE_W), "Back to Game", true)) menu_set_open(false);
-        y += U(BTN_PITCH);
-        if (button(bx, y, U(WIDE_W), "Options...", true)) g_screen = SCREEN_SETTINGS;
-        y += U(BTN_PITCH) + U(8);
-        if (button(bx, y, U(WIDE_W), "Save and Exit to Menu", true)) {
+        if (button(bx, y, UW(WIDE_W), "Back to Game", true)) menu_set_open(false);
+        y += PITCH();
+        if (button(bx, y, UW(WIDE_W), "Options...", true)) g_screen = SCREEN_SETTINGS;
+        y += PITCH() + U(8);
+        if (button(bx, y, UW(WIDE_W), "Save and Exit to Menu", true)) {
             g_return_to_title_requested = true;
             window_request_close();
         }
-        y += U(BTN_PITCH);
-        if (button(bx, y, U(WIDE_W), "Save and Quit Game", true)) { g_quit_requested = true; window_request_close(); }
+        y += PITCH();
+        if (button(bx, y, UW(WIDE_W), "Save and Quit Game", true)) { g_quit_requested = true; window_request_close(); }
     } else if (settings_rows(cx, height)) {
         leave_settings();
         g_screen = SCREEN_PAUSE;
@@ -641,7 +698,10 @@ static const char *selected_name(const TitleState *t) { return t->selected >= 0 
 static bool title_worlds(TitleState *t, int width, int height, char *world_out, size_t cap) {
     float cx = (float)width * 0.5f;
     float top = U(36), bottom = (float)height - U(64);
-    int rows = MAX(1, (int)((bottom - top) / U(ROW_H)));
+    float tsz = text_size();
+    /* A row holds the name, seed and date lines plus padding, so it grows with the text. */
+    float pitch = MAX(U(ROW_H), ceilf(tsz * 2.8f + U(10)));
+    int rows = MAX(1, (int)((bottom - top) / pitch));
     int max_scroll = MAX(0, t->worlds.n - rows);
     if (g_in.scroll != 0) t->scroll += g_in.scroll > 0 ? -1 : 1;
     if (key_pressed(GLFW_KEY_DOWN) && t->worlds.n) t->selected = MIN(t->selected + 1, t->worlds.n - 1);
@@ -658,16 +718,25 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
     ui_rect_gradient(0, bottom - U(4), (float)width, U(4), rgba(0, 0, 0, 0), rgba(0, 0, 0, 200));
     ensure_tiles();
 
-    float x = cx - U(LIST_W) * 0.5f, size = text_size();
+    float size = tsz;
+    float icon = pitch - U(4), list_w = UW(LIST_W);
+    for (int i = 0; i < t->worlds.n; i++) { /* widen the list to its widest label so no row text spills out */
+        char sl[96];
+        snprintf(sl, sizeof sl, "Seed: %s", t->info.d[i].seed);
+        float tw = MAX(ui_text_width(size, t->worlds.d[i]), MAX(ui_text_width(size * 0.9f, sl), ui_text_width(size * 0.9f, t->info.d[i].date)));
+        list_w = MAX(list_w, icon + U(3) + tw + U(8));
+    }
+    list_w = MIN(list_w, MAX(UW(LIST_W), (float)width - U(24)));
+    float x = cx - list_w * 0.5f;
     bool play = false;
     ui_clip(0, (int)top, width, (int)(bottom - top));
     for (int i = 0; i < rows && t->scroll + i < t->worlds.n; i++) {
         int idx = t->scroll + i;
-        float y = top + U(4) + (float)i * U(ROW_H);
-        float h = U(ROW_H) - U(4);
+        float y = top + U(4) + (float)i * pitch;
+        float h = pitch - U(4);
         if (idx == t->selected) {
-            ui_rect(x - U(1), y - U(1), U(LIST_W) + U(2), h + U(2), COL_WHITE);
-            ui_rect(x, y, U(LIST_W), h, COL_BLACK);
+            ui_rect(x - U(1), y - U(1), list_w + U(2), h + U(2), COL_WHITE);
+            ui_rect(x, y, list_w, h, COL_BLACK);
         }
         ui_image(g_grass_tex, x + U(1), y + U(1), h - U(2), h - U(2), 0, 0, 1, 1, COL_WHITE);
         mc_text(x + h + U(3), y + U(2), size, COL_WHITE, t->worlds.d[idx]);
@@ -675,7 +744,7 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
         snprintf(line, sizeof line, "Seed: %s", t->info.d[idx].seed);
         mc_text(x + h + U(3), y + U(2) + size + U(1), size * 0.9f, COL_GREY, line);
         mc_text(x + h + U(3), y + U(2) + size * 1.9f + U(2), size * 0.9f, COL_GREY, t->info.d[idx].date);
-        if (clicked(x, y, U(LIST_W), h, GLFW_MOUSE_BUTTON_LEFT) && hovered(0, top, (float)width, bottom - top)) {
+        if (clicked(x, y, list_w, h, GLFW_MOUSE_BUTTON_LEFT) && hovered(0, top, (float)width, bottom - top)) {
             double now = time_now_s();
             if (t->last_click == idx && now - t->last_click_time < DOUBLE_CLICK_S) play = true;
             t->selected = idx;
@@ -688,25 +757,32 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
     if (t->worlds.n > rows) {
         float track = bottom - top - U(8), bar = MAX(U(8), track * (float)rows / (float)t->worlds.n);
         float by = top + U(4) + (track - bar) * (max_scroll ? (float)t->scroll / (float)max_scroll : 0.0f);
-        ui_rect(x + U(LIST_W) + U(6), by, U(3), bar, rgba(180, 180, 180, 255));
+        ui_rect(x + list_w + U(6), by, U(3), bar, rgba(180, 180, 180, 255));
     }
     screen_title(cx, U(14), "Select World");
 
-    float row1 = (float)height - U(52), row2 = (float)height - U(28);
-    float bx = cx - U(152);
+    float row2 = (float)height - U(8) - BH(), row1 = row2 - PITCH();
+    /* Buttons size to their labels: each row's buttons share the widest fit, and the rows share one total width. */
+    float pad = U(12), gap = U(4);
+    float w1 = MAX(UW(150), MAX(ui_text_width(tsz, "Play Selected World"), ui_text_width(tsz, "Create New World")) + pad);
+    float third = MAX((UW(304) - U(8)) / 3.0f, MAX(ui_text_width(tsz, "Edit"), MAX(ui_text_width(tsz, "Delete"), ui_text_width(tsz, "Cancel"))) + pad);
+    float total = MAX(2 * w1 + gap, 3 * third + 2 * gap);
+    w1 = (total - gap) * 0.5f;
+    third = (total - 2 * gap) / 3.0f;
+    float bx = cx - total * 0.5f;
     bool has = selected_name(t) != NULL;
-    if (button(bx, row1, U(150), "Play Selected World", has) || (has && (key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER)))) play = true;
-    if (button(bx + U(154), row1, U(150), "Create New World", true)) {
+    if (button(bx, row1, w1, "Play Selected World", has) || (has && (key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER)))) play = true;
+    if (button(bx + w1 + gap, row1, w1, "Create New World", true)) {
         go(t, TS_CREATE);
         t->field = 0;
         t->name[0] = t->seed[0] = 0;
     }
-    if (button(bx, row2, U(98), "Edit", has)) {
+    if (button(bx, row2, third, "Edit", has)) {
         go(t, TS_EDIT);
         snprintf(t->name, sizeof t->name, "%s", selected_name(t));
     }
-    if (button(bx + U(103), row2, U(98), "Delete", has)) go(t, TS_DELETE);
-    if (button(bx + U(206), row2, U(98), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_MAIN);
+    if (button(bx + third + gap, row2, third, "Delete", has)) go(t, TS_DELETE);
+    if (button(bx + 2 * (third + gap), row2, third, "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_MAIN);
 
     if (play && has) {
         snprintf(world_out, cap, "%s", selected_name(t));
@@ -717,23 +793,23 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
 
 /* Returns true when the player asked for a new world; the choice is written to world_out and seed_out. */
 static bool title_create(TitleState *t, int width, int height, char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
-    float cx = (float)width * 0.5f, bx = cx - U(WIDE_W) * 0.5f;
+    float cx = (float)width * 0.5f, bx = cx - UW(WIDE_W) * 0.5f;
     dirt_background(width, height, 64);
     screen_title(cx, U(20), "Create New World");
     float y = U(60);
-    if (clicked(bx, y, U(WIDE_W), U(BTN_H), GLFW_MOUSE_BUTTON_LEFT)) t->field = 0;
-    y += U(BTN_H) + U(26);
-    if (clicked(bx, y, U(WIDE_W), U(BTN_H), GLFW_MOUSE_BUTTON_LEFT)) t->field = 1;
-    y += U(BTN_H) + U(16);
+    if (clicked(bx, y, UW(WIDE_W), BH(), GLFW_MOUSE_BUTTON_LEFT)) t->field = 0;
+    y += BH() + U(26);
+    if (clicked(bx, y, UW(WIDE_W), BH(), GLFW_MOUSE_BUTTON_LEFT)) t->field = 1;
+    y += BH() + U(16);
     if (key_pressed(GLFW_KEY_TAB)) t->field ^= 1;
     float field_y = U(60);
     text_field(cx, field_y, 10, "World Name", t->name, t->field == 0, true);
-    field_y += U(BTN_H) + U(26);
+    field_y += BH() + U(26);
     text_field(cx, field_y, 11, "Seed (empty for random, any text works)", t->seed, t->field == 1, false);
-    bool create = button(bx, y, U(WIDE_W), "Create New World", true) || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
-    y += U(BTN_PITCH);
-    if (button(bx, y, U(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_WORLDS);
-    if (t->message[0]) mc_text_centered(cx, y + U(BTN_PITCH), text_size() * 0.9f, COL_RED, t->message);
+    bool create = button(bx, y, UW(WIDE_W), "Create New World", true) || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
+    y += PITCH();
+    if (button(bx, y, UW(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_WORLDS);
+    if (t->message[0]) mc_text_centered(cx, y + PITCH(), text_size() * 0.9f, COL_RED, t->message);
     (void)height;
     if (!create) return false;
     if (!t->name[0]) { snprintf(t->message, sizeof t->message, "Enter a name for the world."); return false; }
@@ -748,24 +824,24 @@ static bool title_create(TitleState *t, int width, int height, char *world_out, 
 
 /* Renames the selected world's folder. */
 static void title_edit(TitleState *t, int width, int height) {
-    float cx = (float)width * 0.5f, bx = cx - U(WIDE_W) * 0.5f;
+    float cx = (float)width * 0.5f, bx = cx - UW(WIDE_W) * 0.5f;
     const char *old = selected_name(t);
     if (!old) { go(t, TS_WORLDS); return; }
     dirt_background(width, height, 64);
     screen_title(cx, U(20), "Edit World");
     float y = U(60);
     text_field(cx, y, 12, "World Name", t->name, true, true);
-    y += U(BTN_H) + U(8);
+    y += BH() + U(8);
     char info[96];
     snprintf(info, sizeof info, "Seed: %s   Last played: %s", t->info.d[t->selected].seed, t->info.d[t->selected].date);
     mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, info);
     y += U(24);
-    bool save = button(bx, y, U(WIDE_W), "Save Changes", t->name[0] != 0) || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
-    y += U(BTN_PITCH);
-    if (button(bx, y, U(WIDE_W), "Delete World", true)) go(t, TS_DELETE);
-    y += U(BTN_PITCH) + U(8);
-    if (button(bx, y, U(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_WORLDS);
-    if (t->message[0]) mc_text_centered(cx, y + U(BTN_PITCH), text_size() * 0.9f, COL_RED, t->message);
+    bool save = button(bx, y, UW(WIDE_W), "Save Changes", t->name[0] != 0) || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
+    y += PITCH();
+    if (button(bx, y, UW(WIDE_W), "Delete World", true)) go(t, TS_DELETE);
+    y += PITCH() + U(8);
+    if (button(bx, y, UW(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_WORLDS);
+    if (t->message[0]) mc_text_centered(cx, y + PITCH(), text_size() * 0.9f, COL_RED, t->message);
     if (!save || !t->name[0]) return;
     if (!strcmp(t->name, old)) { go(t, TS_WORLDS); return; }
     char from[300], to[300];
@@ -780,7 +856,7 @@ static void title_edit(TitleState *t, int width, int height) {
 }
 
 static void title_delete(TitleState *t, int width, int height) {
-    float cx = (float)width * 0.5f, bx = cx - U(WIDE_W) * 0.5f;
+    float cx = (float)width * 0.5f, bx = cx - UW(WIDE_W) * 0.5f;
     const char *name = selected_name(t);
     if (!name) { go(t, TS_WORLDS); return; }
     dirt_background(width, height, 64);
@@ -790,10 +866,10 @@ static void title_delete(TitleState *t, int width, int height) {
     snprintf(line, sizeof line, "'%s' will be lost forever. This cannot be undone.", name);
     mc_text_centered(cx, U(90), size, COL_RED, line);
     float y = U(130);
-    bool confirm = uiw_button_action(13, (UIWRect){bx, y, U(WIDE_W), U(BTN_H)},
+    bool confirm = uiw_button_action(13, (UIWRect){bx, y, UW(WIDE_W), BH()},
                                      "Delete", true, text_size(), COL_RED) == 1;
-    y += U(BTN_PITCH);
-    if (button(bx, y, U(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) { go(t, TS_WORLDS); return; }
+    y += PITCH();
+    if (button(bx, y, UW(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) { go(t, TS_WORLDS); return; }
     (void)height;
     if (!confirm) return;
     /* Names come from the folder listing, but a path separator or dot prefix must never reach the delete. */
@@ -807,7 +883,7 @@ static void title_delete(TitleState *t, int width, int height) {
 }
 
 static void title_main(TitleState *t, int width, int height) {
-    float cx = (float)width * 0.5f, bx = cx - U(WIDE_W) * 0.5f;
+    float cx = (float)width * 0.5f, bx = cx - UW(WIDE_W) * 0.5f;
     ensure_tiles();
     /* Sky above, then a grass edge and dirt below, as if standing at the surface. */
     float ground = floorf((float)height * 0.78f / U(32)) * U(32);
@@ -818,11 +894,11 @@ static void title_main(TitleState *t, int width, int height) {
     draw_logo(cx, U(36), t->splash);
 
     float y = (float)height * 0.25f + U(48);
-    if (button(bx, y, U(WIDE_W), "Singleplayer", true)) go(t, TS_WORLDS);
-    y += U(BTN_PITCH) + U(12);
-    if (button(bx, y, U(HALF_W), "Options...", true)) go(t, TS_OPTIONS);
-    if (button(bx + U(102), y, U(HALF_W), "Quit Game", true)) window_request_close();
-    if (t->message[0]) mc_text_centered(cx, y + U(BTN_PITCH) + U(6), text_size() * 0.9f, COL_RED, t->message);
+    if (button(bx, y, UW(WIDE_W), "Singleplayer", true)) go(t, TS_WORLDS);
+    y += PITCH() + U(12);
+    if (button(bx, y, half_w(), "Options...", true)) go(t, TS_OPTIONS);
+    if (button(bx + half_w() + U(4), y, half_w(), "Quit Game", true)) window_request_close();
+    if (t->message[0]) mc_text_centered(cx, y + PITCH() + U(6), text_size() * 0.9f, COL_RED, t->message);
 }
 
 bool menu_title(char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {

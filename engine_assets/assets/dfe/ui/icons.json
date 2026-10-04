@@ -1,0 +1,37 @@
+{
+  "cell": 16,
+  "icons": {
+    "heart": [
+      0,
+      0
+    ],
+    "heart_half": [
+      1,
+      0
+    ],
+    "hunger": [
+      2,
+      0
+    ],
+    "armor": [
+      3,
+      0
+    ],
+    "stamina": [
+      4,
+      0
+    ],
+    "magicka": [
+      5,
+      0
+    ],
+    "xp_orb": [
+      6,
+      0
+    ],
+    "missing": [
+      7,
+      0
+    ]
+  }
+}

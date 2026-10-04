@@ -213,7 +213,7 @@ void server_block_changed(int x, int y, int z, u16 old_state, u16 new_state) {
 /* --------------------------------------------------------- random ticks */
 
 static void random_tick_chunk(const Chunk *c) {
-    if (!c || (c->flags & CF_VIRTUAL) || (!c->pal && !(g_state_flags[c->uniform] & BF_RANDOM_TICK))) return;
+    if (!c || (c->flags & (CF_VIRTUAL | CF_HAS_RANDOM_TICK)) != CF_HAS_RANDOM_TICK) return;
     for (int i = 0; i < RANDOM_TICKS_PER_CHUNK; i++) {
         u64 r = rng_next(&S.rng);
         int x = (int)(r & 31), z = (int)((r >> 5) & 31), y = (int)((r >> 10) & 31);

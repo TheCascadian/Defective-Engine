@@ -272,8 +272,14 @@ static void mesh_cross_plants(Ctx *cx) {
 /* ------------------------------------------------------------ connectivity */
 
 static u16 compute_connectivity(const MeshInput *in) {
-    u8 *seen = xcalloc(CHUNK_VOL / 8, 1);
-    u16 *stack = xmalloc(CHUNK_VOL * sizeof(u16));
+    static _Thread_local u8 *seen;
+    static _Thread_local u16 *stack;
+    static _Thread_local bool scratch_ready;
+    if (!scratch_ready) {
+        seen = xcalloc(CHUNK_VOL / 8, 1);
+        stack = xmalloc(CHUNK_VOL * sizeof(u16));
+        scratch_ready = true;
+    } else memset(seen, 0, CHUNK_VOL / 8);
     u16 conn = 0;
     for (int start = 0; start < CHUNK_VOL; start++) {
         if (seen[start >> 3] & (1 << (start & 7))) continue;
@@ -308,8 +314,6 @@ static u16 compute_connectivity(const MeshInput *in) {
                     if (faces & (1 << b)) conn |= (u16)CONN_BIT(a, b);
         if (conn == 0x7FFF) break;
     }
-    free(stack);
-    free(seen);
     return conn;
 }
 
@@ -332,16 +336,18 @@ void mesh_build(const MeshInput *in, MeshOutput *out) {
         out->build_ms = (time_now_s() * 1000.0) - t0;
         return;
     }
-    Ctx *cx = xcalloc(1, sizeof *cx);
-    cx->in = in;
-    for (int d = 0; d < 6; d++) mesh_direction(cx, d);
-    mesh_cross_plants(cx);
+    static _Thread_local Ctx cx;
+    memset(&cx, 0, sizeof cx);
+    cx.in = in;
+    for (int d = 0; d < 6; d++) mesh_direction(&cx, d);
+    mesh_cross_plants(&cx);
     for (int l = 0; l < LAYER_COUNT; l++) {
-        out->verts[l] = cx->out[l].v;
-        out->count[l] = cx->out[l].n;
+        out->verts[l] = cx.out[l].v;
+        out->count[l] = cx.out[l].n;
+        cx.out[l].v = NULL;
+        cx.out[l].n = cx.out[l].cap = 0;
     }
     out->conn = compute_connectivity(in);
-    free(cx);
     out->build_ms = (time_now_s() * 1000.0) - t0;
 }
 

@@ -1,0 +1,13 @@
+{
+  "colors": {
+    "bar_back": "#0a0a0cb4",
+    "health": "#c4362f",
+    "hunger": "#b9803a",
+    "armor": "#9fb0c0",
+    "stamina": "#d6c24a",
+    "magicka": "#4a7be0",
+    "xp": "#7ccf3a",
+    "text": "#ffffffff"
+  },
+  "text_size": 14
+}

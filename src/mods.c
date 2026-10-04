@@ -326,6 +326,8 @@ typedef struct Sub {
     int event;
     dfe_event_fn fn;
     void *user;
+    /* true only for engine allocations (currently LuaCallback objects). */
+    bool user_owned;
     char mod[32];
 } Sub;
 
@@ -334,9 +336,11 @@ typedef struct Cmd {
     char name[24], help[96], syntax[96], permission[48], mod[32];
     dfe_command_fn fn;
     void *user;
+    /* true only for engine allocations (currently LuaCallback objects). */
+    bool user_owned;
 } Cmd;
 
-static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command", "random_tick", "item_use", "entity_spawn", "entity_interact", "entity_damage", "entity_death", "inventory_change", "container_open", "container_close", "player_join", "player_leave", "player_damage", "player_death", "player_respawn"};
+static const char *const EVENT_NAMES[] = {"tick", "block_place", "block_break", "world_load", "world_unload", "command", "random_tick", "item_use", "entity_spawn", "entity_interact", "entity_damage", "entity_death", "inventory_change", "container_open", "container_close", "player_join", "player_leave", "player_damage", "player_death", "player_respawn", "entity_tick", "entity_despawn"};
 static Sub g_subs[SUB_MAX];
 static int g_sub_count, g_next_handle = 1;
 static Cmd g_cmds[CMD_MAX];
@@ -348,10 +352,10 @@ static int event_index(const char *name) {
     return -1;
 }
 
-static int api_subscribe(const char *event, dfe_event_fn fn, void *user, const char *mod_id) {
+static int subscribe_impl(const char *event, dfe_event_fn fn, void *user, const char *mod_id, bool user_owned) {
     int idx = event_index(event);
     if (idx < 0) {
-        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn.", mod_id, event);
+        LOGE("[mod %s] unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn, entity_tick, entity_despawn.", mod_id, event);
         return 0;
     }
     if (g_sub_count >= SUB_MAX) { LOGE("[mod %s] too many event subscriptions (limit %d).", mod_id, SUB_MAX); return 0; }
@@ -360,6 +364,8 @@ static int api_subscribe(const char *event, dfe_event_fn fn, void *user, const c
     s->event = idx;
     s->fn = fn;
     s->user = user;
+    s->user_owned = false;
+    s->user_owned = user_owned;
     snprintf(s->mod, sizeof s->mod, "%s", mod_id ? mod_id : "?");
     return s->handle;
 }
@@ -392,7 +398,9 @@ void events_clear(const char *mod_id) {
     int w = 0;
     for (int i = 0; i < g_sub_count; i++) {
         if (!strcmp(g_subs[i].mod, mod_id)) {
-            free(g_subs[i].user);
+            if (g_subs[i].user_owned) free(g_subs[i].user);
+            g_subs[i].user = NULL;
+            g_subs[i].user_owned = false;
             continue;
         }
         g_subs[w++] = g_subs[i];
@@ -401,7 +409,9 @@ void events_clear(const char *mod_id) {
     w = 0;
     for (int i = 0; i < g_cmd_count; i++) {
         if (!strcmp(g_cmds[i].mod, mod_id)) {
-            free(g_cmds[i].user);
+            if (g_cmds[i].user_owned) free(g_cmds[i].user);
+            g_cmds[i].user = NULL;
+            g_cmds[i].user_owned = false;
             continue;
         }
         g_cmds[w++] = g_cmds[i];
@@ -410,14 +420,22 @@ void events_clear(const char *mod_id) {
 }
 
 void events_clear_all(void) {
-    for (int i = 0; i < g_sub_count; i++) free(g_subs[i].user);
-    for (int i = 0; i < g_cmd_count; i++) free(g_cmds[i].user);
+    for (int i = 0; i < g_sub_count; i++) {
+        if (g_subs[i].user_owned) free(g_subs[i].user);
+        g_subs[i].user = NULL;
+        g_subs[i].user_owned = false;
+    }
+    for (int i = 0; i < g_cmd_count; i++) {
+        if (g_cmds[i].user_owned) free(g_cmds[i].user);
+        g_cmds[i].user = NULL;
+        g_cmds[i].user_owned = false;
+    }
     g_sub_count = g_cmd_count = 0;
 }
 
 /* ---------------------------------------------------------------- commands */
 
-static int api_register_command(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id) {
+static int register_command_impl(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id, bool user_owned) {
     if (!name || !name[0] || strlen(name) >= sizeof g_cmds[0].name || strpbrk(name, " \t")) {
         LOGE("[mod %s] command name \"%s\" must be 1 to 23 characters without spaces.", mod_id, name ? name : "");
         return 0;
@@ -435,7 +453,25 @@ static int api_register_command(const char *name, const char *help, dfe_command_
     snprintf(c->mod, sizeof c->mod, "%s", mod_id ? mod_id : "?");
     c->fn = fn;
     c->user = user;
+    c->user_owned = false;
+    c->user_owned = user_owned;
     return c->handle;
+}
+
+static int api_subscribe(const char *event, dfe_event_fn fn, void *user, const char *mod_id) {
+    return subscribe_impl(event, fn, user, mod_id, false);
+}
+
+int api_subscribe_owned(const char *event, dfe_event_fn fn, void *user, const char *mod_id) {
+    return subscribe_impl(event, fn, user, mod_id, true);
+}
+
+static int api_register_command(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id) {
+    return register_command_impl(name, help, fn, user, mod_id, false);
+}
+
+int api_register_command_owned(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id) {
+    return register_command_impl(name, help, fn, user, mod_id, true);
 }
 
 void command_run(const char *line) {
@@ -500,6 +536,41 @@ static bool api_entity_position(int handle, double out[3]) {
 }
 static int api_entity_count(void) { return entity_count(); }
 
+static bool api_entity_get(int handle, dfe_entity_t *out) {
+    EntityInfo e;
+    if (!out || !entity_get(handle, &e)) return false;
+    memset(out, 0, sizeof *out);
+    out->id = e.id;
+    snprintf(out->type, sizeof out->type, "%s", e.type);
+    out->pos[0] = e.pos.x; out->pos[1] = e.pos.y; out->pos[2] = e.pos.z;
+    out->vel[0] = e.vel.x; out->vel[1] = e.vel.y; out->vel[2] = e.vel.z;
+    out->yaw = e.yaw; out->health = e.health; out->max_health = e.max_health; out->age = e.age;
+    snprintf(out->behaviour, sizeof out->behaviour, "%s", entity_behaviour_name(e.behaviour));
+    snprintf(out->data, sizeof out->data, "%s", e.data);
+    return true;
+}
+
+/* Applies the masked fields one by one; the result is true only when every requested field was accepted. */
+static bool api_entity_set(int handle, const dfe_entity_t *in, uint32_t mask) {
+    EntityInfo cur;
+    if (!in || !entity_get(handle, &cur)) return false;
+    bool ok = true;
+    if (mask & DFE_ENTITY_POS) ok &= entity_set_position(handle, v3((float)in->pos[0], (float)in->pos[1], (float)in->pos[2]));
+    if (mask & DFE_ENTITY_VEL) ok &= entity_set_velocity(handle, v3((float)in->vel[0], (float)in->vel[1], (float)in->vel[2]));
+    if (mask & DFE_ENTITY_YAW) ok &= entity_set_yaw(handle, in->yaw);
+    if (mask & DFE_ENTITY_BEHAVIOUR) {
+        EntityBehaviour b;
+        ok &= entity_behaviour_parse(in->behaviour, &b) && entity_set_behaviour(handle, b);
+    }
+    if (mask & DFE_ENTITY_DATA) ok &= entity_set_data(handle, in->data);
+    if (mask & DFE_ENTITY_HEALTH) ok &= entity_set_health(handle, in->health, in->max_health > 0.0f ? in->max_health : -1.0f); /* last: it can kill */
+    return ok;
+}
+static bool api_entity_damage(int handle, float amount) { DamageSource s = {.kind = DAMAGE_MOD}; return entity_damage(handle, amount, &s); }
+static bool api_entity_heal(int handle, float amount) { return entity_heal(handle, amount); }
+static int api_entity_list(int *out, int cap) { return entity_list(out, cap); }
+static int api_entity_near(double x, double y, double z, double radius, int *out, int cap) { return entity_near(v3((float)x, (float)y, (float)z), (float)radius, out, cap); }
+
 static uint64_t api_world_seed(void) { return world_seed(); }
 static double api_game_time(void) { return g_game_time; }
 static void api_console_print(const char *message) { console_print("%s", message); }
@@ -547,6 +618,12 @@ const dfe_api_t *api_get(void) {
         .mod_storage_get = api_mod_storage_get,
         .mod_storage_set = api_mod_storage_set,
         .mod_storage_remove = api_mod_storage_remove,
+        .entity_get = api_entity_get,
+        .entity_set = api_entity_set,
+        .entity_damage = api_entity_damage,
+        .entity_heal = api_entity_heal,
+        .entity_list = api_entity_list,
+        .entity_near = api_entity_near,
     };
     return &api;
 }

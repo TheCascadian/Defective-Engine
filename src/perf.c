@@ -96,6 +96,7 @@ typedef struct Summary {
     double cpu_avg, stream_avg, render_avg, swap_avg, gpu_avg;
     double section_avg[GPU_SECTION_COUNT];
     double peak_mb, cold_s, scale_avg, scale_min;
+    double draw_calls_avg, ent_calls_avg, ent_instances_avg, ent_culled_avg, ent_lod_avg[3], ent_upload_avg;
 } Summary;
 
 typedef float (*FrameField)(const FrameSample *);
@@ -144,8 +145,16 @@ static void summarise(Summary *out, double wall_s, double cold_s) {
         out->scale_avg += s->scale;
         out->scale_min = i ? MIN(out->scale_min, s->scale) : s->scale;
         for (int k = 0; k < GPU_SECTION_COUNT; k++) out->section_avg[k] += s->gpu_section_ms[k];
+        out->draw_calls_avg += s->draw_calls;
+        out->ent_calls_avg += s->entity_draw_calls;
+        out->ent_instances_avg += s->entity_instances;
+        out->ent_culled_avg += s->entity_culled;
+        out->ent_upload_avg += s->entity_upload_bytes;
+        for (int l = 0; l < 3; l++) out->ent_lod_avg[l] += s->entity_lod[l];
         if (s->frame_ms > HITCH_MS) out->hitches++;
     }
+    out->draw_calls_avg /= n; out->ent_calls_avg /= n; out->ent_instances_avg /= n; out->ent_culled_avg /= n; out->ent_upload_avg /= n;
+    for (int l = 0; l < 3; l++) out->ent_lod_avg[l] /= n;
     out->avg_ms /= n; out->cpu_avg /= n; out->stream_avg /= n; out->render_avg /= n; out->swap_avg /= n; out->gpu_avg /= n; out->scale_avg /= n;
     for (int k = 0; k < GPU_SECTION_COUNT; k++) out->section_avg[k] /= n;
     out->fps_avg = wall_s > 0 ? n / wall_s : 0;
@@ -191,7 +200,9 @@ static void print_text_report(const Summary *m) {
     } else {
         printf("gpu ms    unavailable (the driver returned no timer query results)\n");
     }
-    printf("draw calls (last frame): %d\n", g_stats.draw_calls_last);
+    printf("draw calls (last frame): %d, average %.1f\n", g_stats.draw_calls_last, m->draw_calls_avg);
+    printf("entities: %.1f draws, %.1f instances, %.1f culled, lod %.1f/%.1f/%.1f, %.0f B uploaded per frame%s\n", m->ent_calls_avg, m->ent_instances_avg, m->ent_culled_avg,
+           m->ent_lod_avg[0], m->ent_lod_avg[1], m->ent_lod_avg[2], m->ent_upload_avg, g_opt.entity_legacy ? " (legacy path)" : "");
     printf("peak memory: %.1f MB\n", m->peak_mb);
     print_hitches();
     printf("budget (reference machine, Low, 720p, render distance 8):\n");
@@ -209,7 +220,9 @@ static void write_json_object(FILE *f, const Summary *m) {
     fprintf(f, "  \"cpu_ms\": {\"total\": %.3f, \"stream\": %.3f, \"render\": %.3f, \"swap\": %.3f},\n", m->cpu_avg, m->stream_avg, m->render_avg, m->swap_avg);
     fprintf(f, "  \"gpu_available\": %s, \"gpu_ms\": {\"total\": %.3f", P.ok ? "true" : "false", m->gpu_avg);
     for (int k = 0; k < GPU_SECTION_COUNT; k++) fprintf(f, ", \"%s\": %.3f", SECTION_NAME[k], m->section_avg[k]);
-    fprintf(f, "},\n  \"peak_memory_mb\": %.1f, \"cold_start_s\": %.3f\n}\n", m->peak_mb, m->cold_s);
+    fprintf(f, "},\n  \"draw_calls\": %.1f,\n  \"entities\": {\"requested\": %d, \"legacy\": %s, \"draw_calls\": %.1f, \"instances\": %.1f, \"culled\": %.1f, \"lod\": [%.1f, %.1f, %.1f], \"upload_bytes\": %.0f},\n  \"peak_memory_mb\": %.1f, \"cold_start_s\": %.3f\n}\n",
+            m->draw_calls_avg, g_opt.bench_entities, g_opt.entity_legacy ? "true" : "false", m->ent_calls_avg, m->ent_instances_avg, m->ent_culled_avg,
+            m->ent_lod_avg[0], m->ent_lod_avg[1], m->ent_lod_avg[2], m->ent_upload_avg, m->peak_mb, m->cold_s);
 }
 
 static void write_json(const Summary *m, const char *path) {

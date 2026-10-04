@@ -14,6 +14,8 @@
  * global table already gives), and a wall-clock timeout (not deterministic, and a slow machine would fail
  * scripts a fast one runs). */
 #include "dfe.h"
+#include "ui.h"
+#include "screen.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -445,6 +447,8 @@ static int event_trampoline(const dfe_event_t *ev, void *user) {
     lua_pushinteger(L, ev->state); lua_setfield(L, -2, "state");
     lua_pushnumber(L, ev->dt); lua_setfield(L, -2, "dt");
     if (ev->text) { lua_pushstring(L, ev->text); lua_setfield(L, -2, "text"); }
+    if (ev->entity_id) { lua_pushinteger(L, ev->entity_id); lua_setfield(L, -2, "entity_id"); }
+    if (ev->damage != 0.0f) { lua_pushnumber(L, ev->damage); lua_setfield(L, -2, "damage"); }
     if (!call_limited(1, 1, BUDGET_HANDLER)) {
         disable_callback(cb, lua_tostring(L, -1));
         lua_pop(L, 1);
@@ -482,8 +486,8 @@ static int l_on(lua_State *state) {
     char what[32];
     snprintf(what, sizeof what, "handler for %s", event);
     LuaCallback *cb = make_callback(state, 2, mod_of(state), what);
-    int h = api_get()->subscribe(event, event_trampoline, cb, mod_of(state));
-    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn", event); }
+    int h = api_subscribe_owned(event, event_trampoline, cb, mod_of(state));
+    if (!h) { luaL_unref(state, LUA_REGISTRYINDEX, cb->ref); free(cb); return luaL_error(state, "unknown event \"%s\". Valid events: tick, block_place, block_break, world_load, world_unload, command, random_tick, item_use, entity_spawn, entity_interact, entity_damage, entity_death, inventory_change, container_open, container_close, player_join, player_leave, player_damage, player_death, player_respawn, entity_tick, entity_despawn", event); }
     lua_pushinteger(state, h);
     return 1;
 }
@@ -497,7 +501,7 @@ static int l_command(lua_State *state) {
     char what[32];
     snprintf(what, sizeof what, "%s", name);
     LuaCallback *cb = make_callback(state, 3, mod_of(state), what);
-    if (!api_get()->register_command(name, help, command_trampoline, cb, mod_of(state))) {
+    if (!api_register_command_owned(name, help, command_trampoline, cb, mod_of(state))) {
         luaL_unref(state, LUA_REGISTRYINDEX, cb->ref);
         free(cb);
         return luaL_error(state, "command \"%s\" could not be registered. Names need 1 to 23 characters without spaces and must be unused", name);
@@ -568,6 +572,327 @@ static int l_require(lua_State *state) {
     return 1;
 }
 
+
+/* ---------------------------------------------------------------- dfe.ui */
+
+static int l_ui_get_status(lua_State *state) {
+    const PlayerStatus *s = ui_status();
+    lua_newtable(state);
+#define F(k) lua_pushnumber(state, s->k); lua_setfield(state, -2, #k);
+    F(health) F(max_health) F(absorption) F(hunger) F(max_hunger) F(saturation) F(stamina) F(max_stamina)
+    F(magicka) F(max_magicka) F(xp) F(xp_next) F(armor) F(max_armor)
+#undef F
+    lua_pushinteger(state, s->level); lua_setfield(state, -2, "level");
+    for (int i = 0; i < s->custom_count; i++) { lua_pushnumber(state, s->custom[i].value); lua_setfield(state, -2, s->custom[i].name); }
+    return 1;
+}
+static int l_ui_set_status(lua_State *state) { /* dfe.ui.set_status(name, value, max) adds or updates a custom field */
+    lua_pushboolean(state, ui_status_set_custom(luaL_checkstring(state, 1), (float)luaL_checknumber(state, 2), (float)luaL_optnumber(state, 3, 0)));
+    return 1;
+}
+static int l_ui_set_element_visible(lua_State *state) { /* true/false force, nil follows the game mode */
+    int st = lua_isnil(state, 2) ? -1 : lua_toboolean(state, 2);
+    lua_pushboolean(state, ui_element_set_override(luaL_checkstring(state, 1), st));
+    return 1;
+}
+static int l_ui_element_visible(lua_State *state) { lua_pushboolean(state, ui_element_visible(luaL_checkstring(state, 1))); return 1; }
+
+static void screen_trampoline(const char *screen, const char *widget, int index, void *user) {
+    LuaCallback *cb = user;
+    if (!cb || cb->dead) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cb->ref);
+    lua_pushstring(L, screen);
+    lua_pushstring(L, widget);
+    lua_pushinteger(L, index + 1); /* Lua lists are 1-based */
+    if (!call_limited(3, 0, BUDGET_HANDLER)) {
+        disable_callback(cb, lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+}
+
+static void callback_release(void *user) {
+    LuaCallback *cb = user;
+    if (!cb) return;
+    if (cb->ref != LUA_NOREF && L) luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
+    free(cb);
+}
+
+/* A screen's on_open and on_close callbacks, freed together with the screen. */
+typedef struct ScreenCallbacks { LuaCallback *open, *close; } ScreenCallbacks;
+
+static void screen_open_tramp(const char *screen, const char *widget, int index, void *user) { screen_trampoline(screen, widget, index, ((ScreenCallbacks *)user)->open); }
+static void screen_close_tramp(const char *screen, const char *widget, int index, void *user) { screen_trampoline(screen, widget, index, ((ScreenCallbacks *)user)->close); }
+
+static void screen_release_lua(void *user) {
+    ScreenCallbacks *c = user;
+    callback_release(c->open);
+    callback_release(c->close);
+    free(c);
+}
+
+/* Reads t[key] as a function into a callback, or NULL when absent. */
+static LuaCallback *field_callback(lua_State *state, int t, const char *key, const char *mod, const char *what) {
+    lua_getfield(state, t, key);
+    LuaCallback *cb = NULL;
+    if (lua_isfunction(state, -1)) cb = make_callback(state, lua_gettop(state), mod, what);
+    lua_pop(state, 1);
+    return cb;
+}
+
+static bool read_widget(lua_State *state, int t, const char *screen, const char *mod, Widget *w) {
+    static const char *types[] = {"panel", "label", "button", "slot", "bar", "list", "scroll"};
+    memset(w, 0, sizeof *w);
+    w->enabled = true;
+    const char *type = (lua_getfield(state, t, "type"), luaL_optstring(state, -1, "label"));
+    int ti = -1;
+    for (int i = 0; i < ARRAY_LEN(types); i++) if (!strcmp(types[i], type)) ti = i;
+    lua_pop(state, 1);
+    if (ti < 0) return false;
+    w->type = (WidgetType)ti;
+#define NUM(k, f, d) lua_getfield(state, t, k); w->f = (float)luaL_optnumber(state, -1, d); lua_pop(state, 1);
+    NUM("x", x, 0) NUM("y", y, 0) NUM("w", w, 80) NUM("h", h, 18) NUM("value", value, 0) NUM("max", max, 1)
+#undef NUM
+    lua_getfield(state, t, "id"); snprintf(w->id, sizeof w->id, "%s", luaL_optstring(state, -1, "")); lua_pop(state, 1);
+    lua_getfield(state, t, "text"); snprintf(w->text, sizeof w->text, "%s", luaL_optstring(state, -1, "")); lua_pop(state, 1);
+    lua_getfield(state, t, "enabled"); if (!lua_isnil(state, -1)) w->enabled = lua_toboolean(state, -1); lua_pop(state, 1);
+    lua_getfield(state, t, "items");
+    if (lua_istable(state, -1)) {
+        for (int i = 1; i <= WIDGET_MAX_ITEMS; i++) {
+            lua_rawgeti(state, -1, i);
+            if (!lua_isstring(state, -1)) { lua_pop(state, 1); break; }
+            snprintf(w->items[w->item_count++], sizeof w->items[0], "%s", lua_tostring(state, -1));
+            lua_pop(state, 1);
+        }
+    }
+    lua_pop(state, 1);
+    LuaCallback *cb = field_callback(state, t, "on_click", mod, "screen widget click");
+    if (cb) { w->on_click = screen_trampoline; w->user = cb; w->release = callback_release; }
+    (void)screen;
+    return true;
+}
+
+static int l_ui_register_widget(lua_State *state) {
+    const char *screen = luaL_checkstring(state, 1);
+    luaL_checktype(state, 2, LUA_TTABLE);
+    Widget w;
+    if (!read_widget(state, 2, screen, mod_of(state), &w)) return luaL_error(state, "unknown widget type. Use panel, label, button, slot, bar, list or scroll");
+    if (!screen_add_widget(screen, &w)) {
+        callback_release(w.user);
+        return luaL_error(state, "widget \"%s\" could not be added to screen \"%s\": the screen must exist, ids must be unique and a screen holds %d widgets", w.id, screen, SCREEN_MAX_WIDGETS);
+    }
+    return 0;
+}
+
+/* dfe.ui.register_screen(id, {title, w, h, modal, close_on_escape, on_open, on_close, widgets = {...}}) */
+static int l_ui_register_screen(lua_State *state) {
+    const char *id = luaL_checkstring(state, 1);
+    luaL_checktype(state, 2, LUA_TTABLE);
+    const char *mod = mod_of(state);
+    ScreenDef d = {.scripted = true, .w = 240, .h = 160, .close_on_escape = true, .release = screen_release_lua};
+    snprintf(d.id, sizeof d.id, "%s", id);
+    lua_getfield(state, 2, "title"); snprintf(d.title, sizeof d.title, "%s", luaL_optstring(state, -1, "")); lua_pop(state, 1);
+    lua_getfield(state, 2, "w"); d.w = (float)luaL_optnumber(state, -1, d.w); lua_pop(state, 1);
+    lua_getfield(state, 2, "h"); d.h = (float)luaL_optnumber(state, -1, d.h); lua_pop(state, 1);
+    lua_getfield(state, 2, "modal"); d.modal = lua_toboolean(state, -1); lua_pop(state, 1);
+    lua_getfield(state, 2, "close_on_escape"); if (!lua_isnil(state, -1)) d.close_on_escape = lua_toboolean(state, -1); lua_pop(state, 1);
+    LuaCallback *open_cb = field_callback(state, 2, "on_open", mod, "screen on_open");
+    LuaCallback *close_cb = field_callback(state, 2, "on_close", mod, "screen on_close");
+    ScreenCallbacks *cbs = xcalloc(1, sizeof *cbs);
+    cbs->open = open_cb; cbs->close = close_cb;
+    d.user = cbs;
+    d.on_open = open_cb ? screen_open_tramp : NULL;
+    d.on_close = close_cb ? screen_close_tramp : NULL;
+    if (!screen_register(&d)) {
+        screen_release_lua(cbs);
+        return luaL_error(state, "screen \"%s\" could not be registered: the id must be unused and at most %d screens exist", id, SCREEN_MAX);
+    }
+    lua_getfield(state, 2, "widgets");
+    if (lua_istable(state, -1))
+        for (int i = 1;; i++) {
+            lua_rawgeti(state, -1, i);
+            if (!lua_istable(state, -1)) { lua_pop(state, 1); break; }
+            Widget w;
+            bool ok = read_widget(state, lua_gettop(state), id, mod, &w);
+            if (ok && !screen_add_widget(id, &w)) { callback_release(w.user); ok = false; }
+            if (!ok) { screen_unregister(id); return luaL_error(state, "screen \"%s\": widget %d is invalid (unknown type, missing or duplicate id, or too many widgets)", id, i); }
+            lua_pop(state, 1);
+        }
+    lua_pop(state, 1);
+    return 0;
+}
+static int l_ui_open_screen(lua_State *state) { lua_pushboolean(state, screen_open(luaL_checkstring(state, 1))); return 1; }
+static int l_ui_close_screen(lua_State *state) { (void)state; lua_pushboolean(state, screen_close()); return 1; }
+static int l_ui_is_screen_open(lua_State *state) { lua_pushboolean(state, screen_is_open(luaL_optstring(state, 1, NULL))); return 1; }
+/* dfe.ui.set_widget(screen, id, {text, value, max, enabled}) updates a widget in place */
+static int l_ui_set_widget(lua_State *state) {
+    Widget *w = screen_widget(luaL_checkstring(state, 1), luaL_checkstring(state, 2));
+    luaL_checktype(state, 3, LUA_TTABLE);
+    if (!w) { lua_pushboolean(state, 0); return 1; }
+    lua_getfield(state, 3, "text"); if (lua_isstring(state, -1)) snprintf(w->text, sizeof w->text, "%s", lua_tostring(state, -1)); lua_pop(state, 1);
+    lua_getfield(state, 3, "value"); if (lua_isnumber(state, -1)) w->value = (float)lua_tonumber(state, -1); lua_pop(state, 1);
+    lua_getfield(state, 3, "max"); if (lua_isnumber(state, -1)) w->max = (float)lua_tonumber(state, -1); lua_pop(state, 1);
+    lua_getfield(state, 3, "enabled"); if (!lua_isnil(state, -1)) w->enabled = lua_toboolean(state, -1); lua_pop(state, 1);
+    lua_pushboolean(state, 1);
+    return 1;
+}
+static const luaL_Reg UI_FUNCS[] = {{"register_screen", l_ui_register_screen}, {"register_widget", l_ui_register_widget}, {"open_screen", l_ui_open_screen}, {"close_screen", l_ui_close_screen}, {"is_screen_open", l_ui_is_screen_open}, {"set_widget", l_ui_set_widget}, {"get_status", l_ui_get_status}, {"set_status", l_ui_set_status}, {"set_element_visible", l_ui_set_element_visible}, {"element_visible", l_ui_element_visible}, {NULL, NULL}};
+
+/* ------------------------------------------------------------- dfe.entity */
+
+#define LUA_ENTITY_MAX 256
+
+static void read_vec3(lua_State *state, int idx, const char *what, double out[3]) {
+    if (!lua_istable(state, idx)) luaL_error(state, "%s must be a table such as {x, y, z} or {x = 1, y = 2, z = 3}", what);
+    static const char *const KEYS[3] = {"x", "y", "z"};
+    for (int i = 0; i < 3; i++) {
+        lua_getfield(state, idx, KEYS[i]);
+        if (lua_isnil(state, -1)) { lua_pop(state, 1); lua_rawgeti(state, idx, i + 1); }
+        if (!lua_isnumber(state, -1)) luaL_error(state, "%s needs three numbers (x, y, z)", what);
+        out[i] = lua_tonumber(state, -1);
+        lua_pop(state, 1);
+    }
+}
+
+static void push_entity(lua_State *state, const dfe_entity_t *e) {
+    lua_createtable(state, 0, 16);
+    lua_pushinteger(state, e->id); lua_setfield(state, -2, "id");
+    lua_pushstring(state, e->type); lua_setfield(state, -2, "type");
+    lua_pushnumber(state, e->pos[0]); lua_setfield(state, -2, "x");
+    lua_pushnumber(state, e->pos[1]); lua_setfield(state, -2, "y");
+    lua_pushnumber(state, e->pos[2]); lua_setfield(state, -2, "z");
+    lua_pushnumber(state, e->vel[0]); lua_setfield(state, -2, "vx");
+    lua_pushnumber(state, e->vel[1]); lua_setfield(state, -2, "vy");
+    lua_pushnumber(state, e->vel[2]); lua_setfield(state, -2, "vz");
+    lua_pushnumber(state, e->yaw); lua_setfield(state, -2, "yaw");
+    lua_pushnumber(state, e->health); lua_setfield(state, -2, "health");
+    lua_pushnumber(state, e->max_health); lua_setfield(state, -2, "max_health");
+    lua_pushnumber(state, e->age); lua_setfield(state, -2, "age");
+    lua_pushstring(state, e->behaviour); lua_setfield(state, -2, "behaviour");
+    lua_pushstring(state, e->data); lua_setfield(state, -2, "data");
+}
+
+/* Copies the fields present in the table at idx into e and returns the mask. Unknown or mistyped fields are errors,
+ * so a misspelt key does not silently do nothing. */
+static uint32_t read_entity_fields(lua_State *state, int idx, dfe_entity_t *e) {
+    uint32_t mask = 0;
+    luaL_checktype(state, idx, LUA_TTABLE);
+    lua_pushnil(state);
+    while (lua_next(state, idx)) {
+        const char *k = lua_type(state, -2) == LUA_TSTRING ? lua_tostring(state, -2) : "";
+        if (!strcmp(k, "x") || !strcmp(k, "y") || !strcmp(k, "z")) { e->pos[k[0] - 'x'] = luaL_checknumber(state, -1); mask |= DFE_ENTITY_POS; }
+        else if (!strcmp(k, "vx") || !strcmp(k, "vy") || !strcmp(k, "vz")) { e->vel[k[1] - 'x'] = luaL_checknumber(state, -1); mask |= DFE_ENTITY_VEL; }
+        else if (!strcmp(k, "yaw")) { e->yaw = (float)luaL_checknumber(state, -1); mask |= DFE_ENTITY_YAW; }
+        else if (!strcmp(k, "health")) { e->health = (float)luaL_checknumber(state, -1); mask |= DFE_ENTITY_HEALTH; }
+        else if (!strcmp(k, "max_health")) { e->max_health = (float)luaL_checknumber(state, -1); mask |= DFE_ENTITY_HEALTH; }
+        else if (!strcmp(k, "behaviour")) { snprintf(e->behaviour, sizeof e->behaviour, "%s", luaL_checkstring(state, -1)); mask |= DFE_ENTITY_BEHAVIOUR; }
+        else if (!strcmp(k, "data")) { snprintf(e->data, sizeof e->data, "%s", luaL_checkstring(state, -1)); mask |= DFE_ENTITY_DATA; }
+        else if (strcmp(k, "id") && strcmp(k, "type") && strcmp(k, "age")) {
+            return (uint32_t)luaL_error(state, "unknown entity field \"%s\". Settable fields: x, y, z, vx, vy, vz, yaw, health, max_health, behaviour, data", k);
+        }
+        lua_pop(state, 1);
+    }
+    return mask;
+}
+
+/* dfe.entity.spawn(type, pos, opts) returns the entity id, or nil and a reason. opts uses the field names of set();
+ * it is read before anything spawns, so a mistake in it cannot leave a half-made entity behind. */
+static int l_ent_spawn(lua_State *state) {
+    const char *type = luaL_checkstring(state, 1);
+    double p[3];
+    read_vec3(state, 2, "position", p);
+    dfe_entity_t e;
+    memset(&e, 0, sizeof e);
+    e.health = 1e30f; /* unnamed health means full health, set() clamps it to the maximum */
+    uint32_t mask = lua_istable(state, 3) ? read_entity_fields(state, 3, &e) : 0;
+    int id = api_get()->entity_spawn(type, p[0], p[1], p[2]); /* x, y, z in opts are ignored; pos is the position */
+    if (!id) { lua_pushnil(state); lua_pushfstring(state, "could not spawn \"%s\": unknown type, entity limit reached or cancelled by an entity_spawn handler", type); return 2; }
+    mask &= ~DFE_ENTITY_POS;
+    if (mask) api_get()->entity_set(id, &e, mask);
+    lua_pushinteger(state, id);
+    return 1;
+}
+
+static int l_ent_despawn(lua_State *state) { lua_pushboolean(state, api_get()->entity_remove((int)luaL_checkinteger(state, 1))); return 1; }
+
+static int l_ent_get(lua_State *state) {
+    dfe_entity_t e;
+    if (!api_get()->entity_get((int)luaL_checkinteger(state, 1), &e)) { lua_pushnil(state); return 1; }
+    push_entity(state, &e);
+    return 1;
+}
+
+static int l_ent_set(lua_State *state) {
+    int id = (int)luaL_checkinteger(state, 1);
+    dfe_entity_t e;
+    if (!api_get()->entity_get(id, &e)) { lua_pushboolean(state, 0); return 1; }
+    uint32_t mask = read_entity_fields(state, 2, &e); /* starts from the current state, so {x = 5} keeps y and z */
+    lua_pushboolean(state, api_get()->entity_set(id, &e, mask));
+    return 1;
+}
+
+static int l_ent_damage(lua_State *state) { lua_pushboolean(state, api_get()->entity_damage((int)luaL_checkinteger(state, 1), (float)luaL_checknumber(state, 2))); return 1; }
+static int l_ent_heal(lua_State *state) { lua_pushboolean(state, api_get()->entity_heal((int)luaL_checkinteger(state, 1), (float)luaL_checknumber(state, 2))); return 1; }
+
+/* The iterator state is a snapshot of the ids taken when iter() is called, so a loop body may remove or spawn
+ * entities. Entities removed during the loop are skipped. */
+static int ent_iter_next(lua_State *state) {
+    int i = (int)lua_tointeger(state, lua_upvalueindex(2)) + 1;
+    int n = (int)lua_objlen(state, lua_upvalueindex(1));
+    for (; i <= n; i++) {
+        lua_rawgeti(state, lua_upvalueindex(1), i);
+        int id = (int)lua_tointeger(state, -1);
+        lua_pop(state, 1);
+        dfe_entity_t e;
+        if (!api_get()->entity_get(id, &e)) continue;
+        lua_pushinteger(state, i);
+        lua_replace(state, lua_upvalueindex(2));
+        lua_pushinteger(state, id);
+        push_entity(state, &e);
+        return 2;
+    }
+    return 0;
+}
+
+static int l_ent_iter(lua_State *state) {
+    int ids[LUA_ENTITY_MAX];
+    int n = MIN(api_get()->entity_list(ids, LUA_ENTITY_MAX), LUA_ENTITY_MAX);
+    lua_createtable(state, n, 0);
+    for (int i = 0; i < n; i++) { lua_pushinteger(state, ids[i]); lua_rawseti(state, -2, i + 1); }
+    lua_pushinteger(state, 0);
+    lua_pushcclosure(state, ent_iter_next, 2);
+    return 1;
+}
+
+/* dfe.entity.near(pos, radius) returns an array of entity tables, nearest first, each with a distance field. */
+static int l_ent_near(lua_State *state) {
+    double p[3];
+    read_vec3(state, 1, "position", p);
+    double radius = luaL_checknumber(state, 2);
+    int ids[LUA_ENTITY_MAX];
+    int n = MIN(api_get()->entity_near(p[0], p[1], p[2], radius, ids, LUA_ENTITY_MAX), LUA_ENTITY_MAX);
+    lua_createtable(state, n, 0);
+    int out = 0;
+    for (int i = 0; i < n; i++) {
+        dfe_entity_t e;
+        if (!api_get()->entity_get(ids[i], &e)) continue;
+        push_entity(state, &e);
+        lua_pushnumber(state, sqrt((e.pos[0] - p[0]) * (e.pos[0] - p[0]) + (e.pos[1] - p[1]) * (e.pos[1] - p[1]) + (e.pos[2] - p[2]) * (e.pos[2] - p[2])));
+        lua_setfield(state, -2, "distance");
+        lua_rawseti(state, -2, ++out);
+    }
+    return 1;
+}
+
+static int l_ent_on(lua_State *state) {
+    const char *event = luaL_checkstring(state, 1);
+    if (strncmp(event, "entity_", 7)) return luaL_error(state, "dfe.entity.on takes an entity event: entity_spawn, entity_tick, entity_damage, entity_death or entity_despawn (use dfe.on for others)");
+    return l_on(state);
+}
+
+static const luaL_Reg ENTITY_FUNCS[] = {
+    {"spawn", l_ent_spawn}, {"despawn", l_ent_despawn}, {"get", l_ent_get}, {"set", l_ent_set}, {"damage", l_ent_damage}, {"heal", l_ent_heal},
+    {"iter", l_ent_iter}, {"near", l_ent_near}, {"on", l_ent_on}, {NULL, NULL}};
+
 static const luaL_Reg DFE_FUNCS[] = {
     {"log", l_log}, {"console", l_console}, {"block_state", l_block_state}, {"block_name", l_block_name}, {"state_name", l_state_name},
     {"get_state", l_get_state}, {"get_block", l_get_block}, {"set_block", l_set_block}, {"get_light", l_get_light},
@@ -615,6 +940,16 @@ static int make_mod_env(const char *mod_id) {
         lua_pushcclosure(L, r->func, 1);
         lua_setfield(L, -2, r->name);
     }
+    lua_newtable(L);                     /* dfe.entity */
+    for (const luaL_Reg *r = ENTITY_FUNCS; r->name; r++) {
+        lua_pushstring(L, mod_id);
+        lua_pushcclosure(L, r->func, 1);
+        lua_setfield(L, -2, r->name);
+    }
+    lua_setfield(L, -2, "entity");
+    lua_newtable(L);                     /* dfe.ui */
+    for (const luaL_Reg *r = UI_FUNCS; r->name; r++) { lua_pushstring(L, mod_id); lua_pushcclosure(L, r->func, 1); lua_setfield(L, -2, r->name); }
+    lua_setfield(L, -2, "ui");
     lua_newtable(L);
     lua_pushstring(L, mod_id);
     lua_pushcclosure(L, l_storage_get, 1);
@@ -700,6 +1035,7 @@ bool script_init(void) {
 
 void script_shutdown(void) {
     if (!L) return;
+    screen_remove_scripted();
     events_clear_all();
     for (int i = 0; i < g_mod_env_count; i++) luaL_unref(L, LUA_REGISTRYINDEX, g_mod_env_ref[i]);
     lua_close(L);
@@ -732,6 +1068,24 @@ int script_load_mods(void) {
         }
     }
     return g_errors - before;
+}
+
+bool script_run_mod_test(const char *mod_id, const char *relative_path) {
+    if (!L && !script_init()) return false;
+    const ModInfo *m = mods_find(mod_id);
+    if (!m || !relative_path || strncmp(relative_path, "tests/", 6)) return false;
+    int ref = env_for(m->id);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    int env = lua_gettop(L);
+    int before = g_errors;
+    bool ok = load_into_env(m, relative_path, env);
+    if (ok && !call_limited(0, 0, BUDGET_LOAD)) {
+        report_error(m->id, relative_path, lua_tostring(L, -1));
+        lua_pop(L, 1);
+        ok = false;
+    }
+    lua_settop(L, env - 1);
+    return ok && g_errors == before;
 }
 
 /* Evaluates a console line as an expression first, then as a statement, and prints the results. */

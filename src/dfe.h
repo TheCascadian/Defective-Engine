@@ -23,6 +23,7 @@ typedef int64_t i64;
 #define DFE_ENGINE_VERSION "0.2.0"
 #define DFE_MOD_SCHEMA_VERSION 1
 #define DFE_CONTENT_SCHEMA_VERSION 1
+/* JSON metadata revision; distinct from version, the existing save/engine version field. */
 #define DFE_SAVE_SCHEMA_VERSION 2
 
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
@@ -277,6 +278,10 @@ void ui_rect(float x, float y, float w, float h, u32 rgba);
 void ui_rect_gradient(float x, float y, float w, float h, u32 top_rgba, u32 bottom_rgba);
 void ui_line(float x0, float y0, float x1, float y1, float thickness, u32 rgba);
 void ui_text(float x, float y, float size, u32 rgba, const char *text);
+float ui_snap(float v);                     /* nearest whole pixel */
+float ui_snap_text(float size);             /* text sizes are whole pixels, at least 1 */
+void ui_snap_span(float a, float len, float *lo, float *hi); /* both edges rounded, never thinner than 1 px */
+u32 rgba_shadow(u32 color);
 /* Text shadow rule: auto by default (quarter-brightness copy, one font pixel down-right). offset 0 disables it, a
  * colour of 0 keeps the automatic colour. Resets on ui_begin. */
 void ui_set_text_shadow(float offset, u32 rgba);
@@ -317,6 +322,8 @@ typedef struct FrameSample {
     float gpu_section_ms[GPU_SECTION_COUNT];
     int draw_calls, uploads;
     u32 vertices;
+    int entity_draw_calls, entity_instances, entity_culled, entity_lod[3];
+    u32 entity_upload_bytes;
 } FrameSample;
 void perf_init(void);
 void perf_shutdown(void);
@@ -540,6 +547,7 @@ void block_table_free(BlockNameTable *t);
 #define CF_VIRTUAL 32u   /* no stored data, behaves as uniform air or filler */
 #define CF_MESHED_ONCE 64u
 #define CF_PERSISTENT 128u /* column is persisted, so light changes must reach the disk too */
+#define CF_HAS_RANDOM_TICK 256u /* palette contains at least one random-tick state */
 
 typedef struct MeshSlot {
     i32 page;       /* arena page, -1 when empty */
@@ -558,6 +566,7 @@ typedef struct Chunk {
     u16 light_uniform;
     u16 *light;    /* NULL when every block has light_uniform */
     u32 flags;
+    struct Chunk *mesh_dirty_next;
     u16 conn;      /* face connectivity, bit per face pair, see mesher.c */
     u32 mesh_version;
     u32 vis_frame;
@@ -665,10 +674,15 @@ bool save_open(const char *dir, u64 default_seed);
 bool save_active(void);
 u64 save_seed(void);
 SaveMeta *save_meta(void);
+/* entities.json in the world folder (see entity_save). Read returns NULL when the file does not exist. */
+bool save_write_entities(const char *text, size_t len);
+u8 *save_read_entities(size_t *len);
 /* Main thread: serialises the column now and writes it on a worker. */
 void save_store_column(const Column *col, Chunk *const *chunks);
 /* Worker-safe. Returns true and hands over freshly allocated chunks when the column was saved earlier. */
 bool save_load_column(int cx, int cz, SavedColumn *out);
+/* Scans region files, preserving damaged originals before recovery is attempted. */
+bool save_repair_world(const char *dir);
 int save_jobs_inflight(void);
 void save_close(void);
 
@@ -706,14 +720,38 @@ int gen_structure_count(void);
 /* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
 void gen_column(GenScratch *s, int cx, int cz, u16 *states);
 int gen_sea_level(void);
-/* Shared terrain/water result for near chunks, decoration and distant LOD. A dry sample is all zeroes. */
+/* Shared terrain/water result for near chunks, decoration and distant LOD.
+ *
+ * Contract: gen_hydrology_at is a pure function of (world seed, worldgen hydrology parameters, x, z). The answer never
+ * depends on call order, on which chunks exist, on thread scheduling or on whether the world was loaded from a save.
+ * Internally it reads region-scale drainage (src/hydro.c) that is solved once per 512-block region and cached under a
+ * lock; callers only see the per-column result. Rivers, lakes, the shaped valley around them and the sea all come out
+ * of this one call, so terrain, biomes, decoration and distant tiles cannot disagree about where water is.
+ *
+ * type: 0 dry, 1 tributary, 2 river, 3 main river, 4 ocean, 5 lake.
+ * wet: this column holds fresh water (river or lake) above its ground. Ocean columns report type 4 with wet false,
+ *      because the column filler supplies sea water from the GEN_HYD_OCEAN flag.
+ * ground_y: terrain height of the column after valley shaping and channel carving. Always set, wet or not.
+ * bed_y / water_y: channel floor and water surface, valid when wet (also for the ocean: water_y is sea level).
+ * channel: 0..1 wetness of the bed, used to pick gravel, clay and mud; it also fades out across the bank.
+ * flow: upstream catchment area in 4x4 block cells; zero away from rivers.
+ * water_dist: blocks to the nearest river or lake bank (0 in water), capped at 64.
+ * downstream_x/z: a point two blocks along the local flow, valid when the column is in or beside a river.
+ * flags: GEN_HYD_* bits. A dry sample far from water is all zeroes except ground_y and water_dist. */
+enum { GEN_HYD_FALL = 1, GEN_HYD_RAPIDS = 2, GEN_HYD_ESTUARY = 4, GEN_HYD_OCEAN = 8, GEN_HYD_LAKE = 16, GEN_HYD_BANK = 32 };
 typedef struct GenHydrologySample {
     float channel, bed_y, water_y;
     float downstream_x, downstream_z;
-    u8 type;
+    float ground_y, flow, water_dist;
+    u8 type, flags;
     bool wet;
 } GenHydrologySample;
 void gen_hydrology_at(float x, float z, GenHydrologySample *out);
+/* How many times gen_hydrology_at has run since the last reset; tests use it to prove columns are sampled once. */
+const char *gen_habitat_at(const GenHydrologySample *h); /* dry, shore, wetland, river, lake or ocean */
+int hydro_diag_run(int argc, char **argv); /* --dump-hydrology, --dump-rivers, --dump-spawns, --compare-worldgen */
+u64 gen_hydrology_calls(void);
+void gen_hydrology_calls_reset(void);
 /* Cheap analytic height, used by the distant-terrain tiles and the benchmark camera. */
 float gen_height_at(float x, float z);
 
@@ -840,6 +878,8 @@ typedef struct Preset {
     char shadows[PRESET_ID_MAX]; /* shadow quality level id from data/<namespace>/shadows, empty for none */
     char godrays[PRESET_ID_MAX]; /* godray level id from data/<namespace>/godrays; empty falls back on light_shafts */
     char fog_quality[PRESET_ID_MAX]; /* fog quality level id from data/<namespace>/fog, empty follows the default */
+    int entity_max_drawn;    /* entity_draw cap, the nearest entities win */
+    float entity_lod1, entity_lod2; /* distances at which entities drop to one box and then to an impostor */
 } Preset;
 
 #define MAX_SHADOW_LEVELS 8
@@ -890,6 +930,9 @@ typedef struct FogLevel {
 typedef struct Settings {
     char preset[PRESET_ID_MAX];
     int ui_scale;             /* -1 automatic, 1..4 explicit GUI scale */
+    float hud_scale;          /* 0.5 to 3, status HUD size, independent of ui_scale */
+    float hud_text_scale;     /* 0.75 to 2, HUD text only */
+    float ui_text_scale;      /* 0.75 to 2, screen and widget text only */
     int render_distance;     /* chunks, 0 follows the preset */
     int dynamic_resolution;  /* -1 follows the preset, 0 off, 1 on */
     float render_scale;      /* fixed scale used while dynamic resolution is off, 0.5 to 1 */
@@ -898,6 +941,7 @@ typedef struct Settings {
     bool view_bob_off, motion_fx_off; /* camera feel switches; both effects are on unless the player turns them off */
     bool shadows_off;        /* shadows are on unless the player turns them off */
     char shadow_quality[PRESET_ID_MAX]; /* shadow level id, empty follows the preset */
+    int shadow_distance;     /* maximum shadow distance in blocks; 0 follows the selected quality level */
     bool godrays_off;        /* godrays follow the preset unless the player turns them off */
     char godray_quality[PRESET_ID_MAX]; /* godray level id, empty follows the preset */
     bool fog_off;            /* near-plane fog follows the preset unless the player turns it off */
@@ -1088,6 +1132,10 @@ void mods_unload_plugins(void);
 
 /* Event bus and command table shared by Lua and native plugins. */
 const dfe_api_t *api_get(void);
+/* Internal registration variants used by the Lua bridge.  The public API always
+ * treats user as plugin-owned; these variants mark the engine-owned allocation. */
+int api_subscribe_owned(const char *event, dfe_event_fn fn, void *user, const char *mod_id);
+int api_register_command_owned(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id);
 /* Fires an event. Returns true when a subscriber asked to cancel it. */
 bool event_fire(const dfe_event_t *ev);
 void events_clear(const char *mod_id); /* drops every subscription and command of a mod, used by reload */
@@ -1129,6 +1177,8 @@ bool script_init(void);
 void script_shutdown(void);
 /* Runs the entry script of every loaded mod in load order. Returns the number of script errors. */
 int script_load_mods(void);
+/* Runs one Lua file from a mod's sandbox with the test budget. */
+bool script_run_mod_test(const char *mod_id, const char *relative_path);
 /* Evaluates console input. Returns true if it was handled. */
 void script_eval(const char *code);
 int script_error_count(void);
@@ -1137,6 +1187,13 @@ int script_error_count(void);
 
 #define PLAYER_WIDTH 0.6f
 #define PLAYER_HEIGHT 1.8f
+/* Every box-vs-voxel overlap test shrinks the box by this much, and a snap leaves twice this gap. 1 mm is far above
+ * float error at world coordinates in the thousands (~0.0005 at 4096) yet invisible. */
+#define PLAYER_COLLISION_EPSILON 0.001f
+/* How far below the feet the ground probe looks; larger than the 2*epsilon resting gap, far smaller than a block. */
+#define PLAYER_GROUND_PROBE_DISTANCE 0.05f
+/* Tallest ledge auto-step climbs: exactly one block. */
+#define PLAYER_STEP_HEIGHT 1.0f
 #define PLAYER_EYE 1.62f
 #define PLAYER_CROUCH_HEIGHT 1.0f
 #define PLAYER_CROUCH_EYE 0.9f
@@ -1167,6 +1224,9 @@ bool player_teleport(Player *p, V3 feet);
 void player_respawn(Player *p, V3 feet);
 /* Advances the player by dt seconds (at most one physics step of 1/60 s per call is exact; larger dt is split). */
 void player_step(Player *p, const PlayerInput *in, float dt);
+float player_effective_friction(float friction);
+/* Counts solid cells under the box footprint at `feet` and reports their mean friction (1 when none). */
+int player_ground_probe(V3 feet, float half_width, float *friction);
 /* True when a player box with its feet at `feet` overlaps a solid block or an unloaded column. */
 bool player_box_blocked(V3 feet);
 /* The same test for a box of any size, used by entities. */
@@ -1182,17 +1242,48 @@ extern Player g_player;
 
 #define MAX_ENTITY_TYPES 64
 #define MAX_ENTITIES 256
+#define ENTITY_MAX_DROPS 4
+#define ENTITY_DATA_MAX 192
+#define ENTITY_LOD_LEVELS 3
+typedef enum { ENT_BEHAVE_WANDER, ENT_BEHAVE_STATIC, ENT_BEHAVE_HOSTILE, ENT_BEHAVE_PASSIVE, ENT_BEHAVE_COUNT } EntityBehaviour;
+typedef struct EntityDrop { char item[64]; int min, max; } EntityDrop;
 typedef struct EntityType {
     char id[64];             /* namespace:file, for example base:hopper */
     char name[48];
     float width, height;     /* collision box in blocks */
     float color[3], accent[3]; /* body and head colour, 0..1 */
     float speed;             /* multiplier of the player's walking speed */
-    bool wander;
+    bool wander;             /* legacy flag; false means the static behaviour unless "behaviour" says otherwise */
     float lifetime;          /* seconds, 0 for unlimited */
+    float health;            /* 0 means the type has no health component and ignores damage */
+    EntityBehaviour behaviour;
+    float attack;            /* hostile: damage dealt to the player per hit */
+    float sight;             /* hostile and passive: distance at which the player is noticed, in blocks */
+    bool save;               /* written with the world */
+    u8 habitat;              /* 0 anywhere, 1 land only, 2 water only (river, lake or sea); checked by entity_spawn against gen_hydrology_at */
+    int drop_count;
+    EntityDrop drops[ENTITY_MAX_DROPS];
 } EntityType;
 
+typedef enum { DAMAGE_UNKNOWN, DAMAGE_PLAYER, DAMAGE_ENTITY, DAMAGE_MOD } DamageSourceKind;
+typedef struct DamageSource { DamageSourceKind kind; int entity_id; } DamageSource;
+
+/* A copy of one entity's state, for scripts and tests. */
+typedef struct EntityInfo {
+    int id;
+    char type[64];
+    V3 pos, vel;
+    float yaw, health, max_health, age;
+    EntityBehaviour behaviour;
+    char data[ENTITY_DATA_MAX]; /* free text a mod keeps with the entity; saved with it */
+} EntityInfo;
+
+/* Entities run on the main thread only: spawn, remove, damage, update, save and every query must not be called
+ * from a worker. Handlers may call them during entity_update; removals are applied when the update ends. */
 int registry_load_entities(void);
+/* Parses one entity definition from JSON text and registers it under full_id (a namespaced id). Returns false and
+ * writes the reason to err when the definition is invalid; the previous definition stays. */
+bool entity_type_register_json(const char *full_id, const char *json, char *err, size_t err_size);
 int entity_type_count(void);
 const EntityType *entity_type_at(int i);
 /* Returns a handle (>0), or 0 with a warning when the type is unknown or the entity limit is reached. */
@@ -1203,9 +1294,61 @@ int entity_count(void);
 void entity_clear(void);
 void entity_world_init(u64 seed);
 void entity_update(float dt);
+bool entity_get(int id, EntityInfo *out);
+bool entity_set_position(int id, V3 feet);
+bool entity_set_velocity(int id, V3 vel);
+bool entity_set_health(int id, float health, float max_health); /* max_health < 0 keeps the maximum */
+bool entity_set_yaw(int id, float yaw);
+bool entity_set_behaviour(int id, EntityBehaviour b);
+bool entity_set_data(int id, const char *text);
+const char *entity_behaviour_name(EntityBehaviour b);
+bool entity_behaviour_parse(const char *name, EntityBehaviour *out);
+/* Applies damage through the invulnerability timer and the entity_damage event; returns true when health dropped. A
+ * type without health ignores damage. Reaching zero fires entity_death, and unless a handler cancels it the entity
+ * is removed and, for a player source, its drops go to the player. */
+bool entity_damage(int id, float amount, const DamageSource *src);
+bool entity_heal(int id, float amount);
+/* Nearest entity whose box the ray crosses within max_dist; returns its handle or 0 and writes the distance. */
+int entity_raycast(V3 origin, V3 dir, float max_dist, float *dist);
+/* Handles in ascending order (spawn order). Returns the total, writes at most cap. */
+int entity_list(int *out, int cap);
+/* Handles within radius blocks of a point, nearest first (ties by handle). */
+int entity_near(V3 pos, float radius, int *out, int cap);
+/* Persistence: entities.json in the world folder. Unknown types in a save are kept and written back untouched. */
+bool entity_save(void);
+int entity_load(void);
 bool entity_gl_init(void);
 bool entity_reload_shaders(void);
 void entity_gl_shutdown(void);
+
+/* Rendering. Visible entities are sorted nearest first, capped, assigned an LOD and written to one instance array;
+ * with instancing each LOD level is one draw call, without it each entity costs two draws like the original path. */
+typedef struct EntityConfig {
+    bool instancing;
+    int max_drawn;           /* most entities submitted per frame; the nearest win */
+    float lod1_distance;     /* beyond this one box replaces body and head */
+    float lod2_distance;     /* beyond this a camera-facing impostor replaces the box */
+    float min_screen;        /* culled when the bounding radius is smaller than this fraction of the view height */
+} EntityConfig;
+extern EntityConfig g_entity_cfg;
+typedef struct EntityStats {
+    int draw_calls, instances, drawn, culled;
+    int lod[ENTITY_LOD_LEVELS];
+    u32 upload_bytes;
+} EntityStats;
+extern EntityStats g_entity_stats;
+typedef struct EntityInstance {
+    float origin[3];         /* feet relative to the camera */
+    float yaw_sc[2];         /* sine, cosine */
+    float size[2];           /* width, height */
+    float color[3], accent[3];
+    float light[4];          /* sky, r, g, b */
+} EntityInstance;
+/* The CPU half of drawing, usable without GL: culls, sorts, caps, picks LODs and fills the instance arrays. Returns
+ * the number of instances. */
+int entity_build_batches(const Camera *cam, float fog_end, EntityInstance **out, int lod_counts[ENTITY_LOD_LEVELS]);
+/* Draw calls a frame with these LOD counts costs: one per non-empty level when instanced, else two per full-detail entity. */
+int entity_draw_call_count(const int lod_counts[ENTITY_LOD_LEVELS], bool instanced);
 /* Draws every entity the fog leaves visible and returns the number of draw calls issued. */
 int entity_draw(const Camera *cam, float fog_start, float fog_end);
 
@@ -1301,7 +1444,8 @@ typedef struct Interact {
     float break_progress; /* 0..1 of the block under the cursor */
     int break_x, break_y, break_z;
     bool breaking;
-    float place_cooldown, break_cooldown;
+    float place_cooldown, break_cooldown, attack_cooldown;
+    bool attack_latch; /* set by a click on an entity; blocks mining until the button is released */
 } Interact;
 extern Interact g_interact;
 /* Reads the mouse and the number keys, posts server messages for edits, and updates the target block. */
@@ -1337,6 +1481,7 @@ bool hud_init(void);
 void hud_shutdown(void);
 /* Builds the item icons from the block textures. Needs the texture array and a GL context. */
 void hud_build_icons(void);
+int hud_item_cell(const char *id);
 void hud_draw(int width, int height);
 bool hud_inventory_open(void);
 void hud_set_inventory_open(bool open);
@@ -1347,11 +1492,15 @@ void hud_update(void);
 typedef struct Options {
     bool benchmark;
     bool selftest;
+    bool repair_world;
     bool no_vsync;
     bool hidden_window;
     bool no_render; /* benchmark without GL, measures CPU side only */
+    bool headless;  /* runtime mod tests: no window, GL, audio, or input */
     int width, height;
     int bench_seconds;
+    int bench_entities;      /* --bench-entities: spawn this many entities in front of a fixed benchmark camera */
+    bool entity_legacy;      /* --entity-legacy: two draws per entity, no LOD; the pre-batching baseline */
     char mods_dir[512];
     char assets_dir[512];
     char world_name[64];

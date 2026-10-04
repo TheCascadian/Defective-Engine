@@ -2,6 +2,7 @@
  * neighbouring columns can all agree without exchanging data. Caves are 3D noise sampled on a coarse grid
  * and interpolated. Which blocks fill each role comes from data/<ns>/worldgen/default.json. */
 #include "dfe.h"
+#include "gen_internal.h"
 
 #include <limits.h>
 
@@ -24,8 +25,8 @@
 #define BIOME_JITTER 0.11f  /* climate noise units; the width of the blended band between two biomes */
 #define LINE_WOBBLE 10.0f   /* tree and snow lines move by up to this many blocks so they never read as a ruled stripe */
 #define STEEP_SLOPE 5.0f    /* local relief before ordinary soil gives way to exposed rock */
-#define RIVER_CHANNEL_MIN 0.58f
-#define RIVER_MIN_DROP 0.75f
+#define TREE_RING 3 /* columns around a chunk whose terrain, biome and water tree placement may read */
+#define TREE_RING_SPAN (CHUNK_SIZE + 2 * TREE_RING)
 
 typedef enum { BIOME_OCEAN, BIOME_BEACH, BIOME_DESERT, BIOME_TUNDRA, BIOME_SWAMP, BIOME_FOREST, BIOME_PLAINS, BIOME_MOUNTAIN, BIOME_COUNT } Biome;
 
@@ -43,6 +44,8 @@ typedef struct GenBiomeDef {
 } GenBiomeDef;
 
 typedef struct GenOreDef {
+    int habitat;
+    float water_min, water_max;
     char id[64];
     char ore_name[64];
     char replace_name[64];
@@ -70,7 +73,13 @@ typedef struct GenConfig {
 #define MAX_WORLDGEN_FEATURES 32
 #define MAX_WORLDGEN_STRUCTURES 32
 
+/* Where a feature, structure or ore may sit relative to water. The default is DRY: never in a river, lake or the sea. */
+typedef enum { HAB_DRY, HAB_ANY, HAB_RIVER, HAB_LAKE, HAB_SHORE, HAB_WETLAND } Habitat;
+#define SHORE_DISTANCE 6.0f
+
 typedef struct GenFeatureDef {
+    int habitat;
+    float water_min, water_max; /* allowed water_dist range in blocks; the defaults leave it unbounded */
     char id[64];
     char block_name[64];
     u16 block_state;
@@ -87,6 +96,8 @@ typedef struct GenStructureBlock {
 } GenStructureBlock;
 
 typedef struct GenStructureDef {
+    int habitat;
+    float water_min, water_max;
     char id[64];
     char biome_ids[8][64];
     int biome_count;
@@ -107,6 +118,8 @@ static bool g_default_biomes;
 static bool custom_biomes(void) { return g_biome_count > 0 && !g_default_biomes; }
 
 static GenConfig C;
+static HydroParams g_hp;
+static u64 g_hydro_calls;
 static struct {
     fnl_state cont, cont_warp, cont2, coast, ocean, ocean_warp, river2, river3, river_side, mount, belt, ridge, hills, detail, river, river_warp, river_wiggle, warp, blend, patch_a, patch_b, blob, temp, humid, cave_a, cave_b, cheese;
     i64 seed;
@@ -116,6 +129,14 @@ static struct {
 struct GenScratch {
     i16 height[CHUNK_AREA];
     u8 biome[CHUNK_AREA];
+    /* Hydrology is sampled once while the heightmap is built.  Decorations and
+     * voxel filling must consume this snapshot, not ask the global generator
+     * for the same column again. */
+    GenHydrologySample hydro[CHUNK_AREA];
+    /* Lazy ring around the chunk for trees: a tree rooted outside the chunk reads its neighbours' ground, biome and water. */
+    GenHydrologySample ring_hydro[TREE_RING_SPAN * TREE_RING_SPAN];
+    u8 ring_biome[TREE_RING_SPAN * TREE_RING_SPAN];
+    u8 ring_valid[TREE_RING_SPAN * TREE_RING_SPAN];
     float cave[CAVE_GRID_XZ * CAVE_GRID_XZ * (((BAND_HI - BAND_LO + 1) * CHUNK_SIZE) / CAVE_CELL + 1)];
 };
 
@@ -225,6 +246,8 @@ static void parse_biome_array(const Json *items, const char *rel, const char *ow
     }
 }
 
+static bool parse_habitat(const Json *o, const char *kind, const char *id, const char *rel, const char *owner, int *habitat, float *wmin, float *wmax);
+
 static void parse_ore_array(const Json *items, const char *rel, const char *owner) {
     if (!items || items->type != JSON_ARRAY) return;
     for (int i = 0; i < items->count; i++) {
@@ -248,6 +271,8 @@ static void parse_ore_array(const Json *items, const char *rel, const char *owne
         g_ores[g_ore_count].rarity = json_int(o, "rarity", 1000);
         g_ores[g_ore_count].size = json_int(o, "size", 2);
         g_ores[g_ore_count].density = json_int(o, "density", 1);
+        if (!parse_habitat(o, "ore", id, rel, owner, &g_ores[g_ore_count].habitat, &g_ores[g_ore_count].water_min, &g_ores[g_ore_count].water_max)) continue;
+        if (!json_get(o, "habitat")) g_ores[g_ore_count].habitat = HAB_ANY; /* ore is underground, so it ignores water unless asked */
         const Json *biomes = json_get(o, "biomes");
         g_ores[g_ore_count].biome_count = 0;
         if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
@@ -256,6 +281,40 @@ static void parse_ore_array(const Json *items, const char *rel, const char *owne
         }
         g_ore_count++;
     }
+}
+
+static bool parse_habitat(const Json *o, const char *kind, const char *id, const char *rel, const char *owner, int *habitat, float *wmin, float *wmax) {
+    *habitat = HAB_DRY; *wmin = 0.0f; *wmax = HY_FAR;
+    const char *h = json_str(o, "habitat", NULL);
+    if (h) {
+        static const char *names[] = {"dry", "any", "river", "lake", "shore", "wetland"};
+        int found = -1;
+        for (int i = 0; i < 6; i++) if (!strcmp(h, names[i])) found = i;
+        if (found < 0) { data_error(owner, rel, o->line, "%s \"%s\" has unknown habitat \"%s\". Use dry, any, river, lake, shore or wetland.", kind, id, h); return false; }
+        *habitat = found;
+    }
+    const Json *wd = json_get(o, "water_distance");
+    if (wd && wd->type == JSON_OBJECT) {
+        *wmin = CLAMP((float)json_num(wd, "min", 0.0), 0.0f, HY_FAR);
+        *wmax = CLAMP((float)json_num(wd, "max", HY_FAR), 0.0f, HY_FAR);
+        if (*wmin > *wmax) { data_error(owner, rel, o->line, "%s \"%s\" has water_distance min above max.", kind, id); return false; }
+    }
+    return true;
+}
+
+static void parse_hydrology_params(const Json *root, const char *rel, const char *owner) {
+    hydro_params_default(&g_hp);
+    const Json *h = json_get(root, "hydrology");
+    if (!h) return;
+    if (h->type != JSON_OBJECT) { data_error(owner, rel, h->line, "\"hydrology\" must be an object of drainage parameters."); return; }
+#define HP(f) g_hp.f = (float)json_num(h, #f, g_hp.f)
+    HP(river_min_area); HP(width_base); HP(width_scale); HP(width_exp); HP(depth_base); HP(depth_scale);
+    HP(bank_grad_min); HP(bank_grad_max); HP(valley_reach); HP(lake_min_depth); HP(lake_max_depth); HP(fall_drop); HP(rapids_drop);
+#undef HP
+    g_hp.lake_max_cells = json_int(h, "lake_max_cells", g_hp.lake_max_cells);
+    char first[48];
+    int changed = hydro_params_sanitize(&g_hp, first, sizeof first);
+    if (changed) data_error(owner, rel, h->line, "%d hydrology value(s) were outside the safe range and were clamped; the first is \"%s\". See docs/HYDROLOGY.md for the limits.", changed, first);
 }
 
 static void parse_feature_array(const Json *items, const char *rel, const char *owner);
@@ -278,6 +337,7 @@ int registry_load_worldgen_config(void) {
     memset(&C, 0, sizeof C);
     C.sea_level = 62;
     C.deep_level = 0;
+    hydro_params_default(&g_hp);
     const char *rel = NULL;
     StrList namespaces = {0};
     vfs_list("data", &namespaces);
@@ -339,6 +399,7 @@ int registry_load_worldgen_config(void) {
         C.gold = optional_role_block(roles, "gold_ore", rel, owner);
         C.diamond = optional_role_block(roles, "diamond_ore", rel, owner);
     }
+    parse_hydrology_params(root, rel, owner);
     parse_biome_array(json_get(root, "biomes"), rel, owner);
     parse_ore_array(json_get(root, "ores"), rel, owner);
     parse_feature_array(json_get(root, "features"), rel, owner);
@@ -372,20 +433,20 @@ static void parse_feature_array(const Json *items, const char *rel, const char *
         if (g_feature_count >= MAX_WORLDGEN_FEATURES) { data_error(owner, rel, f->line, "too many feature definitions; the limit is %d.", MAX_WORLDGEN_FEATURES); break; }
         BlockDef *def = block_find(block);
         if (!def) { data_error(owner, rel, f->line, "feature \"%s\" names unknown block \"%s\".", id, block); continue; }
-        memset(&g_features[g_feature_count], 0, sizeof g_features[g_feature_count]);
-        snprintf(g_features[g_feature_count].id, sizeof g_features[g_feature_count].id, "%s", id);
-        snprintf(g_features[g_feature_count].block_name, sizeof g_features[g_feature_count].block_name, "%s", block);
-        g_features[g_feature_count].block_state = def->default_state;
-        g_features[g_feature_count].chance = json_int(f, "chance", 100);
-        g_features[g_feature_count].min_y = json_int(f, "min_y", 0);
-        g_features[g_feature_count].max_y = json_int(f, "max_y", 255);
-        g_features[g_feature_count].radius = json_int(f, "radius", 1);
+        GenFeatureDef d = {0};
+        snprintf(d.id, sizeof d.id, "%s", id); snprintf(d.block_name, sizeof d.block_name, "%s", block);
+        d.block_state = def->default_state; d.chance = json_int(f, "chance", 100);
+        d.min_y = json_int(f, "min_y", 0); d.max_y = json_int(f, "max_y", 255); d.radius = json_int(f, "radius", 1);
+        bool ok = d.chance >= 0 && d.chance <= 100 && d.min_y <= d.max_y && d.radius >= 0;
+        if (!ok) { data_error(owner, rel, f->line, "feature \"%s\" has invalid chance, height, or radius.", id); continue; }
+        if (!parse_habitat(f, "feature", id, rel, owner, &d.habitat, &d.water_min, &d.water_max)) continue;
         const Json *biomes = json_get(f, "biomes");
-        g_features[g_feature_count].biome_count = 0;
+        d.biome_count = 0;
         if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
             const char *name = json_as_str(biomes->items[k], "");
-            if (name[0]) snprintf(g_features[g_feature_count].biome_ids[g_features[g_feature_count].biome_count++], sizeof g_features[g_feature_count].biome_ids[0], "%s", name);
+            if (name[0]) snprintf(d.biome_ids[d.biome_count++], sizeof d.biome_ids[0], "%s", name);
         }
+        g_features[g_feature_count] = d;
         g_feature_count++;
     }
 }
@@ -399,33 +460,30 @@ static void parse_structure_array(const Json *items, const char *rel, const char
         const Json *blocks = json_get(s, "blocks");
         if (!id || !blocks || blocks->type != JSON_ARRAY || !blocks->count) { data_error(owner, rel, s->line, "structure \"%s\" needs an \"id\" and a non-empty \"blocks\" array.", id ? id : "?" ); continue; }
         if (g_structure_count >= MAX_WORLDGEN_STRUCTURES) { data_error(owner, rel, s->line, "too many structure definitions; the limit is %d.", MAX_WORLDGEN_STRUCTURES); break; }
-        memset(&g_structures[g_structure_count], 0, sizeof g_structures[g_structure_count]);
-        snprintf(g_structures[g_structure_count].id, sizeof g_structures[g_structure_count].id, "%s", id);
-        g_structures[g_structure_count].chance = json_int(s, "chance", 100);
-        g_structures[g_structure_count].min_y = json_int(s, "min_y", 0);
-        g_structures[g_structure_count].max_y = json_int(s, "max_y", 255);
+        GenStructureDef d = {0};
+        snprintf(d.id, sizeof d.id, "%s", id); d.chance = json_int(s, "chance", 100);
+        d.min_y = json_int(s, "min_y", 0); d.max_y = json_int(s, "max_y", 255);
+        bool ok = d.chance >= 0 && d.chance <= 100 && d.min_y <= d.max_y;
+        if (!ok) { data_error(owner, rel, s->line, "structure \"%s\" has invalid chance or height.", id); continue; }
+        if (!parse_habitat(s, "structure", id, rel, owner, &d.habitat, &d.water_min, &d.water_max)) continue;
         const Json *biomes = json_get(s, "biomes");
-        g_structures[g_structure_count].biome_count = 0;
+        d.biome_count = 0;
         if (biomes && biomes->type == JSON_ARRAY) for (int k = 0; k < MIN(biomes->count, 8); k++) {
             const char *name = json_as_str(biomes->items[k], "");
-            if (name[0]) snprintf(g_structures[g_structure_count].biome_ids[g_structures[g_structure_count].biome_count++], sizeof g_structures[g_structure_count].biome_ids[0], "%s", name);
+            if (name[0]) snprintf(d.biome_ids[d.biome_count++], sizeof d.biome_ids[0], "%s", name);
         }
-        g_structures[g_structure_count].block_count = 0;
+        d.block_count = 0;
         for (int b = 0; b < blocks->count; b++) {
             const Json *entry = blocks->items[b];
-            if (!entry || entry->type != JSON_ARRAY || entry->count < 4) { data_error(owner, rel, s->line, "structure \"%s\" block entries must be [x, y, z, \"block\"].", id); continue; }
-            if (g_structures[g_structure_count].block_count >= 32) { data_error(owner, rel, s->line, "structure \"%s\" has too many blocks; the limit is 32.", id); break; }
+            if (!entry || entry->type != JSON_ARRAY || entry->count < 4) { data_error(owner, rel, s->line, "structure \"%s\" block entries must be [x, y, z, \"block\"].", id); ok=false; continue; }
+            if (d.block_count >= 32) { data_error(owner, rel, s->line, "structure \"%s\" has too many blocks; the limit is 32.", id); ok=false; break; }
             int x = (int)json_as_num(json_at(entry, 0), 0); int y = (int)json_as_num(json_at(entry, 1), 0); int z = (int)json_as_num(json_at(entry, 2), 0);
             const char *name = json_as_str(json_at(entry, 3), NULL);
             BlockDef *def = name ? block_find(name) : NULL;
-            if (!def) { data_error(owner, rel, s->line, "structure \"%s\" references unknown block \"%s\".", id, name ? name : "<null>"); continue; }
-            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].x = x;
-            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].y = y;
-            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].z = z;
-            g_structures[g_structure_count].blocks[g_structures[g_structure_count].block_count].state = def->default_state;
-            g_structures[g_structure_count].block_count++;
+            if (!def) { data_error(owner, rel, s->line, "structure \"%s\" references unknown block \"%s\".", id, name ? name : "<null>"); ok=false; continue; }
+            d.blocks[d.block_count++] = (GenStructureBlock){x,y,z,def->default_state};
         }
-        if (g_structures[g_structure_count].block_count > 0) g_structure_count++;
+        if (ok && d.block_count > 0) g_structures[g_structure_count++] = d;
     }
 }
 
@@ -505,9 +563,10 @@ void gen_init(u64 seed) {
     N.cave_b = make_noise(s + 8, 0.016f, 1);
     N.cheese = make_noise(s + 9, 0.011f, 2);
     N.ready = true;
+    hydro_init(seed, C.sea_level, &g_hp);
 }
 
-void gen_shutdown(void) { N.ready = false; }
+void gen_shutdown(void) { hydro_shutdown(); N.ready = false; }
 GenScratch *gen_scratch_create(void) { return xcalloc(1, sizeof(GenScratch)); }
 void gen_scratch_destroy(GenScratch *s) { free(s); }
 void gen_band(int *lo_cy, int *hi_cy) { *lo_cy = BAND_LO; *hi_cy = BAND_HI; }
@@ -577,123 +636,97 @@ static float terrain_base_height(float wx, float wz) {
     return h;
 }
 
-static float terrain_grade_at(float x, float z) {
-    float wx, wz;
-    terrain_coordinates(x - 2.0f, z, &wx, &wz);
-    float west = terrain_base_height(wx, wz);
-    terrain_coordinates(x + 2.0f, z, &wx, &wz);
-    float east = terrain_base_height(wx, wz);
-    terrain_coordinates(x, z - 2.0f, &wx, &wz);
-    float north = terrain_base_height(wx, wz);
-    terrain_coordinates(x, z + 2.0f, &wx, &wz);
-    float south = terrain_base_height(wx, wz);
-    float dx = (east - west) * 0.25f;
-    float dz = (south - north) * 0.25f;
-    return sqrtf(dx * dx + dz * dz);
-}
 
-static float river_strength_at(float wx, float wz) {
-    float rx = wx, rz = wz;
-    fnlDomainWarp2D(&N.river_warp, &rx, &rz);
-    fnlDomainWarp2D(&N.river_wiggle, &rx, &rz); /* large bends first, then small meanders, so no stretch stays straight */
-    /* Each drainage order gets its own broad control values.  These vary its width, which bank receives tributaries
-     * and how far away they can join, avoiding a repeated three-contour pattern. */
-    float main_shape = fnlGetNoise2D(&N.river_side, rx - 1900.0f, rz + 700.0f);
-    float branch_shape = fnlGetNoise2D(&N.river_side, rx + 1300.0f, rz - 2300.0f);
-    float twig_shape = fnlGetNoise2D(&N.river_side, rx - 3700.0f, rz - 1100.0f);
-    float n1 = fnlGetNoise2D(&N.river, rx, rz);
-    float river_axis = 1.0f - fabsf(n1);
-    float flow = smooth01((river_axis - (0.915f + 0.035f * main_shape)) / (0.040f + 0.018f * (1.0f - main_shape * main_shape)));
-    /* Tributaries are permitted in uneven catchments on either bank.  The control field changes only over long
-     * distances, so they converge into the parent stream instead of forming a predictable parallel lattice. */
-    float side = n1 * (branch_shape >= 0.0f ? 1.0f : -1.0f);
-    float near1 = smooth01((river_axis - (0.36f + 0.16f * branch_shape)) / (0.24f + 0.10f * (1.0f - fabsf(branch_shape))))
-                * smooth01((side + 0.10f + 0.12f * main_shape) / 0.20f);
-    float n2 = fnlGetNoise2D(&N.river2, rx, rz);
-    float axis2 = 1.0f - fabsf(n2);
-    float flow2 = smooth01((axis2 - (0.890f + 0.055f * branch_shape)) / 0.055f) * near1;
-    float side2 = n2 * (twig_shape >= 0.0f ? 1.0f : -1.0f);
-    float near2 = smooth01((axis2 - (0.42f + 0.14f * twig_shape)) / 0.26f)
-                * smooth01((side2 + 0.10f + 0.10f * branch_shape) / 0.20f) * near1;
-    float axis3 = 1.0f - fabsf(fnlGetNoise2D(&N.river3, rx, rz));
-    float flow3 = smooth01((axis3 - (0.885f + 0.060f * twig_shape)) / 0.060f) * near2;
-    flow = MAX(flow, MAX(flow2, flow3));
-    float land = smooth01((continent_at(wx, wz) + 0.17f) / 0.40f);
-    float shore = smooth01((land - 0.55f) / 0.10f);
-    float highland = smooth01((fnlGetNoise2D(&N.mount, wx, wz) + 0.12f) / 0.65f);
-    return flow * shore * (1.0f - 0.85f * highland);
-}
-
-static float river_channel_at(float x, float z, float wx, float wz) {
-    float channel = river_strength_at(wx, wz);
-    if (channel < RIVER_CHANNEL_MIN) return 0.0f;
-    float grade = terrain_grade_at(x, z);
-    if (grade >= 0.95f) return 0.0f;
-    channel *= 1.0f - smooth01((grade - 0.30f) / 0.65f);
-    return channel >= RIVER_CHANNEL_MIN ? channel : 0.0f;
-}
-
-/* Keep only channel-mask samples that continue to a lower channel sample. The fixed candidate order makes ties
- * deterministic; selecting by terrain alone would let noise-painted rivers cut straight across hillsides. */
-static bool river_downstream_at(float x, float z, float base, float *out_x, float *out_z, float *out_height) {
-    const float max_drop = 2.5f;
-    static const float dirs[8][2] = {
-        {1.0f, 0.0f}, {0.70710678f, 0.70710678f}, {0.0f, 1.0f}, {-0.70710678f, 0.70710678f},
-        {-1.0f, 0.0f}, {-0.70710678f, -0.70710678f}, {0.0f, -1.0f}, {0.70710678f, -0.70710678f}
-    };
-    float lowest = base - RIVER_MIN_DROP;
-    bool found = false;
-    for (int i = 0; i < 8; i++) {
-        float nx = x + dirs[i][0] * 2.0f, nz = z + dirs[i][1] * 2.0f;
-        float wx, wz;
-        terrain_coordinates(nx, nz, &wx, &wz);
-        float height = terrain_base_height(wx, wz);
-        if (height >= lowest || height < base - max_drop || river_channel_at(nx, nz, wx, wz) < RIVER_CHANNEL_MIN) continue;
-        lowest = height;
-        *out_x = nx;
-        *out_z = nz;
-        *out_height = height;
-        found = true;
-    }
-    return found;
-}
-
-/* A channel is permitted only where the terrain-side river mask is strong enough to cut a real bed. Its water plane
- * follows the local bank instead of the continental/sea plane, so a river cannot turn a lowland into an inland sea. */
-void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
+float gen_terrain_height_raw(float x, float z) {
     float wx, wz;
     terrain_coordinates(x, z, &wx, &wz);
-    float base = terrain_base_height(wx, wz);
-    float channel = river_channel_at(x, z, wx, wz);
+    return terrain_base_height(wx, wz);
+}
+
+bool gen_ocean_cell(float x, float z) { return ocean_at(x, z); }
+
+u64 gen_hydrology_calls(void) { return g_hydro_calls; }
+void gen_hydrology_calls_reset(void) { g_hydro_calls = 0; }
+
+/* Turns the region drainage raster into one column: valley walls ease the terrain toward the channel, the channel is
+ * carved below a single water plane, and lakes flood any ground below their level. See docs/HYDROLOGY.md. */
+void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
+    g_hydro_calls++;
     memset(out, 0, sizeof *out);
-    if (channel < RIVER_CHANNEL_MIN) return;
-    float downstream_height;
-    if (!river_downstream_at(x, z, base, &out->downstream_x, &out->downstream_z, &downstream_height)) return;
-    float water_y = MIN(base, downstream_height) - 0.75f;
-    if (water_y >= (float)C.sea_level + 48.0f) return;
-    out->channel = channel;
-    out->type = channel > 0.84f ? 3 : (channel > 0.70f ? 2 : 1);
-    out->water_y = water_y;
-    float bed_depth = (0.25f + channel * 3.5f) * smooth01((channel - 0.55f) / 0.35f);
-    out->bed_y = out->water_y - bed_depth;
-    out->wet = true;
+    float wx, wz;
+    terrain_coordinates(x, z, &wx, &wz);
+    float base = terrain_base_height(wx, wz), sea = (float)C.sea_level;
+    out->ground_y = base;
+    out->water_dist = HY_FAR;
+    if (base < sea && continent_at(wx, wz) < 0.12f) {
+        out->type = 4;
+        out->flags = GEN_HYD_OCEAN;
+        out->water_y = sea;
+        out->water_dist = 0.0f;
+        return;
+    }
+    HydroRaw r;
+    hydro_query(x, z, &r);
+    out->water_dist = MIN(MAX(r.edge, 0.0f), HY_FAR);
+    if (r.lake_dist < out->water_dist) out->water_dist = r.lake_dist;
+    if (r.lakeness > 0.25f && base < r.lake_level - 0.3f) {
+        out->wet = true;
+        out->type = 5;
+        out->flags = GEN_HYD_LAKE;
+        out->water_y = r.lake_level;
+        out->bed_y = base;
+        out->ground_y = base;
+        out->water_dist = 0.0f;
+        out->channel = r.lake_level - base > 3.0f ? 0.58f : 0.45f;
+        return;
+    }
+    if (!r.river) return;
+    float e = r.edge, hw = MAX(r.half_width, 0.5f), W = r.level;
+    out->flow = r.flow;
+    out->downstream_x = x + r.dir_x * 2.0f;
+    out->downstream_z = z + r.dir_z * 2.0f;
+    out->type = hw < 3.0f ? 1 : (hw < 7.0f ? 2 : 3);
+    if (e < hw + 6.0f) out->flags = (u8)(((r.flags & HYF_FALL) ? GEN_HYD_FALL : 0) | ((r.flags & HYF_RAPIDS) ? GEN_HYD_RAPIDS : 0) | ((r.flags & HYF_ESTUARY) ? GEN_HYD_ESTUARY : 0));
+    if (e < 0.0f) {
+        float u = CLAMP((e + hw) / hw, 0.0f, 1.0f);
+        float depth = MIN(g_hp.depth_base + g_hp.depth_scale * sqrtf(hw), 9.0f);
+        out->wet = true;
+        out->water_y = W;
+        out->bed_y = W - depth * (1.0f - u * u);
+        out->ground_y = out->bed_y;
+        out->channel = 1.0f - 0.45f * u * u;
+        out->water_dist = 0.0f;
+        return;
+    }
+    /* Valley wall: climb from the bank at a slope that follows the local terrain grade, never above the natural ground,
+     * and fade into the natural terrain over the last stretch of the reach so no cliff is left at the valley edge. */
+    float g = g_hp.bank_grad_min + (g_hp.bank_grad_max - g_hp.bank_grad_min) * CLAMP(r.grade, 0.0f, 1.0f);
+    float wall = MAX(MIN(base, W + 0.35f + g * e), W + 0.35f * (1.0f - smooth01(e / 8.0f)));
+    float fade = 1.0f - smooth01((e - (g_hp.valley_reach - 10.0f)) / 10.0f);
+    out->ground_y = base + (wall - base) * fade;
+    out->channel = 0.5f * (1.0f - smooth01(e / 6.0f));
+    out->flags |= GEN_HYD_BANK;
 }
 
 float gen_height_at(float x, float z) {
-    float wx, wz;
-    terrain_coordinates(x, z, &wx, &wz);
-    float base = terrain_base_height(wx, wz);
     GenHydrologySample hydro;
     gen_hydrology_at(x, z, &hydro);
-    return hydro.wet ? hydro.bed_y : base;
+    return hydro.ground_y;
 }
 
-static int biome_index_at(float x, float z, float h) {
+/* Climate moisture rises toward water, so wetlands form around rivers and lakes and deserts do not touch them. */
+static float water_wetness(const GenHydrologySample *hydro) {
+    if (!hydro) return 0.0f;
+    if (hydro->wet || (hydro->flags & GEN_HYD_OCEAN)) return 1.0f;
+    return 1.0f - smooth01(hydro->water_dist / 24.0f);
+}
+
+static int biome_index_at(float x, float z, float h, const GenHydrologySample *hydro) {
     if (!custom_biomes()) {
         float sea = (float)C.sea_level;
         if (h < sea) return BIOME_OCEAN;
         float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
-        float m = fnlGetNoise2D(&N.humid, x, z);
+        float m = fnlGetNoise2D(&N.humid, x, z) + 0.55f * water_wetness(hydro);
         /* Fine-grained jitter on both climate axes breaks every boundary into interleaved patches, so one biome
          * thins out into the next over a stretch instead of ending on a line. */
         t += fnlGetNoise2D(&N.blend, x, z) * BIOME_JITTER;
@@ -704,11 +737,13 @@ static int biome_index_at(float x, float z, float h) {
         if (h + hj * 0.25f < sea + 2.5f && t > -0.3f) return BIOME_BEACH;
         if (t < -0.3f) return BIOME_TUNDRA;
         if (t > 0.3f && m < 0.05f) return BIOME_DESERT;
+        /* Swamp is low, wet ground: high moisture near the sea, or a shore where water is close and the ground is low. */
         if (m > 0.35f && h + hj * 0.5f < sea + 8.0f) return BIOME_SWAMP;
+        if (hydro && water_wetness(hydro) > 0.4f && m > 0.2f && h < sea + 14.0f) return BIOME_SWAMP;
         return m > 0.0f ? BIOME_FOREST : BIOME_PLAINS;
     }
     float t = fnlGetNoise2D(&N.temp, x, z) - (h - 90.0f) * 0.004f;
-    float m = fnlGetNoise2D(&N.humid, x, z);
+    float m = fnlGetNoise2D(&N.humid, x, z) + 0.55f * water_wetness(hydro);
     for (int i = 0; i < g_biome_count; i++) {
         const GenBiomeDef *b = &g_biomes[i];
         if (h < b->min_h || h > b->max_h) continue;
@@ -726,10 +761,12 @@ static void fill_heightmap(GenScratch *s, int cx, int cz, int *max_h) {
     for (int z = 0; z < CHUNK_SIZE; z++)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             float wx = (float)(cx * CHUNK_SIZE + x), wz = (float)(cz * CHUNK_SIZE + z);
-            float h = gen_height_at(wx, wz);
             int i = (z << 5) | x;
+            GenHydrologySample *hydro = &s->hydro[i];
+            gen_hydrology_at(wx, wz, hydro);
+            float h = hydro->ground_y;
             s->height[i] = (i16)floorf(h);
-            s->biome[i] = (u8)biome_index_at(wx, wz, h);
+            s->biome[i] = (u8)biome_index_at(wx, wz, h, hydro);
             if (s->height[i] > mh) mh = s->height[i];
         }
     *max_h = mh;
@@ -875,7 +912,30 @@ static u16 subsurface_block(int biome_index) {
 #define PLANT_MUSHROOM_PERCENT 2
 #define PLANT_DEAD_BUSH_PERCENT 2
 
-static u16 ore_at(int wx, int y, int wz, int depth, int biome_index) {
+static bool habitat_ok(int habitat, float wmin, float wmax, const GenHydrologySample *h) {
+    bool ocean = (h->flags & GEN_HYD_OCEAN) != 0;
+    float d = (h->wet || ocean) ? 0.0f : h->water_dist;
+    switch (habitat) {
+    case HAB_DRY: if (h->wet || ocean) return false; break;
+    case HAB_RIVER: if (!h->wet || h->type == 5) return false; break;
+    case HAB_LAKE: if (!h->wet || h->type != 5) return false; break;
+    case HAB_SHORE: if (h->wet || ocean || d > SHORE_DISTANCE) return false; break;
+    case HAB_WETLAND: if (ocean || d > 2.0f * SHORE_DISTANCE) return false; break;
+    default: break;
+    }
+    return d >= wmin && d <= wmax;
+}
+
+/* Habitat of a column for spawners and dump tools: one of dry, river, lake, shore, wetland, ocean. */
+const char *gen_habitat_at(const GenHydrologySample *h) {
+    if (h->flags & GEN_HYD_OCEAN) return "ocean";
+    if (h->wet) return h->type == 5 ? "lake" : "river";
+    if (h->water_dist <= SHORE_DISTANCE) return "shore";
+    if (h->water_dist <= 2.0f * SHORE_DISTANCE) return "wetland";
+    return "dry";
+}
+
+static u16 ore_at(int wx, int y, int wz, int depth, int biome_index, const GenHydrologySample *hydro) {
     if (depth < ORE_MIN_DEPTH) return STATE_AIR;
     if (g_ore_count > 0) {
         const char *biome_id = g_biome_count > 0 ? g_biomes[biome_index].id : "";
@@ -887,7 +947,7 @@ static u16 ore_at(int wx, int y, int wz, int depth, int biome_index) {
                 match = false;
                 for (int b = 0; b < def->biome_count; b++) if (!strcmp(def->biome_ids[b], biome_id)) { match = true; break; }
             }
-            if (!match) continue;
+            if (!match || !habitat_ok(def->habitat, def->water_min, def->water_max, hydro)) continue;
             u64 hh = hash3(N.seed ^ SALT_ORE, (wx + i) >> ORE_CELL_SHIFT, y >> ORE_CELL_SHIFT, (wz + i) >> ORE_CELL_SHIFT);
             unsigned roll = (unsigned)(hh & (ORE_RANGE - 1));
             if (def->rarity <= 0 || (int)(roll % (unsigned)def->rarity) != 0) continue;
@@ -927,13 +987,18 @@ static void place_plants(const GenScratch *s, u16 *states, int cx, int cz) {
     for (int z = 0; z < CHUNK_SIZE; z++)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             int col = (z << 5) | x, h = s->height[col], ly = h + 1 - y0;
-            if (h <= C.sea_level || ly < 1 || ly >= H) continue;
+            const GenHydrologySample *hy = &s->hydro[col];
+            if (h <= C.sea_level || ly < 1 || ly >= H || hy->wet || (hy->flags & GEN_HYD_OCEAN)) continue;
             size_t at = ((size_t)ly << 10) | col, below = ((size_t)(ly - 1) << 10) | col;
             if (states[at] != STATE_AIR) continue;
             int biome_index = s->biome[col];
             bool sandy = states[below] == C.sand;
-            if (states[below] != C.grass && states[below] != C.podzol && states[below] != C.moss && !(!custom_biomes() && (Biome)biome_index == BIOME_DESERT && sandy)) continue;
-            u16 plant = plant_for(biome_index, hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z));
+            bool reed_ground = hy->water_dist < SHORE_DISTANCE && (states[below] == C.sand || states[below] == C.mud || states[below] == C.dirt);
+            if (states[below] != C.grass && states[below] != C.podzol && states[below] != C.moss && !(!custom_biomes() && (Biome)biome_index == BIOME_DESERT && sandy) && !reed_ground) continue;
+            u64 proll = hash3(N.seed ^ SALT_PLANT, cx * CHUNK_SIZE + x, 0, cz * CHUNK_SIZE + z);
+            u16 plant = reed_ground && states[below] != C.grass ? STATE_AIR : plant_for(biome_index, proll);
+            /* Reeds and sedge: a dense band of tall grass hugging the bank, only on bare ground beside real water. */
+            if (plant == STATE_AIR && !custom_biomes() && C.tall_grass && hy->water_dist < SHORE_DISTANCE && (proll >> 20) % 100 < 45) plant = C.tall_grass;
             if (plant != STATE_AIR) states[at] = plant;
         }
 }
@@ -953,6 +1018,7 @@ static void place_features(const GenScratch *s, u16 *states, int cx, int cz) {
                 int col = (z << 5) | x;
                 int biome_index = s->biome[col];
                 if (!feature_matches_biome(biome_index, feature)) continue;
+                if (!habitat_ok(feature->habitat, feature->water_min, feature->water_max, &s->hydro[col])) continue;
                 int wx = cx * CHUNK_SIZE + x, wz = cz * CHUNK_SIZE + z;
                 int y = s->height[col];
                 if (y < feature->min_y || y > feature->max_y) continue;
@@ -986,6 +1052,7 @@ static void place_structures(const GenScratch *s, u16 *states, int cx, int cz) {
                 int col = (z << 5) | x;
                 int biome_index = s->biome[col];
                 if (!structure_matches_biome(biome_index, structure)) continue;
+                if (!habitat_ok(structure->habitat, structure->water_min, structure->water_max, &s->hydro[col])) continue;
                 int wx = cx * CHUNK_SIZE + x, wz = cz * CHUNK_SIZE + z;
                 int y = s->height[col];
                 if (y < structure->min_y || y > structure->max_y) continue;
@@ -1020,20 +1087,41 @@ static int tree_percent(int biome_index) {
     }
 }
 
-static bool tree_ground_ok(int wx, int wz, float h, int biome_index) {
+/* Ring cache: a cell inside the chunk reuses the heightmap pass; one outside is computed on first use and kept, so
+ * every column is sampled at most once per generated chunk however many trees look at it. */
+static int ring_slot(int cx, int cz, int wx, int wz) { return (wz - (cz * CHUNK_SIZE - TREE_RING)) * TREE_RING_SPAN + (wx - (cx * CHUNK_SIZE - TREE_RING)); }
+
+static void ring_fetch(GenScratch *s, int cx, int cz, int wx, int wz, const GenHydrologySample **hydro, int *biome) {
+    int lx = wx - cx * CHUNK_SIZE, lz = wz - cz * CHUNK_SIZE;
+    if (lx >= 0 && lx < CHUNK_SIZE && lz >= 0 && lz < CHUNK_SIZE) {
+        *hydro = &s->hydro[(lz << 5) | lx];
+        *biome = s->biome[(lz << 5) | lx];
+        return;
+    }
+    int i = ring_slot(cx, cz, wx, wz);
+    if (!s->ring_valid[i]) {
+        gen_hydrology_at((float)wx, (float)wz, &s->ring_hydro[i]);
+        s->ring_biome[i] = (u8)biome_index_at((float)wx, (float)wz, s->ring_hydro[i].ground_y, &s->ring_hydro[i]);
+        s->ring_valid[i] = 1;
+    }
+    *hydro = &s->ring_hydro[i];
+    *biome = s->ring_biome[i];
+}
+
+static bool tree_ground_ok(GenScratch *s, int cx, int cz, int wx, int wz, const GenHydrologySample *hydro, int biome_index) {
     if (custom_biomes()) return false;
     Biome b = (Biome)biome_index;
+    float h = hydro->ground_y;
     if (h <= (float)C.sea_level + 1.0f) return false;
-    float tx, tz;
-    terrain_coordinates((float)wx, (float)wz, &tx, &tz);
-    GenHydrologySample hydro;
-    gen_hydrology_at((float)wx, (float)wz, &hydro);
-    if (hydro.channel > 0.1f) return false;
+    if (hydro->wet || hydro->channel > 0.1f || hydro->water_dist < 1.5f) return false;
     if (b == BIOME_MOUNTAIN && h > treeline_at((float)wx, (float)wz) - TREE_TREELINE_MARGIN) return false;
     int fh = (int)floorf(h);
     static const int off[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-    for (int k = 0; k < 4; k++)
-        if (abs((int)floorf(gen_height_at((float)(wx + off[k][0]), (float)(wz + off[k][1]))) - fh) >= STEEP_SLOPE) return false;
+    for (int k = 0; k < 4; k++) {
+        const GenHydrologySample *nh; int nb;
+        ring_fetch(s, cx, cz, wx + off[k][0], wz + off[k][1], &nh, &nb);
+        if (abs((int)floorf(nh->ground_y) - fh) >= STEEP_SLOPE) return false;
+    }
     return true;
 }
 
@@ -1053,16 +1141,17 @@ static void build_tree(u16 *states, int cx, int cz, int wx, int wz, int base_y, 
     }
 }
 
-static void place_trees(u16 *states, int cx, int cz) {
+static void place_trees(GenScratch *s, u16 *states, int cx, int cz) {
     if (C.log == STATE_AIR || C.leaves == STATE_AIR || custom_biomes()) return;
     int x0 = cx * CHUNK_SIZE - TREE_MARGIN, z0 = cz * CHUNK_SIZE - TREE_MARGIN, span = CHUNK_SIZE + 2 * TREE_MARGIN;
     for (int wz = z0; wz < z0 + span; wz++)
         for (int wx = x0; wx < x0 + span; wx++) {
             u64 roll = hash3(N.seed ^ SALT_TREE, wx, 0, wz);
             if (roll % TREE_LATTICE_ODDS) continue;
-            float h = gen_height_at((float)wx, (float)wz);
-            int b = biome_index_at((float)wx, (float)wz, h);
-            if ((int)((roll >> 32) % 100) >= tree_percent(b) || !tree_ground_ok(wx, wz, h, b)) continue;
+            const GenHydrologySample *hydro; int b;
+            ring_fetch(s, cx, cz, wx, wz, &hydro, &b);
+            float h = hydro->ground_y;
+            if ((int)((roll >> 32) % 100) >= tree_percent(b) || !tree_ground_ok(s, cx, cz, wx, wz, hydro, b)) continue;
             build_tree(states, cx, cz, wx, wz, (int)floorf(h) + 1, roll);
         }
 }
@@ -1071,6 +1160,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
     int layers = BAND_HI - BAND_LO + 1, y0 = BAND_LO * CHUNK_SIZE, H = layers * CHUNK_SIZE;
     int max_h;
     fill_heightmap(s, cx, cz, &max_h);
+    memset(s->ring_valid, 0, sizeof s->ring_valid);
     fill_cave_grid(s, cx, cz, y0, layers, max_h);
     for (int z = 0; z < CHUNK_SIZE; z++)
         for (int x = 0; x < CHUNK_SIZE; x++) {
@@ -1084,10 +1174,9 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                 step = MAX(step, (float)abs(s->height[(nz << 5) | nx] - h));
             }
             float wx = (float)(cx * CHUNK_SIZE + x), wz = (float)(cz * CHUNK_SIZE + z);
-            GenHydrologySample hydro;
-            gen_hydrology_at(wx, wz, &hydro);
-            float river = hydro.channel;
-            bool ocean = ocean_at(wx, wz);
+            const GenHydrologySample *hydro = &s->hydro[col];
+            float river = hydro->channel;
+            bool ocean = (hydro->flags & GEN_HYD_OCEAN) != 0;
             float treeline = treeline_at(wx, wz);
             float snowline = snowline_at(wx, wz);
             float patch = fnlGetNoise2D(&N.patch_a, wx, wz), speck = fnlGetNoise2D(&N.patch_b, wx, wz);
@@ -1095,14 +1184,14 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
                 int y = y0 + ly;
                 u16 st;
                 if (y > h) {
-                    st = (ocean && y <= C.sea_level) || (hydro.wet && (float)y <= hydro.water_y) ? C.water : STATE_AIR;
+                    st = (ocean && y <= C.sea_level) || (hydro->wet && (float)y <= hydro->water_y) ? C.water : STATE_AIR;
                 } else {
                     int depth = h - y;
                     if (depth == 0) st = surface_block(bi, y, detail, step, river, treeline, snowline, patch, speck);
                     else if (depth <= SUBSURFACE_DEPTH) st = subsurface_block(bi);
                     else st = y < C.deep_level ? C.deep : C.stone;
                     if (st == C.stone) {
-                        u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth, bi);
+                        u16 ore = ore_at(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z, depth, bi, hydro);
                         if (ore != STATE_AIR) st = ore;
                         else if (!custom_biomes() && depth <= STONE_BLOB_DEPTH) {
                             float blob = fnlGetNoise3D(&N.blob, wx, (float)y * 1.3f, wz);
@@ -1117,7 +1206,7 @@ void gen_column(GenScratch *s, int cx, int cz, u16 *states) {
             }
         }
     place_plants(s, states, cx, cz);
-    place_trees(states, cx, cz);
+    place_trees(s, states, cx, cz);
     place_features(s, states, cx, cz);
     place_structures(s, states, cx, cz);
 }
@@ -1152,12 +1241,12 @@ void gen_lod_grid(int shift, int cx, int cz, GenLodGrid *g) {
         for (int xp = 0; xp < LOD_PAD; xp++) {
             int i = zp * LOD_PAD + xp;
             lod_sample_column(shift, cx * CHUNK_SIZE + xp - 1, cz * CHUNK_SIZE + zp - 1, &min_h[i], &wx[i], &wz[i]);
-            biome[i] = biome_index_at(wx[i], wz[i], min_h[i]);
-            g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
             GenHydrologySample hydro;
             gen_hydrology_at(wx[i], wz[i], &hydro);
+            biome[i] = biome_index_at(wx[i], wz[i], min_h[i], &hydro);
+            g->top[i] = (int)floorf(min_h[i] / (float)s) - 1;
             river_channel[i] = hydro.channel;
-            bool ocean = ocean_at(wx[i], wz[i]);
+            bool ocean = (hydro.flags & GEN_HYD_OCEAN) != 0;
             g->water_top[i] = ocean ? sea_top : g->top[i];
             if (hydro.wet) g->water_top[i] = MAX(g->top[i], (int)floorf(hydro.water_y / (float)s));
             if (xp >= 1 && xp <= CHUNK_SIZE && zp >= 1 && zp <= CHUNK_SIZE) {

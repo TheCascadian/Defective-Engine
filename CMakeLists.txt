@@ -75,6 +75,9 @@ add_library(dfe_engine STATIC
   src/post.c
   src/reload.c
   src/ui_widgets.c
+  src/ui.c
+  src/screen.c
+  src/icons.c
   src/menu.c
   src/bench.c
   src/entity.c
@@ -84,6 +87,8 @@ add_library(dfe_engine STATIC
   src/world.c
   src/light.c
   src/gen.c
+  src/hydro.c
+  src/hydro_diag.c
   src/save.c
   src/mesher.c
   src/scene.c
@@ -101,9 +106,13 @@ add_library(dfe_engine STATIC
   src/server.c
   src/modtool.c
   src/hud.c
-  src/selftest.c)
+  src/selftest.c
+  src/selftest_hydro.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)
 target_compile_options(dfe_engine PRIVATE ${DFE_WARN})
+if(NOT MSVC)
+  set_source_files_properties(src/gen.c src/hydro.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 target_link_libraries(dfe_engine PUBLIC dfe_third glfw luajit_static)
 if(UNIX)
   target_link_libraries(dfe_engine PUBLIC m pthread dl)

@@ -45,6 +45,23 @@ typedef enum { DFE_LOG_DEBUG, DFE_LOG_INFO, DFE_LOG_WARN, DFE_LOG_ERROR } dfe_lo
  *   "world_load"    nothing
  *   "world_unload"  nothing
  *   "command"       text (the full line) after no command matched. Return 1 if handled. */
+/* One entity as seen by plugins (API 1.3). type is a namespaced id, behaviour one of "wander", "static", "hostile",
+ * "passive". data is free text the plugin keeps with the entity; it is saved with the world. */
+#define DFE_ENTITY_POS 1u
+#define DFE_ENTITY_VEL 2u
+#define DFE_ENTITY_YAW 4u
+#define DFE_ENTITY_HEALTH 8u
+#define DFE_ENTITY_BEHAVIOUR 16u
+#define DFE_ENTITY_DATA 32u
+typedef struct dfe_entity_t {
+    int id;
+    char type[64];
+    double pos[3], vel[3];
+    float yaw, health, max_health, age;
+    char behaviour[16];
+    char data[192];
+} dfe_entity_t;
+
 typedef struct dfe_event_t {
     const char *name;
     int x, y, z;
@@ -80,8 +97,11 @@ typedef struct dfe_api_t {
     uint64_t (*world_seed)(void);
     double (*game_time)(void); /* seconds of simulated time since the world was created */
 
-    /* Returns a handle (>0) or 0 when the event name is unknown. */
+    /* Returns a handle (>0) or 0 when the event name is unknown. The plugin owns
+     * user and must keep it valid until removal; the engine never frees it. */
     int (*subscribe)(const char *event, dfe_event_fn fn, void *user, const char *mod_id);
+    /* The plugin owns user and must free it after the command is removed or
+     * during plugin shutdown; the engine never frees it. */
     int (*register_command)(const char *name, const char *help, dfe_command_fn fn, void *user, const char *mod_id);
     /* Writes a line to the in-game console. */
     void (*console_print)(const char *message);
@@ -105,6 +125,23 @@ typedef struct dfe_api_t {
     bool (*mod_storage_get)(const char *mod_id, const char *key, char *out, size_t size);
     bool (*mod_storage_set)(const char *mod_id, const char *key, const char *json_value);
     bool (*mod_storage_remove)(const char *mod_id, const char *key);
+
+    /* Added in API 1.3 (struct_size covers it when >= offsetof(dfe_api_t, entity_near) + sizeof(void *)). All of
+     * these run on the main thread only. Handles are the ones entity_spawn returns and stay valid until the entity
+     * is removed; they are never reused. Entity events (entity_spawn, entity_tick, entity_damage, entity_death,
+     * entity_despawn) set entity_id and, for entity_damage, damage; returning nonzero cancels them.
+     * entity_get fills out and returns false for an unknown handle. entity_set writes only the fields named in mask
+     * (DFE_ENTITY_*); position is a teleport that fails inside blocks, a health of 0 or less kills the entity. A
+     * type without health ignores health, damage and heal. entity_damage honours the invulnerability timer and
+     * entity_death cancellation and returns true only when health dropped. entity_list writes up to cap handles in
+     * spawn order and returns the total. entity_near writes up to cap handles within radius blocks, nearest first,
+     * and returns how many matched. The engine never frees or reads plugin user pointers passed to subscribe. */
+    bool (*entity_get)(int handle, dfe_entity_t *out);
+    bool (*entity_set)(int handle, const dfe_entity_t *in, uint32_t mask);
+    bool (*entity_damage)(int handle, float amount);
+    bool (*entity_heal)(int handle, float amount);
+    int (*entity_list)(int *out, int cap);
+    int (*entity_near)(double x, double y, double z, double radius, int *out, int cap);
 } dfe_api_t;
 
 #ifdef __cplusplus

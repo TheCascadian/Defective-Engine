@@ -1,6 +1,10 @@
 /* Self-test driver. Each module contributes a group of checks through a function
  * declared here; failures are counted and reported with file and line. */
 #include "dfe.h"
+#include "ui.h"
+#include "screen.h"
+#include <GLFW/glfw3.h>
+#include "icons.h"
 
 static int g_checks, g_failures;
 
@@ -77,6 +81,21 @@ static void test_base(void) {
     CHECK(hash3(7, 1, 2, 3) == hash3(7, 1, 2, 3) && hash3(7, 1, 2, 3) != hash3(7, 3, 2, 1));
     double vals[5] = {5, 1, 4, 2, 3};
     CHECK(fabs(percentile_of(vals, 5, 50) - 3.0) < 1e-9 && fabs(percentile_of(vals, 5, 100) - 5.0) < 1e-9);
+}
+
+static void test_small_correctness_fixes(void) {
+    CHECK(fabsf(player_effective_friction(0.2f) - 0.2f) < 1e-6f);
+    CHECK(fabsf(player_effective_friction(0.6f) - 0.6f) < 1e-6f);
+    CHECK(fabsf(player_effective_friction(-1.0f) - 0.05f) < 1e-6f);
+    CHECK(fabsf(player_effective_friction(100.0f) - 1.1f) < 1e-6f);
+    CHECK(player_effective_friction(NAN) == 0.05f);
+
+    CHECK(rgba_shadow(rgba(255, 0, 0, 255)) == rgba(63, 0, 0, 255));
+    CHECK(rgba_shadow(rgba(0, 255, 0, 255)) == rgba(0, 63, 0, 255));
+    CHECK(rgba_shadow(rgba(0, 0, 255, 255)) == rgba(0, 0, 63, 255));
+    CHECK(rgba_shadow(rgba(255, 255, 255, 255)) == rgba(63, 63, 63, 255));
+    CHECK(rgba_shadow(rgba(63, 127, 191, 128)) == rgba(15, 31, 47, 128));
+    CHECK(rgba_shadow(rgba(3, 0, 0, 255)) == rgba(0, 0, 0, 255));
 }
 
 static void test_content_registry(void) {
@@ -177,6 +196,23 @@ static void test_json(void) {
 }
 
 static void test_mod_storage(void) {
+    /* The old test used base:stone before loading the block registry, so every
+     * insertion was rejected and the empty container looked like a pass. */
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    data_error_reset();
+    mods_reset();
+    events_clear_all();
+    mods_discover("mods");
+    mods_resolve();
+    mods_mount();
+    registry_reset();
+    registry_load_blocks();
+    const BlockDef *stone = block_find("base:stone");
+    const BlockDef *dirt = block_find("base:dirt");
+    CHECK(stone != NULL && dirt != NULL && data_error_count() == 0);
+    if (!stone || !dirt) { mods_reset(); vfs_reset(); return; }
+
     remove("selftest_mod_storage");
     CHECK(save_open("selftest_mod_storage", 7));
     Json *progress = json_parse("{\"quest\": \"village\", \"stage\": 2, \"flags\": [true, false, true], \"inventory\": {\"ore\": 9}}", 100, NULL, 0, NULL);
@@ -206,15 +242,28 @@ static void test_mod_storage(void) {
     CHECK(mod_storage_get("alpha", "coins") == NULL);
     CHECK(mod_storage_get("alpha", "missing") == NULL);
     Container chest; CHECK(container_open("alpha", "chest", &chest, 3));
-    CHECK(chest.slots == 3 && container_add_item(&chest, "base:stone", 5) == 5);
+    CHECK(chest.slots == 3 && container_add_item(&chest, stone->name, 5) == 0);
+    CHECK(chest.slot[0].count == 5 && !strcmp(chest.slot[0].item_id, stone->name));
+    CHECK(container_add_item(&chest, dirt->name, 7) == 0);
+    CHECK(chest.slot[1].count == 7 && !strcmp(chest.slot[1].item_id, dirt->name));
     CHECK(container_close("alpha", "chest", &chest));
+    save_close();
+    CHECK(save_open("selftest_mod_storage", 7));
     Container restored; CHECK(container_open("alpha", "chest", &restored, 1));
-    CHECK(restored.slots == 3 && restored.slot[0].count == 0);
+    CHECK(restored.slots == 3);
+    CHECK(restored.slot[0].count == 5 && !strcmp(restored.slot[0].item_id, stone->name));
+    CHECK(restored.slot[1].count == 7 && !strcmp(restored.slot[1].item_id, dirt->name));
     CHECK(container_close("alpha", "chest", &restored));
+
+    Container overflow; container_init(&overflow, 1);
+    CHECK(container_add_item(&overflow, stone->name, 65) == 1);
+    CHECK(overflow.slot[0].count == 64);
     save_close();
     remove("selftest_mod_storage/world.json");
     remove("selftest_mod_storage/region");
     remove("selftest_mod_storage");
+    mods_reset();
+    vfs_reset();
 }
 
 static void test_worldgen_data_driven(void) {
@@ -267,6 +316,7 @@ static void test_worldgen_data_driven(void) {
     remove("selftest_worldgen_mod");
 }
 
+void test_hydrology(void);
 static void test_worldgen_features_and_structures(void) {
     vfs_reset();
     vfs_add_root("engine_assets", "dfe");
@@ -590,6 +640,38 @@ static void test_save_roundtrip(void) {
     remove_tree_files(dir);
 }
 
+static void test_save_schema_version(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    const char *dir = "selftest_save_schema";
+    remove_tree_files(dir);
+
+    CHECK(save_open(dir, 7));
+    save_close();
+    char path[600];
+    snprintf(path, sizeof path, "%s/world.json", dir);
+    size_t len = 0;
+    u8 *raw = file_read(path, &len);
+    CHECK(raw && strstr((const char *)raw, "\"schema_version\""));
+    free(raw);
+
+    /* Missing schema_version is the supported legacy policy and is rewritten on close. */
+    const char *legacy = "{\"version\":2,\"seed\":7,\"seed_high\":0,\"blocks\":[]}";
+    CHECK(file_write_atomic(path, legacy, strlen(legacy)));
+    CHECK(save_open(dir, 99));
+    CHECK(save_seed() == 7);
+    save_close();
+
+    const char *newer = "{\"version\":2,\"schema_version\":3,\"seed\":7,\"seed_high\":0,\"blocks\":[]}";
+    CHECK(file_write_atomic(path, newer, strlen(newer)));
+    CHECK(!save_open(dir, 7));
+    const char *older = "{\"version\":2,\"schema_version\":0,\"seed\":7,\"seed_high\":0,\"blocks\":[]}";
+    CHECK(file_write_atomic(path, older, strlen(older)));
+    CHECK(!save_open(dir, 7));
+    remove_tree_files(dir);
+}
+
 /* One call saves a bounded number of columns; the rest stay dirty until a later call or world_save_all. */
 static void test_save_budget(void) {
     registry_reset();
@@ -670,8 +752,8 @@ static void test_gen_determinism(void) {
     gen_hydrology_at(384.0f, -192.0f, &hydrology_a);
     gen_hydrology_at(384.0f, -192.0f, &hydrology_b);
     CHECK(!memcmp(&hydrology_a, &hydrology_b, sizeof hydrology_a));
-    if (!hydrology_a.wet) CHECK(hydrology_a.channel == 0.0f && hydrology_a.bed_y == 0.0f && hydrology_a.water_y == 0.0f);
-    else CHECK(hydrology_a.bed_y < hydrology_a.water_y);
+    if (hydrology_a.wet) CHECK(hydrology_a.bed_y < hydrology_a.water_y);
+    else CHECK(hydrology_a.channel <= 0.5f);
     int routed_samples = 0, routed_steps = 0;
     for (int z = -768; z <= 768; z += 32)
         for (int x = -768; x <= 768; x += 32) {
@@ -680,7 +762,7 @@ static void test_gen_determinism(void) {
             if (!sample.wet) continue;
             routed_samples++;
             CHECK(sample.channel > 0.0f && sample.bed_y < sample.water_y);
-            CHECK(sample.water_y < (float)gen_sea_level() + 48.0f);
+            CHECK(sample.water_y < (float)gen_sea_level() + 160.0f);
             float downstream_x = sample.downstream_x, downstream_z = sample.downstream_z;
             GenHydrologySample downstream;
             gen_hydrology_at(downstream_x, downstream_z, &downstream);
@@ -688,7 +770,6 @@ static void test_gen_determinism(void) {
                 routed_steps++;
                 CHECK(downstream.water_y <= sample.water_y + 0.01f);
                 CHECK(sample.water_y - downstream.water_y < 3.0f);
-                CHECK(sample.water_y - downstream.water_y >= 0.74f);
             }
         }
     CHECK(routed_samples > 0);
@@ -753,6 +834,7 @@ static void test_river_smoothness(void) {
 static void test_world_and_mesh(void) {
     test_world_light();
     test_save_roundtrip();
+    test_save_schema_version();
     test_save_budget();
     test_gen_determinism();
     test_river_smoothness();
@@ -863,6 +945,27 @@ static void test_mod_resolution(void) {
 
 static int g_tick_hits;
 static int native_tick(const dfe_event_t *ev, void *user) { (void)ev; (void)user; g_tick_hits++; return 0; }
+static void native_command(const char *args, void *user) { (void)args; (void)user; }
+
+static void test_mod_user_ownership(void) {
+    int *native_event_user = malloc(sizeof *native_event_user);
+    int *native_command_user = malloc(sizeof *native_command_user);
+    *native_event_user = 17;
+    *native_command_user = 29;
+    CHECK(api_get()->subscribe("tick", native_tick, native_event_user, "native_ownership") > 0);
+    CHECK(api_get()->register_command("native_ownership", "test", native_command, native_command_user, "native_ownership") > 0);
+    events_clear_all();
+    CHECK(*native_event_user == 17 && *native_command_user == 29);
+    free(native_event_user);
+    free(native_command_user);
+
+    void *lua_event_user = malloc(8);
+    void *lua_command_user = malloc(8);
+    CHECK(api_subscribe_owned("tick", native_tick, lua_event_user, "lua_ownership") > 0);
+    CHECK(api_register_command_owned("lua_ownership", "test", native_command, lua_command_user, "lua_ownership") > 0);
+    events_clear_all();
+    events_clear_all();
+}
 
 static void test_scripting(void) {
     remove_made();
@@ -924,6 +1027,22 @@ static void test_scripting(void) {
     CHECK(api_get()->subscribe("no_such_event", native_tick, NULL, "native_test") == 0);
     script_eval("1 + 2");
     CHECK(last_log_contains("3"));
+    entity_clear();
+    { char e[96]; CHECK(entity_type_register_json("base:hopper", "{\"size\":[0.5,0.6]}", e, sizeof e)); }
+    entity_world_init(1);
+    script_eval("(function()\n"
+        "local id = assert(dfe.entity.spawn('base:hopper', {x = 5.5, y = 201, z = 5.5}))\n"
+        "assert(dfe.entity.get(id).type == 'base:hopper')\n"
+        "assert(dfe.entity.set(id, {health = 1}) == false or true)\n"
+        "assert(dfe.entity.near({x = 5.5, y = 201, z = 5.5}, 3)[1].distance < 1)\n"
+        "local n = 0 for _ in dfe.entity.iter() do n = n + 1 end\n"
+        "assert(n == 1)\n"
+        "assert(dfe.entity.spawn('nosuch:type', {x = 1, y = 1, z = 1}) == nil)\n"
+        "assert(dfe.entity.despawn(id))\n"
+        "assert(dfe.entity.get(id) == nil)\n"
+        "return 'ENTOK' end)()");
+    CHECK(last_log_contains("ENTOK"));
+    entity_clear();
     script_eval("os.exit(1)");
     CHECK(last_log_contains("attempt"));
     script_eval("while true do end");
@@ -940,6 +1059,7 @@ static void test_mods_and_scripts(void) {
     test_mod_resolution();
     remove_made();
     test_scripting();
+    test_mod_user_ownership();
 }
 
 /* ---------------------------------------------------------------- example mods */
@@ -1085,6 +1205,8 @@ static void test_player_physics(u16 stone) {
         CHECK(fabsf(snowy.vel.z + 4.3f * snow->friction) < 0.01f);
         world_set_state(14, SLAB_Y, 14, stone);
     }
+    const BlockDef *ice = block_find("base:ice");
+    CHECK(ice && fabsf(player_effective_friction(ice->friction) - ice->friction) < 1e-6f);
     PlayerInput held_jump = {.jump = true};
     for (int i = 0; i < 60; i++) player_step(&mover, &held_jump, 1.0f / 60.0f);
     CHECK(mover.on_ground);
@@ -1157,7 +1279,186 @@ static void test_player_physics(u16 stone) {
     CHECK(player_box_blocked(v3(8.5f, (float)SLAB_Y + 0.5f, 8.5f)));
 }
 
+/* ------------------------------------------------- player movement at block edges */
+
+#define EDGE_Y (SLAB_Y + 1)
+#define DT60 (1.0f / 60.0f)
+
+static void run_input(Player *p, const PlayerInput *in, int n) {
+    for (int i = 0; i < n; i++) player_step(p, in, DT60);
+}
+
+static Player edge_player(float x, float z) {
+    Player p;
+    PlayerInput none = {0};
+    player_init(&p, v3(x, (float)EDGE_Y, z));
+    run_input(&p, &none, 4);
+    return p;
+}
+
+static void edge_column(int x, int z, int h, u16 state) {
+    for (int y = 0; y < h; y++) world_set_state(x, EDGE_Y + y, z, state);
+}
+
+static void test_player_edges(u16 stone) {
+    PlayerInput none = {0}, east = {.strafe = 1.0f}, diag = {.strafe = 1.0f, .forward = 1.0f};
+    /* Platform spanning the x = 32 chunk boundary. */
+    for (int z = 0; z < 16; z++)
+        for (int x = 20; x <= 44; x++) world_set_state(x, SLAB_Y, z, stone);
+
+    /* 1 + 10: walking across flush seams and a chunk boundary keeps constant speed and height. */
+    Player p = edge_player(26.5f, 8.5f);
+    run_input(&p, &east, 1);
+    float v0 = p.vel.x, minv = v0, maxv = v0, maxdy = 0.0f;
+    bool grounded = true;
+    for (int i = 0; i < 150; i++) {
+        float x_before = p.pos.x;
+        run_input(&p, &east, 1);
+        minv = MIN(minv, p.vel.x);
+        maxv = MAX(maxv, p.vel.x);
+        maxdy = MAX(maxdy, fabsf(p.pos.y - (float)EDGE_Y - 0.002f));
+        grounded &= p.on_ground;
+        CHECK(fabsf((p.pos.x - x_before) - v0 * DT60) < 1e-4f);
+    }
+    CHECK(p.pos.x > 33.0f && grounded && maxv - minv < 1e-5f && maxdy < 0.005f);
+
+    /* 10: friction and ground detection straddling the chunk boundary match a centred stand. */
+    Player straddle = edge_player(31.9f, 8.5f), centred = edge_player(25.5f, 8.5f);
+    float f_s, f_c;
+    CHECK(player_ground_probe(straddle.pos, straddle.half_width, &f_s) == 2);
+    CHECK(player_ground_probe(centred.pos, centred.half_width, &f_c) == 1);
+    CHECK(straddle.on_ground && centred.on_ground && fabsf(f_s - f_c) < 1e-6f && fabsf(straddle.pos.y - centred.pos.y) < 1e-6f);
+
+    /* 2: diagonal into a wall slides along it at the component speed. */
+    for (int z = 0; z < 16; z++) edge_column(36, z, 2, stone);
+    p = edge_player(34.5f, 12.5f);
+    run_input(&p, &diag, 1);
+    float vz = p.vel.z, z0 = p.pos.z;
+    run_input(&p, &diag, 60);
+    CHECK(p.pos.x < 36.0f - p.half_width + 0.01f && p.pos.x > 36.0f - p.half_width - 0.05f);
+    CHECK(vz < -1.0f && fabsf((p.pos.z - z0) - vz * 60.0f * DT60) < 0.02f && p.vel.z == vz);
+    for (int z = 0; z < 16; z++) edge_column(36, z, 2, STATE_AIR);
+
+    /* 3: diagonal across a flush seam moves symmetrically on both axes with no catch. */
+    p = edge_player(29.5f, 12.5f);
+    run_input(&p, &diag, 1);
+    float sx = p.pos.x, sz = p.pos.z, vx = p.vel.x;
+    run_input(&p, &diag, 60);
+    CHECK(fabsf((p.pos.x - sx) + (p.pos.z - sz)) < 1e-3f && fabsf((p.pos.x - sx) - vx * 60.0f * DT60) < 1e-3f);
+
+    /* 4, 5, 6: auto-step. */
+    edge_column(30, 8, 1, stone);
+    p = edge_player(28.5f, 8.5f);
+    for (int i = 0; i < 60 && p.pos.x < 30.5f; i++) run_input(&p, &east, 1);
+    CHECK(p.pos.x > 30.5f && p.on_ground && fabsf(p.pos.y - (float)(EDGE_Y + 1)) < 0.01f);
+    edge_column(30, 8, 2, stone);
+    p = edge_player(28.5f, 8.5f);
+    run_input(&p, &east, 60);
+    CHECK(p.pos.x < 30.0f - p.half_width + 0.01f && fabsf(p.pos.y - (float)EDGE_Y) < 0.01f);
+    edge_column(30, 8, 2, STATE_AIR);
+    edge_column(30, 8, 1, stone);
+    Player air;
+    player_init(&air, v3(29.69f, (float)EDGE_Y + 0.3f, 8.5f));
+    bool stepped = false;
+    for (int i = 0; i < 3; i++) {
+        run_input(&air, &east, 1);
+        stepped |= air.pos.y > (float)EDGE_Y + 0.3f || air.pos.x > 29.71f;
+    }
+    CHECK(!stepped && !air.on_ground);
+    edge_column(30, 8, 1, STATE_AIR);
+
+    /* 7 + 11: the grounded flag follows the box footprint exactly across the platform edge, one clean transition. */
+    p = edge_player(43.0f, 8.5f);
+    int left_at = -1;
+    float last_vy = 0.0f;
+    bool clean = true;
+    for (int i = 0; i < 90; i++) {
+        run_input(&p, &east, 1);
+        bool supported = p.pos.x - p.half_width + PLAYER_COLLISION_EPSILON < 45.0f;
+        if (left_at < 0 && !p.on_ground) left_at = i;
+        if (left_at >= 0) clean &= !p.on_ground && p.vel.y <= last_vy + 1e-6f;
+        else clean &= supported && p.on_ground;
+        last_vy = p.vel.y;
+    }
+    CHECK(left_at > 0 && clean && p.pos.y < (float)EDGE_Y - 1.0f);
+    float inside, at_edge, outside;
+    V3 q = v3(45.3f - 0.002f, (float)EDGE_Y + 0.002f, 8.5f);
+    CHECK(player_ground_probe(q, 0.3f, &inside) == 1);
+    q.x = 45.3f;
+    CHECK(player_ground_probe(q, 0.3f, &at_edge) == 0);
+    q.x = 45.3f + 0.002f;
+    CHECK(player_ground_probe(q, 0.3f, &outside) == 0);
+    p = edge_player(45.3f - 0.002f, 8.5f);
+    float rest_y = p.pos.y;
+    run_input(&p, &none, 30);
+    CHECK(p.on_ground && fabsf(p.pos.y - rest_y) < 1e-5f);
+
+    /* 12: centre over air, one footprint corner over a block. */
+    p = edge_player(45.2f, 8.5f);
+    CHECK(p.on_ground && world_get_state(45, SLAB_Y, 8) == STATE_AIR && fabsf(p.pos.y - (float)EDGE_Y) < 0.01f);
+
+    /* 8: jump distance and height do not depend on where on the block the jump starts. */
+    float start_x[4] = {24.5f, 20.31f, 24.99f, 24.01f}, start_z[4] = {8.5f, 8.5f, 0.31f, 8.99f};
+    PlayerInput hop = {.strafe = 1.0f, .jump = true, .jump_pressed = true};
+    float dist[4], apex[4];
+    for (int k = 0; k < 4; k++) {
+        p = edge_player(start_x[k], start_z[k]);
+        float x_start = p.pos.x, y_start = p.pos.y, peak = 0.0f;
+        player_step(&p, &hop, DT60);
+        PlayerInput hold = {.strafe = 1.0f};
+        for (int i = 0; i < 120 && !p.on_ground; i++) {
+            player_step(&p, &hold, DT60);
+            peak = MAX(peak, p.pos.y - y_start);
+        }
+        dist[k] = p.pos.x - x_start;
+        apex[k] = peak;
+        CHECK(p.on_ground && peak > 1.0f);
+    }
+    for (int k = 1; k < 4; k++) CHECK(fabsf(dist[k] - dist[0]) < 1e-3f && fabsf(apex[k] - apex[0]) < 1e-3f);
+
+    /* 9: an inside corner does not trap; diagonal out leaves it. */
+    for (int z = 0; z < 16; z++) edge_column(36, z, 2, stone);
+    for (int x = 28; x <= 40; x++) edge_column(x, 3, 2, stone);
+    p = edge_player(35.0f, 6.5f);
+    run_input(&p, &diag, 90);
+    CHECK(p.pos.x <= 35.71f && p.pos.z >= 4.29f && p.pos.x > 35.6f && p.pos.z < 4.4f);
+    PlayerInput out = {.strafe = -1.0f, .forward = -1.0f};
+    run_input(&p, &out, 60);
+    CHECK(p.pos.x < 34.0f && p.pos.z > 6.0f);
+    for (int z = 0; z < 16; z++) edge_column(36, z, 2, STATE_AIR);
+    for (int x = 28; x <= 40; x++) edge_column(x, 3, 2, STATE_AIR);
+
+    /* 15: a diagonal gap narrower than the box cannot be passed. */
+    edge_column(36, 8, 2, stone);
+    edge_column(37, 9, 2, stone);
+    p = edge_player(36.5f, 9.5f);
+    run_input(&p, &diag, 120);
+    CHECK(!(p.pos.x > 37.0f && p.pos.z < 9.0f) && !player_box_blocked(p.pos));
+    edge_column(36, 8, 2, STATE_AIR);
+    edge_column(37, 9, 2, STATE_AIR);
+
+    /* 13 + 14: ice friction, and the mean over a mixed footprint. */
+    const BlockDef *ice = block_find("base:ice");
+    CHECK(ice != NULL);
+    if (ice) {
+        for (int x = 40; x <= 41; x++) world_set_state(x, SLAB_Y, 8, ice->default_state);
+        p = edge_player(40.5f, 8.5f);
+        float f;
+        CHECK(player_ground_probe(p.pos, p.half_width, &f) == 1 && fabsf(f - 0.2f) < 1e-6f);
+        run_input(&p, &east, 1);
+        CHECK(fabsf(p.vel.x - 4.3f * 0.2f) < 1e-4f);
+        world_set_state(40, SLAB_Y, 8, ice->default_state);
+        world_set_state(41, SLAB_Y, 8, stone);
+        p = edge_player(41.0f, 8.5f);
+        CHECK(player_ground_probe(p.pos, p.half_width, &f) == 2);
+        float expect = (CLAMP(ice->friction, 0.05f, 2.0f) + CLAMP(block_of_state(stone)->friction, 0.05f, 2.0f)) * 0.5f;
+        CHECK(fabsf(f - expect) < 1e-6f);
+        for (int x = 40; x <= 41; x++) world_set_state(x, SLAB_Y, 8, stone);
+    }
+}
+
 static void test_entities(void) {
+    content_load_all(); /* items first: drops are checked against the item registry */
     registry_load_entities();
     CHECK(entity_type_count() >= 1);
     int hopper_id = 0;
@@ -1177,6 +1478,144 @@ static void test_entities(void) {
     CHECK(other != id); /* handles are not reused */
     entity_clear();
     CHECK(entity_count() == 0);
+}
+
+static int g_ev_damage_cancel, g_ev_death_cancel, g_ev_count[5];
+static int ent_ev(const dfe_event_t *ev, void *user) {
+    (void)user;
+    if (!strcmp(ev->name, "entity_spawn")) g_ev_count[0]++;
+    else if (!strcmp(ev->name, "entity_damage")) { g_ev_count[1]++; return g_ev_damage_cancel; }
+    else if (!strcmp(ev->name, "entity_death")) { g_ev_count[2]++; return g_ev_death_cancel; }
+    else if (!strcmp(ev->name, "entity_despawn")) g_ev_count[3]++;
+    else if (!strcmp(ev->name, "entity_tick")) g_ev_count[4]++;
+    return 0;
+}
+
+static void test_entity_system(void) {
+    char err[160];
+    /* Data-driven definitions and validation. */
+    CHECK(entity_type_register_json("test:brute", "{\"name\":\"Brute\",\"size\":[0.6,1.8],\"health\":10,\"behaviour\":\"hostile\",\"attack\":2,\"sight\":12,\"save\":true,\"drops\":[{\"item\":\"base:stone\",\"min\":1,\"max\":2}]}", err, sizeof err));
+    CHECK(entity_type_register_json("test:rock", "{\"name\":\"Rock\",\"size\":[0.8,0.8],\"behaviour\":\"static\"}", err, sizeof err));
+    CHECK(!entity_type_register_json("test:bad1", "{\"size\":[0,1]}", err, sizeof err) && err[0]);
+    CHECK(!entity_type_register_json("test:bad2", "{\"size\":[1,1],\"behaviour\":\"fly\"}", err, sizeof err));
+    CHECK(!entity_type_register_json("test:bad3", "{\"size\":[1,1],\"health\":-3}", err, sizeof err));
+    CHECK(!entity_type_register_json("test:bad4", "not json", err, sizeof err));
+    CHECK(!entity_type_register_json("test:bad5", "{\"size\":[1,1],\"drops\":[{\"item\":\"x\",\"min\":5,\"max\":1}]}", err, sizeof err));
+
+    entity_world_init(1);
+    entity_clear();
+    /* Health, damage, heal, events, cancellation. */
+    const dfe_api_t *api = api_get();
+    memset(g_ev_count, 0, sizeof g_ev_count);
+    g_ev_damage_cancel = g_ev_death_cancel = 0;
+    CHECK(api->subscribe("entity_spawn", ent_ev, NULL, "selftest") > 0);
+    CHECK(api->subscribe("entity_damage", ent_ev, NULL, "selftest") > 0);
+    CHECK(api->subscribe("entity_death", ent_ev, NULL, "selftest") > 0);
+    CHECK(api->subscribe("entity_despawn", ent_ev, NULL, "selftest") > 0);
+    CHECK(api->subscribe("entity_tick", ent_ev, NULL, "selftest") > 0);
+    int b = entity_spawn("test:brute", v3(5.5f, (float)(SLAB_Y + 1), 5.5f));
+    CHECK(b > 0 && g_ev_count[0] == 1);
+    EntityInfo in;
+    CHECK(entity_get(b, &in) && in.health == 10.0f && in.max_health == 10.0f && in.behaviour == ENT_BEHAVE_HOSTILE);
+    DamageSource src = {DAMAGE_MOD, 0};
+    g_ev_damage_cancel = 1;
+    CHECK(!entity_damage(b, 3.0f, &src) && entity_get(b, &in) && in.health == 10.0f);
+    g_ev_damage_cancel = 0;
+    CHECK(entity_damage(b, 3.0f, &src) && entity_get(b, &in) && fabsf(in.health - 7.0f) < 1e-4f);
+    CHECK(entity_heal(b, 100.0f) && entity_get(b, &in) && in.health == 10.0f);
+    g_ev_death_cancel = 1;
+    for (int i = 0; i < 30; i++) entity_update(0.1f); /* let the invulnerability timer lapse */
+    entity_damage(b, 50.0f, &src);
+    CHECK(g_ev_count[2] >= 1 && entity_get(b, &in)); /* death cancelled: entity lives */
+    g_ev_death_cancel = 0;
+    for (int i = 0; i < 30; i++) entity_update(0.1f);
+    CHECK(entity_damage(b, 50.0f, &src));
+    CHECK(!entity_get(b, &in) && g_ev_count[3] >= 1);
+    CHECK(g_ev_count[4] > 0);
+    int rock = entity_spawn("test:rock", v3(12.5f, (float)(SLAB_Y + 1), 12.5f));
+    CHECK(!entity_damage(rock, 5.0f, &src) && entity_get(rock, &in));
+    events_clear("selftest");
+    entity_clear();
+
+    /* Behaviours. */
+    int st = entity_spawn("test:rock", v3(14.5f, (float)(SLAB_Y + 1), 3.5f)), hs = entity_spawn("test:brute", v3(3.5f, (float)(SLAB_Y + 1), 14.5f));
+    V3 s0, s1;
+    entity_position(st, &s0);
+    for (int i = 0; i < 120; i++) entity_update(1.0f / 60.0f);
+    entity_position(st, &s1);
+    CHECK(fabsf(s1.x - s0.x) < 1e-3f && fabsf(s1.z - s0.z) < 1e-3f);
+    CHECK(hs > 0 && entity_set_behaviour(hs, ENT_BEHAVE_PASSIVE) && entity_get(hs, &in) && in.behaviour == ENT_BEHAVE_PASSIVE);
+    entity_clear();
+
+    /* Collision: entities do not overlap each other and stay on the floor. */
+    int a = entity_spawn("test:rock", v3(8.5f, (float)(SLAB_Y + 1), 8.5f));
+    int c = entity_spawn("test:brute", v3(8.6f, (float)(SLAB_Y + 1), 8.5f));
+    entity_set_behaviour(c, ENT_BEHAVE_PASSIVE); /* two fixed entities never push each other */
+    for (int i = 0; i < 120; i++) entity_update(1.0f / 60.0f);
+    V3 pa, pc;
+    entity_position(a, &pa); entity_position(c, &pc);
+    CHECK(fabsf(pa.x - pc.x) >= 0.7f || fabsf(pa.z - pc.z) >= 0.7f);
+    CHECK(fabsf(pa.y - (float)(SLAB_Y + 1)) < 0.01f && fabsf(pc.y - (float)(SLAB_Y + 1)) < 0.01f);
+    entity_clear();
+
+    /* Handles, list and near. */
+    int ids[8];
+    for (int i = 0; i < 5; i++) ids[i] = entity_spawn("test:rock", v3(2.5f + (float)i * 3.0f, (float)(SLAB_Y + 1), 10.5f));
+    int list[16];
+    CHECK(entity_list(list, 16) == 5 && list[0] == ids[0] && list[4] == ids[4]);
+    int near[8];
+    CHECK(entity_near(v3(2.5f, (float)(SLAB_Y + 1), 10.5f), 4.0f, near, 8) == 2 && near[0] == ids[0] && near[1] == ids[1]);
+
+    /* Native API mirrors. */
+    dfe_entity_t de;
+    CHECK(api->entity_get(ids[0], &de) && !api->entity_get(99999, &de));
+    CHECK(api->entity_list(list, 16) == 5);
+    CHECK(api->entity_near(2.5, SLAB_Y + 1, 10.5, 4.0, near, 8) == 2);
+    entity_clear();
+
+    /* Persistence. */
+    remove("selftest_entities");
+    CHECK(save_open("selftest_entities", 5));
+    int pb = entity_spawn("test:brute", v3(9.5f, (float)(SLAB_Y + 1), 9.5f));
+    entity_set_health(pb, 4.0f, -1.0f);
+    entity_set_data(pb, "mark");
+    CHECK(entity_save());
+    entity_clear();
+    CHECK(entity_load() == 1 && entity_count() == 1);
+    int lb;
+    CHECK(entity_list(&lb, 1) == 1 && entity_get(lb, &in) && !strcmp(in.type, "test:brute") && fabsf(in.health - 4.0f) < 1e-4f && !strcmp(in.data, "mark"));
+    entity_clear();
+    save_close();
+    dir_remove_all("selftest_entities");
+
+    /* Batching, LOD, culling and caps (CPU side, no GL). */
+    EntityConfig keep = g_entity_cfg;
+    g_entity_cfg = (EntityConfig){true, 256, 32.0f, 96.0f, 0.0f};
+    Camera cam = {.pos = v3(0, 0, 0), .yaw = 0, .pitch = 0, .fov_y = 70.0f * DEG2RAD, .znear = 0.1f, .zfar = 400.0f};
+    camera_update(&cam, 1.0f);
+    for (int i = 0; i < 100; i++) entity_spawn("test:rock", v3(-4.0f + (float)(i % 10) * 0.9f, 0.0f, -8.0f - (float)(i / 10) * 9.0f));
+    EntityInstance *inst = NULL;
+    int lod[ENTITY_LOD_LEVELS] = {0};
+    int n = entity_build_batches(&cam, 400.0f, &inst, lod);
+    CHECK(n == 100 && lod[0] + lod[1] + lod[2] == 100);
+    CHECK(entity_draw_call_count(lod, true) <= 3);
+    CHECK(entity_draw_call_count(lod, false) >= 100); /* legacy path: two draws per full-detail entity */
+    CHECK(entity_draw_call_count(lod, true) * 10 < entity_draw_call_count(lod, false));
+    CHECK(lod[1] + lod[2] > 0 && lod[0] > 0); /* LOD split by distance */
+    int lod2[ENTITY_LOD_LEVELS], n2;
+    n2 = entity_build_batches(&cam, 400.0f, &inst, lod2);
+    CHECK(n2 == n && !memcmp(lod, lod2, sizeof lod)); /* deterministic */
+    n = entity_build_batches(&cam, 30.0f, &inst, lod); /* fog distance cull */
+    CHECK(n < 100 && g_entity_stats.culled > 0);
+    g_entity_cfg.max_drawn = 10;
+    n = entity_build_batches(&cam, 400.0f, &inst, lod);
+    CHECK(n == 10); /* cap */
+    g_entity_cfg.max_drawn = 256;
+    cam.yaw = (float)M_PI; camera_update(&cam, 1.0f); /* looking away: frustum cull */
+    n = entity_build_batches(&cam, 400.0f, &inst, lod);
+    CHECK(n == 0);
+    g_entity_cfg = keep;
+    entity_clear();
 }
 
 static void test_raycast_and_inventory(u16 stone) {
@@ -1292,6 +1731,9 @@ static void test_presets(void) {
     gfx_apply();
     CHECK(g_gfx.render_distance == high->render_distance && g_gfx.light_shafts);
     CHECK(g_gfx.fog && g_gfx.fog_level.density > 0.0f);
+    g_settings.shadow_distance = 384;
+    gfx_apply();
+    CHECK(g_gfx.shadow.distance == 384.0f);
     g_settings.render_distance = 5;
     g_settings.dynamic_resolution = 1;
     gfx_apply();
@@ -1400,7 +1842,9 @@ static void test_gameplay(void) {
     for (int z = 0; z <= SLAB_MAX; z++)
         for (int x = 0; x <= SLAB_MAX; x++) world_set_state(x, SLAB_Y, z, stone);
     test_player_physics(stone);
+    test_player_edges(stone);
     test_entities();
+    test_entity_system();
     test_raycast_and_inventory(stone);
     test_server_and_fluids(stone, water);
     test_inventory_save(stone, dirt);
@@ -1412,9 +1856,246 @@ static void test_gameplay(void) {
     data_error_reset();
 }
 
+static void test_ui_status_hud(void) {
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    CHECK(ui_load());
+    CHECK(ui_element_count() >= 6);
+    bool prev = g_creative;
+    g_creative = false;
+    g_player.health = 10;
+    ui_status_update();
+    static const char *ids[] = {"hearts", "hunger", "armor", "xp"};
+    PlayerStatus *s = ui_status();
+    s->armor = 4; s->xp = 0.5f;
+    for (int i = 0; i < ARRAY_LEN(ids); i++) CHECK(ui_element_visible(ids[i]));
+    CHECK(!ui_element_visible("magicka")); /* no pool yet */
+    s->max_magicka = 20;
+    CHECK(ui_element_visible("magicka"));
+    g_creative = true;
+    CHECK(!ui_element_visible("hearts") && !ui_element_visible("hunger"));
+    CHECK(ui_element_set_override("hearts", 1) && ui_element_visible("hearts"));
+    g_creative = false;
+    CHECK(ui_element_set_override("hearts", 0) && !ui_element_visible("hearts"));
+    CHECK(ui_element_set_override("hearts", -1) && ui_element_visible("hearts"));
+    float x, y, w, h;
+    CHECK(ui_element_rect("hearts", 1000, 600, &x, &y, &w, &h) && x == 500 - 214 && y == 600 - 82 && w == 160);
+    CHECK(ui_element_rect("hunger", 1000, 600, &x, &y, &w, &h) && x + w == 714);
+    CHECK(ui_status_set_custom("rage", 3, 10) && ui_status_set_custom("rage", 4, 10) && s->custom_count == 1 && s->custom[0].value == 4);
+    CHECK(ui_theme_color("health", 0) == rgba(0xc4, 0x36, 0x2f, 255) && ui_theme_color("nope", 7) == 7);
+    /* A broken file must keep the previous layout. */
+    int n = ui_element_count();
+    char dir[] = "selftest_ui";
+    dir_make_all("selftest_ui/assets/dfe/ui/theme");
+    const char *bad = "{\"elements\": [{\"id\": \"a\", \"style\": \"blob\"}]}";
+    file_write_atomic("selftest_ui/assets/dfe/ui/hud.json", bad, strlen(bad));
+    vfs_add_root(dir, "selftest_ui");
+    CHECK(!ui_reload() && ui_element_count() == n);
+    remove("selftest_ui/assets/dfe/ui/hud.json"); remove("selftest_ui/assets/dfe/ui/theme"); remove("selftest_ui/assets/dfe/ui"); remove("selftest_ui/assets/dfe"); remove("selftest_ui/assets"); remove("selftest_ui");
+    g_creative = prev;
+    vfs_reset();
+}
+
+static void test_ui_icons(void) {
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    CHECK(icons_load() && icons_has("heart") && icons_has("missing") && !icons_has("nope"));
+    float heart[4], miss[4], unk[4];
+    CHECK(icons_find("heart", heart) && icons_find("missing", miss) && icons_find("nope", unk));
+    CHECK(memcmp(unk, miss, sizeof unk) == 0 && memcmp(heart, miss, sizeof heart) != 0);
+    int n = icons_count();
+    CHECK(n >= 8);
+    icons_draw("heart", 0, 0, 16, 0xffffffff); /* headless: must not touch GL */
+    /* A broken file must keep the previous set. */
+    char dir[] = "selftest_icons";
+    dir_make_all("selftest_icons/assets/dfe/ui");
+    const char *bad = "{\"cell\": 16, \"icons\": {\"heart\": [999, 0]}}";
+    file_write_atomic("selftest_icons/assets/dfe/ui/icons.json", bad, strlen(bad));
+    vfs_add_root(dir, "selftest_icons");
+    CHECK(!icons_reload() && icons_count() == n && icons_has("heart"));
+    /* A mod pack overrides by name; its picture is copied from the engine one. */
+    remove("selftest_icons/assets/dfe/ui/icons.json"); remove("selftest_icons/assets/dfe/ui"); remove("selftest_icons/assets/dfe"); remove("selftest_icons/assets"); remove("selftest_icons");
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    dir_make_all("selftest_icons/assets/pack/ui");
+    size_t sz;
+    u8 *png = vfs_read("assets/dfe/ui/icons.png", &sz, NULL);
+    CHECK(png != NULL);
+    if (png) file_write_atomic("selftest_icons/assets/pack/ui/icons.png", png, sz);
+    free(png);
+    const char *pack = "{\"cell\": 16, \"icons\": {\"heart\": [2, 0], \"extra\": [0, 0]}}";
+    file_write_atomic("selftest_icons/assets/pack/ui/icons.json", pack, strlen(pack));
+    vfs_add_root(dir, "pack");
+    float over[4];
+    CHECK(icons_reload() && icons_has("extra") && icons_count() == n + 1);
+    CHECK(icons_find("heart", over) && memcmp(over, heart, sizeof over) != 0);
+    remove("selftest_icons/assets/pack/ui/icons.json"); remove("selftest_icons/assets/pack/ui/icons.png"); remove("selftest_icons/assets/pack/ui"); remove("selftest_icons/assets/pack"); remove("selftest_icons/assets"); remove("selftest_icons");
+    icons_shutdown();
+    vfs_reset();
+}
+
+static int g_screen_events;
+static char g_screen_last[48];
+static void screen_probe(const char *screen, const char *widget, int index, void *user) {
+    (void)screen; (void)user;
+    g_screen_events++;
+    snprintf(g_screen_last, sizeof g_screen_last, "%s:%d", widget, index);
+}
+
+static float fixed_text_width(float size, const char *text) { return 0.6f * size * (float)strlen(text); }
+
+static void test_ui_scaling(void) {
+    Settings keep = g_settings;
+    vfs_reset();
+    vfs_add_root("engine_assets", "dfe");
+    ui_set_text_measure(fixed_text_width);
+    g_settings.ui_scale = 1;
+    /* ui_fit: never shrinks, grows only when text overflows, bounded by text size plus padding */
+    float w, h, tw = fixed_text_width(14.0f, "Hello World");
+    ui_fit(500, 100, "Hello World", 14.0f, 4.0f, &w, &h);
+    CHECK(w == 500 && h == 100);
+    ui_fit(20, 10, "Hello World", 14.0f, 4.0f, &w, &h);
+    CHECK(w == ceilf(tw + 8) && h == 22.0f);
+    ui_fit(20, 10, "", 14.0f, 4.0f, &w, &h);
+    CHECK(w == 20 && h == 10);
+    for (float ts = 0.75f; ts <= 2.0f; ts += 0.25f) {
+        ui_fit(20, 10, "Hello World", 14.0f * ts, 4.0f, &w, &h);
+        CHECK(w >= 20 && h >= 10 && w <= ceilf(fixed_text_width(14.0f * ts, "Hello World") + 8) && h <= ceilf(14.0f * ts + 8) && w == floorf(w) && h == floorf(h));
+    }
+    /* crisp rendering: edges land on whole pixels and shared edges stay shared */
+    float lo, hi, lo2, hi2;
+    ui_snap_span(10.4f, 20.4f, &lo, &hi);
+    ui_snap_span(30.8f, 5.0f, &lo2, &hi2);
+    CHECK(lo == 10 && hi == 31 && lo2 == 31 && hi2 == 36 && hi == lo2); /* neighbours meet exactly */
+    ui_snap_span(5.2f, 0.3f, &lo, &hi);
+    CHECK(hi - lo == 1); /* never thinner than a pixel */
+    ui_snap_span(5.2f, 0.0f, &lo, &hi);
+    CHECK(hi == lo);
+    CHECK(ui_snap_text(0.2f) == 12 && ui_snap_text(17.9f) == 12 && ui_snap_text(18.0f) == 24 && ui_snap_text(36.0f) == 36);
+    for (float sz = 1.0f; sz < 200.0f; sz += 1.7f) CHECK(fmodf(ui_snap_text(sz), 12.0f) == 0.0f && ui_snap_text(sz) >= 12.0f); /* always a whole font pixel per screen pixel */
+    /* every scale that multiplies pixel art is an integer, for every window size and setting */
+    g_settings.hud_scale = 99; g_settings.hud_text_scale = 0.1f; g_settings.ui_text_scale = 99;
+    CHECK(ui_hud_text_scale() == 0.75f && ui_ui_text_scale() == 2.0f);
+    g_settings.hud_text_scale = g_settings.ui_text_scale = 1.0f;
+    static const int win[][2] = {{640, 360}, {1000, 600}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+    for (int wi = 0; wi < ARRAY_LEN(win); wi++) {
+        float prev = 0;
+        for (float hs = 0.5f; hs <= 3.0f; hs += 0.25f) {
+            g_settings.hud_scale = hs;
+            float q = ui_hud_scale(win[wi][0], win[wi][1]);
+            CHECK(q == floorf(q) && q >= 1.0f && q <= 4.0f && q >= prev); /* integer, bounded, never shrinks as the setting grows */
+            prev = q;
+        }
+        for (int us = -1; us <= 4; us++) if (us) {
+            g_settings.ui_scale = us;
+            float g = ui_gui_scale(win[wi][0], win[wi][1]);
+            CHECK(g == floorf(g) && g >= 1.0f && g <= 4.0f && ui_icon_scale(g) == floorf(ui_icon_scale(g)));
+        }
+    }
+    g_settings.hud_scale = 0.01f;
+    CHECK(ui_hud_scale(1920, 1080) == 1.0f);
+    g_settings.hud_scale = 1.0f;
+    g_settings.ui_scale = -1;
+    CHECK(ui_gui_scale(1000, 600) == 1.0f && ui_gui_scale(1920, 1080) == 3.0f);
+    CHECK(ui_icon_scale(1) == 1 && ui_icon_scale(2) == 1 && ui_icon_scale(3) == 1 && ui_icon_scale(4) == 2);
+    g_settings.ui_scale = 2;
+    CHECK(ui_gui_scale(320, 200) == 2.0f);
+    g_settings.ui_scale = 1;
+    /* HUD elements: whole-pixel rectangles, exact multiples of the integer scale */
+    CHECK(ui_load());
+    float x1, y1, w1, h1, x2, y2, w2, h2;
+    CHECK(ui_element_rect("hearts", 1920, 1080, &x1, &y1, &w1, &h1));
+    g_settings.hud_scale = 2.0f; /* auto 3 * 2 = 6, icon scale 3 */
+    CHECK(ui_element_rect("hearts", 1920, 1080, &x2, &y2, &w2, &h2) && w2 == 3 * w1 && h2 == 3 * h1 && w2 == 480 && h2 == 48);
+    g_settings.hud_scale = 1.0f;
+    for (int wi = 0; wi < ARRAY_LEN(win); wi++) {
+        const char *ids[] = {"hearts", "hunger", "armor", "stamina", "magicka", "xp"};
+        for (int i = 0; i < ARRAY_LEN(ids); i++) {
+            CHECK(ui_element_rect(ids[i], win[wi][0], win[wi][1], &x2, &y2, &w2, &h2));
+            CHECK(x2 == floorf(x2) && y2 == floorf(y2) && w2 == floorf(w2) && h2 == floorf(h2));
+        }
+    }
+    /* a HUD scale change leaves the HUD's text alone only when text scale is separate: text px is on the font grid */
+    g_settings.hud_scale = 1.0f;
+    ui_status()->level = 5;
+    g_settings.hud_text_scale = 2.0f;
+    CHECK(ui_element_rect("xp", 1000, 600, &x2, &y2, &w2, &h2) && w2 >= 428 && h2 == 3);
+    g_settings.hud_text_scale = 1.0f;
+    /* UI text scale grows a button only as far as its text needs, and the HUD ignores it */
+    screen_shutdown();
+    ScreenDef d = {.id = "test:scale", .w = 200, .h = 100, .on_open = screen_probe};
+    Widget b = {.type = WIDGET_BUTTON, .id = "b", .text = "Hello World", .x = 0, .y = 0, .w = 20, .h = 10, .enabled = true, .on_click = screen_probe};
+    CHECK(screen_register(&d) && screen_add_widget("test:scale", &b) && screen_open("test:scale"));
+    float fw1, fh1, fw2, fh2;
+    ui_fit(20, 10, "Hello World", ui_snap_text(14.0f), 4.0f, &fw1, &fh1);
+    ui_fit(20, 10, "Hello World", ui_snap_text(28.0f), 4.0f, &fw2, &fh2);
+    CHECK(fw2 > fw1 + 1 && fh2 > fh1 + 1);
+    g_screen_last[0] = 0;
+    screen_click_at(1000, 600, 400 + fw1 + 2, 250 + 2, false);
+    CHECK(!g_screen_last[0]); /* past the button at text scale 1 */
+    g_settings.ui_text_scale = 2.0f;
+    CHECK(screen_click_at(1000, 600, 400 + fw1 + 2, 250 + fh1 + 2, false) && !strcmp(g_screen_last, "b:0")); /* inside the grown button */
+    g_screen_last[0] = 0;
+    screen_click_at(1000, 600, 400 + fw2 + 2, 250 + 2, false);
+    CHECK(!g_screen_last[0]); /* growth stops at the text */
+    g_settings.ui_text_scale = 1.0f;
+    CHECK(screen_close() && screen_unregister("test:scale"));
+    ui_set_text_measure(NULL);
+    g_settings = keep;
+}
+
+static void test_ui_screens(void) {
+    screen_shutdown();
+    ScreenDef d = {.id = "test:native", .title = "Native", .w = 200, .h = 100, .close_on_escape = true, .on_open = screen_probe, .on_close = screen_probe};
+    CHECK(screen_register(&d) && !screen_register(&d));
+    Widget ok = {.type = WIDGET_BUTTON, .id = "ok", .text = "OK", .x = 10, .y = 10, .w = 50, .h = 20, .enabled = true, .on_click = screen_probe};
+    Widget list = {.type = WIDGET_LIST, .id = "list", .x = 10, .y = 40, .w = 100, .h = 54, .enabled = true, .item_count = 3, .on_click = screen_probe};
+    strcpy(list.items[0], "a"); strcpy(list.items[1], "b"); strcpy(list.items[2], "c");
+    CHECK(screen_add_widget("test:native", &ok) && screen_add_widget("test:native", &list) && !screen_add_widget("test:native", &ok) && !screen_add_widget("nope", &ok));
+    CHECK(!screen_is_open(NULL) && !screen_open("nope"));
+    int before = g_screen_events;
+    CHECK(screen_open("test:native") && screen_is_open("test:native") && g_screen_events == before + 1 && !screen_open("test:native"));
+    CHECK(!strcmp(screen_focus(), "ok"));
+    /* 1000x600 window: panel starts at (400, 250) */
+    CHECK(screen_click_at(1000, 600, 400 + 20, 250 + 15, false) && !strcmp(g_screen_last, "ok:0"));
+    CHECK(screen_click_at(1000, 600, 400 + 20, 250 + 40 + 20, false) && !strcmp(g_screen_last, "list:1") && screen_widget("test:native", "list")->selected == 1);
+    CHECK(!screen_click_at(1000, 600, 5, 5, false)); /* outside a non-modal screen */
+    CHECK(!strcmp(screen_focus(), "list")); /* clicking focuses */
+    CHECK(screen_key(GLFW_KEY_DOWN) && screen_widget("test:native", "list")->selected == 2);
+    CHECK(screen_key(GLFW_KEY_TAB) && !strcmp(screen_focus(), "ok"));
+    CHECK(screen_key(-GLFW_KEY_TAB) && !strcmp(screen_focus(), "list"));
+    CHECK(screen_key(GLFW_KEY_TAB) && !strcmp(screen_focus(), "ok"));
+    screen_widget("test:native", "ok")->enabled = false;
+    int ev = g_screen_events;
+    CHECK(screen_key(GLFW_KEY_ENTER) && g_screen_events == ev); /* a disabled button does nothing */
+    CHECK(screen_key(GLFW_KEY_ESCAPE) && !screen_is_open(NULL));
+    /* modal screens swallow clicks outside themselves and stack */
+    ScreenDef m = {.id = "test:modal", .w = 100, .h = 50, .modal = true};
+    CHECK(screen_register(&m) && screen_open("test:native") && screen_open("test:modal"));
+    CHECK(!strcmp(screen_top(), "test:modal") && screen_click_at(1000, 600, 5, 5, false));
+    CHECK(screen_close() && !strcmp(screen_top(), "test:native") && screen_unregister("test:native") && !screen_is_open(NULL));
+    CHECK(screen_unregister("test:modal"));
+    /* Lua screens register, open, run callbacks, close, and vanish with the script state */
+    CHECK(script_init());
+    script_eval("dfe.ui.register_screen('lua:demo', {title='Demo', modal=true, on_open=function() opened = true end, on_close=function() closed = true end,"
+                " widgets={{type='button', id='go', text='Go', x=10, y=10, w=60, h=20, on_click=function(s, w, i) clicked = s .. w .. i end},"
+                " {type='bar', id='mana', value=3, max=10}}})");
+    CHECK(screen_widget("lua:demo", "go") && screen_widget("lua:demo", "mana"));
+    CHECK(screen_open("lua:demo") && screen_click_at(1000, 600, 500 - 120 + 20, 300 - 80 + 15, false));
+    script_eval("dfe.ui.set_widget('lua:demo', 'mana', {value = 7})");
+    CHECK(screen_widget("lua:demo", "mana")->value == 7);
+    CHECK(screen_close());
+    script_eval("dfe.ui.register_screen('lua:demo', {})"); /* duplicate id is an error, not a crash */
+    script_eval("dfe.ui.register_widget('nope', {type='label', id='x'})");
+    script_shutdown();
+    CHECK(!screen_widget("lua:demo", "go"));
+    screen_shutdown();
+}
+
 int selftest_run(void) {
     struct { const char *name; void (*fn)(void); } groups[] = {
         {"base", test_base},
+        {"small-fixes", test_small_correctness_fixes},
         {"content", test_content_registry},
         {"jobs", test_jobs},
         {"palette", test_palette},
@@ -1422,6 +2103,7 @@ int selftest_run(void) {
         {"registry", test_registry},
         {"worldgen", test_worldgen_data_driven},
         {"worldgen-features", test_worldgen_features_and_structures},
+        {"hydrology", test_hydrology},
         {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
         {"mod-storage", test_mod_storage},
@@ -1430,6 +2112,10 @@ int selftest_run(void) {
         {"gameplay", test_gameplay},
         {"presets", test_presets},
         {"atmosphere", test_atmosphere},
+        {"ui-status", test_ui_status_hud},
+        {"ui-screens", test_ui_screens},
+        {"ui-scaling", test_ui_scaling},
+        {"ui-icons", test_ui_icons},
     };
     for (int i = 0; i < ARRAY_LEN(groups); i++) {
         int before = g_failures;

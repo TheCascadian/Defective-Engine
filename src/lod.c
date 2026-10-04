@@ -25,6 +25,7 @@
 #define LOD_RESCAN_FRAMES 20
 #define LOD_INNER_OVERLAP 1.5f  /* tiles start this many tile widths inside the finer ring so they underlie its edge */
 #define LOD_OUTER_OVERLAP 1.5f
+#define LOD_MAP_CAP 4096
 
 typedef struct LodChunk {
     int cy;
@@ -52,6 +53,7 @@ static struct {
     bool ready;
     LodTile *tiles;
     int tile_count;
+    int tile_map[LOD_MAP_CAP];
     int jobs_inflight;
     u32 serial;
     int levels;
@@ -75,6 +77,7 @@ static inline int tile_blocks(int level) { return CHUNK_SIZE << level; }
 
 bool lod_init(void) {
     memset(&L, 0, sizeof L);
+    for (int i = 0; i < LOD_MAP_CAP; i++) L.tile_map[i] = -1;
     L.tiles = xcalloc(LOD_MAX_TILES, sizeof(LodTile));
     glGenTextures(1, &L.cover_tex);
     L.ready = true;
@@ -171,16 +174,44 @@ static float tile_dist2(const LodTile *t, V3 p) {
     return cx * cx + cz * cz;
 }
 
+static u32 tile_hash(int level, int tx, int tz) {
+    u32 h = (u32)level * 0x9e3779b1u;
+    h ^= (u32)tx * 0x85ebca6bu;
+    h ^= (u32)tz * 0xc2b2ae35u;
+    h ^= h >> 16;
+    return h & (LOD_MAP_CAP - 1);
+}
+
+static void tile_map_set(int level, int tx, int tz, int index) {
+    u32 p = tile_hash(level, tx, tz);
+    for (int n = 0; n < LOD_MAP_CAP; n++, p = (p + 1) & (LOD_MAP_CAP - 1)) {
+        int old = L.tile_map[p];
+        if (old < 0 || (L.tiles[old].level == level && L.tiles[old].tx == tx && L.tiles[old].tz == tz)) {
+            L.tile_map[p] = index;
+            return;
+        }
+    }
+}
+
+static void tile_map_rebuild(void) {
+    for (int i = 0; i < LOD_MAP_CAP; i++) L.tile_map[i] = -1;
+    for (int i = 0; i < L.tile_count; i++) tile_map_set(L.tiles[i].level, L.tiles[i].tx, L.tiles[i].tz, i);
+}
+
 static LodTile *find_tile(int level, int tx, int tz) {
-    for (int i = 0; i < L.tile_count; i++)
+    u32 p = tile_hash(level, tx, tz);
+    for (int n = 0; n < LOD_MAP_CAP; n++, p = (p + 1) & (LOD_MAP_CAP - 1)) {
+        int i = L.tile_map[p];
+        if (i < 0) return NULL;
         if (L.tiles[i].level == level && L.tiles[i].tx == tx && L.tiles[i].tz == tz) return &L.tiles[i];
+    }
     return NULL;
 }
 
 static void remove_stale(V3 pos) {
     for (int i = L.tile_count - 1; i >= 0; i--) {
         LodTile *t = &L.tiles[i];
-        if (t->level > L.levels) { tile_release(t); L.tiles[i] = L.tiles[--L.tile_count]; continue; }
+        if (t->level > L.levels) { tile_release(t); L.tiles[i] = L.tiles[--L.tile_count]; tile_map_rebuild(); continue; }
         float lo, hi, t_w = (float)tile_blocks(t->level);
         level_band(t->level, &lo, &hi);
         float d = sqrtf(tile_dist2(t, pos));
@@ -188,6 +219,7 @@ static void remove_stale(V3 pos) {
             /* A job still in flight finds no tile with its serial and discards its result. */
             tile_release(t);
             L.tiles[i] = L.tiles[--L.tile_count];
+            tile_map_rebuild();
         }
     }
 }
@@ -219,6 +251,7 @@ static void schedule(const Camera *cam) {
         LodTile *t = &L.tiles[L.tile_count++];
         memset(t, 0, sizeof *t);
         t->level = bl; t->tx = bx; t->tz = bz; t->serial = ++L.serial;
+        tile_map_set(bl, bx, bz, L.tile_count - 1);
         LodJob *j = xcalloc(1, sizeof *j);
         j->level = bl; j->tx = bx; j->tz = bz; j->serial = t->serial;
         L.jobs_inflight++;
@@ -311,6 +344,7 @@ void lod_update(const Camera *cam, int rd, int far_chunks) {
     if (far_chunks <= 0 || L.levels == 0) {
         for (int i = L.tile_count - 1; i >= 0; i--) { tile_release(&L.tiles[i]); }
         L.tile_count = 0;
+        tile_map_rebuild();
         return;
     }
     schedule(cam);

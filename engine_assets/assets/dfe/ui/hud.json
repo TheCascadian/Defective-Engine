@@ -1,0 +1,11 @@
+{
+  "scale": 1.0,
+  "elements": [
+    {"id": "hearts",  "anchor": "bottom_center", "x": -214, "y": -82, "w": 160, "h": 16, "style": "pips", "icon": "heart", "source": "health",   "max": "max_health", "pip_value": 2, "pip_size": 16, "spacing": 0, "color": "health",   "modes": ["survival"]},
+    {"id": "hunger",  "anchor": "bottom_center", "x": 214,  "y": -82, "w": 160, "h": 16, "style": "pips", "icon": "hunger", "source": "hunger",   "max": "max_hunger", "pip_value": 2, "pip_size": 16, "spacing": 0, "color": "hunger",   "modes": ["survival"], "align": "right"},
+    {"id": "armor",   "anchor": "bottom_center", "x": -214, "y": -98, "w": 160, "h": 16, "style": "pips", "icon": "armor", "source": "armor",    "max": "max_armor",  "pip_value": 2, "pip_size": 16, "spacing": 0, "color": "armor",    "modes": ["survival"], "hide_when_empty": true},
+    {"id": "stamina", "anchor": "bottom_center", "x": 214,  "y": -88, "w": 100, "h": 5, "style": "bar",  "source": "stamina",  "max": "max_stamina", "color": "stamina", "modes": ["survival"], "align": "right", "requires_max": true},
+    {"id": "magicka", "anchor": "bottom_center", "x": 214,  "y": -96, "w": 100, "h": 5, "style": "bar",  "source": "magicka",  "max": "max_magicka", "color": "magicka", "modes": ["survival"], "align": "right", "requires_max": true},
+    {"id": "xp",      "anchor": "bottom_center", "x": -214, "y": -62, "w": 428, "h": 3, "style": "bar",  "source": "xp",       "max": "xp_next",     "color": "xp",      "modes": ["survival"], "label": "level"}
+  ]
+}

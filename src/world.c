@@ -91,6 +91,17 @@ Chunk *chunk_create(int cx, int cy, int cz) {
     return c;
 }
 
+static void chunk_update_random_tick_flag(Chunk *c) {
+    bool has = false;
+    if (c->bits == 0) has = (g_state_flags[c->uniform] & BF_RANDOM_TICK) != 0;
+    else if (c->bits == 16) {
+        const u16 *states = (const u16 *)c->data;
+        for (int i = 0; i < CHUNK_VOL; i++) if (g_state_flags[states[i]] & BF_RANDOM_TICK) { has = true; break; }
+    } else for (int i = 0; i < c->pal_n; i++) if (g_state_flags[c->pal[i]] & BF_RANDOM_TICK) { has = true; break; }
+    if (has) c->flags |= CF_HAS_RANDOM_TICK;
+    else c->flags &= ~CF_HAS_RANDOM_TICK;
+}
+
 void chunk_destroy(Chunk *c) {
     if (!c) return;
     free(c->pal);
@@ -145,19 +156,20 @@ void chunk_set(Chunk *c, int idx, u16 state) {
         c->pal_n = 1;
         c->data = xcalloc(CHUNK_VOL / 32, sizeof(u32));
     }
-    if (c->bits == 16) { ((u16 *)c->data)[idx] = state; return; }
+    if (c->bits == 16) { ((u16 *)c->data)[idx] = state; chunk_update_random_tick_flag(c); return; }
     int pi = -1;
     for (int i = 0; i < c->pal_n; i++) if (c->pal[i] == state) { pi = i; break; }
     if (pi < 0) {
         if (c->pal_n == (1u << c->bits)) {
             int nb = c->bits == 1 ? 2 : c->bits == 2 ? 4 : c->bits == 4 ? 8 : 16;
             chunk_repack(c, nb);
-            if (c->bits == 16) { ((u16 *)c->data)[idx] = state; return; }
+            if (c->bits == 16) { ((u16 *)c->data)[idx] = state; chunk_update_random_tick_flag(c); return; }
         }
         pi = c->pal_n++;
         c->pal[pi] = state;
     }
     index_set(c, idx, (u32)pi);
+    chunk_update_random_tick_flag(c);
 }
 
 void chunk_unpack(const Chunk *c, u16 *flat) {
@@ -176,7 +188,7 @@ void chunk_pack_from(Chunk *c, const u16 *flat) {
     c->pal = NULL; c->data = NULL; c->pal_n = 0; c->bits = 0;
     int i = 1;
     while (i < CHUNK_VOL && flat[i] == flat[0]) i++;
-    if (i == CHUNK_VOL) { c->uniform = flat[0]; return; }
+    if (i == CHUNK_VOL) { c->uniform = flat[0]; chunk_update_random_tick_flag(c); return; }
 
     u16 pal[256];
     u16 slot_key[1024];
@@ -197,6 +209,7 @@ void chunk_pack_from(Chunk *c, const u16 *flat) {
         c->bits = 16;
         c->data = xmalloc(CHUNK_VOL * sizeof(u16));
         memcpy(c->data, flat, CHUNK_VOL * sizeof(u16));
+        chunk_update_random_tick_flag(c);
         return;
     }
     int bits = n <= 2 ? 1 : n <= 4 ? 2 : n <= 16 ? 4 : 8;
@@ -212,6 +225,7 @@ void chunk_pack_from(Chunk *c, const u16 *flat) {
         u32 bit = (u32)k * (u32)bits;
         c->data[bit >> 5] |= (u32)slot_idx[s] << (bit & 31);
     }
+    chunk_update_random_tick_flag(c);
 }
 
 void chunk_compact(Chunk *c) {
@@ -264,6 +278,11 @@ void chunk_set_light_from(Chunk *c, const u16 *flat) {
 
 typedef struct ColumnOffset { int dx, dz; float dist2; } ColumnOffset;
 
+static int column_offset_cmp(const void *a, const void *b) {
+    const ColumnOffset *x = a, *y = b;
+    return x->dist2 < y->dist2 ? -1 : x->dist2 > y->dist2;
+}
+
 typedef struct WorkerBuffers {
     u16 *states, *light;
     GenScratch *scratch;
@@ -298,6 +317,7 @@ static struct {
     WorkerBuffers wb[MAX_WORKERS];
     Chunk *cache_chunk;
     u64 cache_key;
+    Chunk *mesh_dirty_head, *mesh_dirty_tail;
     WorldStats stats;
 } W;
 
@@ -315,12 +335,7 @@ void world_init(u64 seed) {
             if (d2 <= (float)(r * r)) W.offsets[W.offset_count++] = (ColumnOffset){dx, dz, d2};
         }
     /* Nearest first, so scans stop early once the radius is exceeded. */
-    for (int i = 1; i < W.offset_count; i++) {
-        ColumnOffset v = W.offsets[i];
-        int j = i - 1;
-        while (j >= 0 && W.offsets[j].dist2 > v.dist2) { W.offsets[j + 1] = W.offsets[j]; j--; }
-        W.offsets[j + 1] = v;
-    }
+    qsort(W.offsets, (size_t)W.offset_count, sizeof *W.offsets, column_offset_cmp);
     W.active = true;
 }
 
@@ -376,12 +391,35 @@ u16 world_get_light(int x, int y, int z) {
     return cy > col->hi_cy ? LIGHT_FULL_SKY : 0;
 }
 
-void world_mark_mesh_dirty(Chunk *c) { if (c) c->flags |= CF_MESH_DIRTY; }
+static void dirty_enqueue(Chunk *c) {
+    if (!c || (c->flags & CF_MESH_DIRTY)) return;
+    c->flags |= CF_MESH_DIRTY;
+    c->mesh_dirty_next = NULL;
+    if (W.mesh_dirty_tail) W.mesh_dirty_tail->mesh_dirty_next = c;
+    else W.mesh_dirty_head = c;
+    W.mesh_dirty_tail = c;
+}
+
+static void dirty_remove(Chunk *c) {
+    if (!c || !(c->flags & CF_MESH_DIRTY)) return;
+    Chunk *prev = NULL;
+    for (Chunk *it = W.mesh_dirty_head; it; prev = it, it = it->mesh_dirty_next) {
+        if (it != c) continue;
+        if (prev) prev->mesh_dirty_next = it->mesh_dirty_next;
+        else W.mesh_dirty_head = it->mesh_dirty_next;
+        if (W.mesh_dirty_tail == it) W.mesh_dirty_tail = prev;
+        it->mesh_dirty_next = NULL;
+        it->flags &= ~CF_MESH_DIRTY;
+        return;
+    }
+}
+
+void world_mark_mesh_dirty(Chunk *c) { dirty_enqueue(c); }
 
 void world_mark_neighbours_dirty(int cx, int cy, int cz) {
     for (int d = 0; d < 6; d++) {
         Chunk *n = world_chunk(cx + DIR_VEC[d][0], cy + DIR_VEC[d][1], cz + DIR_VEC[d][2]);
-        if (n) n->flags |= CF_MESH_DIRTY;
+        dirty_enqueue(n);
     }
 }
 
@@ -395,7 +433,7 @@ static void mark_voxel_dirty(int x, int y, int z) {
         for (int b = 0; b < 2; b++)
             for (int c2 = 0; c2 < 2; c2++) {
                 Chunk *c = world_chunk((x >> 5) + xs[a], (y >> 5) + ys[b], (z >> 5) + zs[c2]);
-                if (c) c->flags |= CF_MESH_DIRTY;
+                dirty_enqueue(c);
             }
 }
 
@@ -445,7 +483,8 @@ bool world_set_state(int x, int y, int z, u16 state) {
     if (old == state) return false;
     chunk_set(c, idx, state);
     if (!(c->flags & CF_PERSISTENT)) column_make_persistent(world_column(cx, cz));
-    c->flags |= CF_SAVE_DIRTY | CF_MESH_DIRTY;
+    c->flags |= CF_SAVE_DIRTY;
+    dirty_enqueue(c);
     c->flags &= ~CF_VIRTUAL;
     mark_voxel_dirty(x, y, z);
     light_on_block_changed(x, y, z, old, state);
@@ -500,6 +539,7 @@ static void gen_job_run(void *data, int worker) {
         chunk_pack_from(c, wb->states + (size_t)k * CHUNK_VOL);
         chunk_set_light_from(c, wb->light + (size_t)k * CHUNK_VOL);
         c->flags = CF_GENERATED | CF_SAVE_DIRTY | CF_PERSISTENT;
+        chunk_update_random_tick_flag(c);
         j->chunks[k] = c;
     }
 }
@@ -512,7 +552,11 @@ static void gen_job_complete(void *data) {
     if (!col || col->state != COLUMN_PENDING || col->flags != j->serial) {
         for (int k = 0; k < layers; k++) chunk_destroy(j->chunks[k]);
     } else {
-        for (int k = 0; k < layers; k++) ptrmap_set(&W.chunks, pack3(j->cx, j->lo + k, j->cz), j->chunks[k]);
+        for (int k = 0; k < layers; k++) {
+            ptrmap_set(&W.chunks, pack3(j->cx, j->lo + k, j->cz), j->chunks[k]);
+            chunk_update_random_tick_flag(j->chunks[k]);
+            dirty_enqueue(j->chunks[k]);
+        }
         col->state = COLUMN_READY;
         if (j->loaded) { col->lo_cy = j->lo; col->hi_cy = j->hi; col->deep_state = j->deep_state; }
         W.stats.columns_generated++;
@@ -599,6 +643,7 @@ static void column_unload(Column *col) {
         Chunk *c = ptrmap_get(&W.chunks, pack3(col->cx, cy, col->cz));
         if (!c) continue;
         scene_free_chunk(c);
+        dirty_remove(c);
         ptrmap_remove(&W.chunks, pack3(col->cx, cy, col->cz));
         if (W.cache_chunk == c) W.cache_chunk = NULL;
         chunk_destroy(c);
@@ -785,41 +830,41 @@ void world_stream(V3 focus, V3 fwd, int rd, bool first_load) {
     /* Meshing: only when all eight neighbouring columns exist and lighting has settled. */
     int mesh_cap = first_load ? 4096 : workers * MESH_JOBS_PER_WORKER + 2;
     bool light_idle = light_queue_size() == 0;
-    Candidate meshes[64];
+    Candidate meshes[4096];
     int nm = 0, want_m = MIN(MAX(mesh_cap - W.mesh_inflight, 0), 64);
-    int draw_r2 = rd * rd;
     int chunks_meshed = 0, unmeshed = 0;
-    for (int i = 0; i < W.offset_count && W.offsets[i].dist2 <= (float)draw_r2; i++) {
-        int cx = W.fcx + W.offsets[i].dx, cz = W.fcz + W.offsets[i].dz;
-        Column *col = world_column(cx, cz);
-        if (!col || col->state != COLUMN_READY) continue;
-        bool ready = column_neighbourhood_ready(cx, cz);
-        for (int cy = col->lo_cy; cy <= col->hi_cy; cy++) {
-            Chunk *c = world_chunk(cx, cy, cz);
-            if (!c) continue;
-            if (c->flags & CF_HAS_MESH) chunks_meshed++;
-            if (!(c->flags & CF_MESHED_ONCE)) unmeshed++;
-            if (c->flags & CF_MESH_PENDING) continue;
-            bool needs = (c->flags & CF_MESH_DIRTY) || !(c->flags & CF_MESHED_ONCE);
-            if (!needs || !ready) continue;
-            bool edit = (c->flags & CF_MESHED_ONCE) != 0;
-            if (!edit && !light_idle) continue;
-            if (!edit && c->bits == 0 && c->uniform == STATE_AIR) {
-                /* Empty chunks need no mesh job, only a connectivity record of "everything connected". */
-                c->conn = 0x7FFF;
-                c->flags |= CF_MESHED_ONCE;
-                c->flags &= ~CF_MESH_DIRTY;
-                continue;
-            }
-            if (want_m <= 0 && !edit) continue;
-            float p = edit ? -1000.0f : stream_priority((float)W.offsets[i].dx, (float)W.offsets[i].dz, fwd) + 0.1f * (float)abs(cy - W.fcy);
-            candidate_insert(meshes, &nm, 64, (Candidate){p, cx, cy, cz});
+    int dirty_n = 0;
+    for (Chunk *c = W.mesh_dirty_head; c; c = c->mesh_dirty_next) dirty_n++;
+    for (int pass = 0; pass < dirty_n; pass++) {
+        Chunk *c = W.mesh_dirty_head;
+        if (!c) break;
+        W.mesh_dirty_head = c->mesh_dirty_next;
+        if (!W.mesh_dirty_head) W.mesh_dirty_tail = NULL;
+        c->mesh_dirty_next = NULL;
+        c->flags &= ~CF_MESH_DIRTY;
+        if (c->flags & CF_MESH_PENDING) continue;
+        if (!column_neighbourhood_ready(c->cx, c->cz)) { dirty_enqueue(c); continue; }
+        bool edit = (c->flags & CF_MESHED_ONCE) != 0;
+        if (!edit && !light_idle) { dirty_enqueue(c); continue; }
+        if (!edit && c->bits == 0 && c->uniform == STATE_AIR) {
+            c->conn = 0x7FFF;
+            c->flags |= CF_MESHED_ONCE;
+            continue;
         }
+        if (want_m <= 0 && !edit) { dirty_enqueue(c); continue; }
+        float dx = (float)(c->cx - W.fcx), dz = (float)(c->cz - W.fcz);
+        float p = edit ? -1000.0f : stream_priority(dx, dz, fwd) + 0.1f * (float)abs(c->cy - W.fcy);
+        candidate_insert(meshes, &nm, ARRAY_LEN(meshes), (Candidate){p, c->cx, c->cy, c->cz});
     }
     for (int i = 0; i < nm; i++) {
         Chunk *c = world_chunk(meshes[i].a, meshes[i].b, meshes[i].c);
         bool edit = meshes[i].prio < -500.0f;
-        if (!edit && W.mesh_inflight >= mesh_cap) break;
+        if (!edit && W.mesh_inflight >= mesh_cap) {
+            /* Candidate selection is separate from submission. Preserve work
+             * that did not fit this frame in the coalesced dirty queue. */
+            dirty_enqueue(c);
+            continue;
+        }
         mesh_submit(c, meshes[i].prio);
     }
 
@@ -837,6 +882,21 @@ void world_stream(V3 focus, V3 fwd, int rd, bool first_load) {
     W.stats.mesh_pending = W.mesh_inflight;
     W.stats.light_queue = light_queue_size();
     W.stats.columns_missing = missing;
+    /* Loading status describes the visible radius, not deferred dirty work
+     * outside it.  The dirty queue may contain edge chunks waiting for their
+     * neighbour columns, so derive these counters from the actual chunks. */
+    int draw_r2_status = rd * rd;
+    chunks_meshed = 0;
+    unmeshed = 0;
+    for (u32 i = 0; i < W.chunks.cap; i++) {
+        Chunk *c = W.chunks.vals[i] && W.chunks.vals[i] != TOMB ? W.chunks.vals[i] : NULL;
+        if (!c) continue;
+        int dx = c->cx - W.fcx, dz = c->cz - W.fcz;
+        if (dx * dx + dz * dz > draw_r2_status) continue;
+        if (c->flags & CF_HAS_MESH) chunks_meshed++;
+        if (!(c->flags & CF_MESHED_ONCE)) unmeshed++;
+    }
+    W.stats.chunks_meshed = chunks_meshed;
     W.stats.chunks_unmeshed = unmeshed;
 }
 

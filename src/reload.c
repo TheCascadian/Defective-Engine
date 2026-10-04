@@ -4,6 +4,8 @@
  * remain stable because they are baked into live chunks and meshes; changing those live would corrupt the world.
  * Detection polls file times through the virtual filesystem, so it also sees edits inside mod folders. */
 #include "dfe.h"
+#include "ui.h"
+#include "icons.h"
 
 #define POLL_INTERVAL_S 0.5
 
@@ -27,6 +29,8 @@ bool hot_reload_now(void) {
     all_ok &= report("presets", registry_load_presets() == 0, before);
     before = data_error_count();
     all_ok &= report("entity types", registry_load_entities() == 0, before);
+    all_ok &= report("hud layout", ui_reload(), data_error_count());
+    all_ok &= report("ui icons", icons_reload(), data_error_count());
     before = data_error_count();
     all_ok &= report("content", content_reload() == 0, before);
     gfx_apply();

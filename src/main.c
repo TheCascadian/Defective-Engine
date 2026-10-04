@@ -1,5 +1,6 @@
 /* Entry point: command line, subsystem start-up and the run modes. */
 #include "dfe.h"
+#include "screen.h"
 
 #include <GLFW/glfw3.h>
 
@@ -9,6 +10,11 @@ static void print_usage(void) {
     puts("usage: dfe [options]\n"
          "  --benchmark          fly the fixed camera path and print frame statistics\n"
          "  --selftest           run the engine self-tests and exit\n"
+         "  --dump-hydrology SEED X0 Z0 X1 Z1  print water samples along a line\n"
+         "  --dump-rivers SEED   list river paths, widths and outlets near the origin\n"
+         "  --dump-spawns SEED X Z RADIUS      count trees and plants by habitat; fails if any stand in water\n"
+         "  --compare-worldgen SEED A B        generate twice in chunk order A and B (forward, reverse, spiral, shuffle) and diff\n"
+         "  --repair-world NAME  scan and preserve damaged region files\n"
          "  --bench-seconds N    benchmark duration (default 20)\n"
          "  --bench-json FILE    write the benchmark summary as JSON\n"
          "  --bench-csv FILE     write one row per benchmark frame\n"
@@ -16,6 +22,7 @@ static void print_usage(void) {
          "  --bench-runs N       repeat the matrix N times, run after run\n"
          "  --bench-label TEXT   free text stored in the JSON, to tell runs apart\n"
          "  --no-render          benchmark simulation and streaming without a GL context\n"
+         "  --headless           run without a window, GL context, audio, or input (used by mod test)\n"
          "  --mods DIR           mods directory (default: ./mods or next to the executable)\n"
          "  --world NAME         world to create or load\n"
          "  --seed N             world seed\n"
@@ -37,6 +44,9 @@ static void print_usage(void) {
          "  --screenshot-frame N frame index to capture (default 0)");
 }
 
+static int g_diag_argc;
+static char **g_diag_argv;
+
 static bool parse_args(int argc, char **argv) {
     g_opt.width = 1280;
     g_opt.height = 720;
@@ -46,12 +56,17 @@ static bool parse_args(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         bool has_val = i + 1 < argc;
+        if (!strncmp(a, "--dump-", 7) || !strcmp(a, "--compare-worldgen")) { g_diag_argc = argc - i; g_diag_argv = argv + i; return true; }
         if (!strcmp(a, "--benchmark")) g_opt.benchmark = true;
         else if (!strcmp(a, "--selftest")) g_opt.selftest = true;
+        else if (!strcmp(a, "--repair-world") && has_val) { snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]); g_opt.repair_world = true; }
         else if (!strcmp(a, "--no-vsync")) g_opt.no_vsync = true;
         else if (!strcmp(a, "--hidden")) g_opt.hidden_window = true;
         else if (!strcmp(a, "--no-render")) g_opt.no_render = true;
+        else if (!strcmp(a, "--headless")) { g_opt.headless = true; g_opt.no_render = true; }
         else if (!strcmp(a, "--bench-seconds") && has_val) g_opt.bench_seconds = atoi(argv[++i]);
+        else if (!strcmp(a, "--bench-entities") && has_val) { g_opt.bench_entities = atoi(argv[++i]); g_opt.bench_entities = CLAMP(g_opt.bench_entities, 0, MAX_ENTITIES); }
+        else if (!strcmp(a, "--entity-legacy")) g_opt.entity_legacy = true;
         else if (!strcmp(a, "--bench-json") && has_val) snprintf(g_opt.bench_json, sizeof g_opt.bench_json, "%s", argv[++i]);
         else if (!strcmp(a, "--bench-csv") && has_val) snprintf(g_opt.bench_csv, sizeof g_opt.bench_csv, "%s", argv[++i]);
         else if (!strcmp(a, "--bench-matrix") && has_val) { snprintf(g_opt.bench_matrix, sizeof g_opt.bench_matrix, "%s", argv[++i]); g_opt.benchmark = true; }
@@ -165,6 +180,17 @@ static void benchmark_camera(Camera *cam, int frame) {
     cam->pitch = -0.22f + 0.08f * sinf(t * 0.5f);
 }
 
+/* Fills a grid of entities in front of the fixed entity-benchmark camera, standing a little above the terrain. */
+static void bench_spawn_entities(int count) {
+    const char *type = entity_type_count() ? entity_type_at(0)->id : "base:hopper";
+    for (int i = 0; i < entity_type_count(); i++) if (!strcmp(entity_type_at(i)->id, "base:hopper")) type = entity_type_at(i)->id;
+    int cols = 16;
+    for (int i = 0; i < count; i++) {
+        float x = 6.0f + (float)(i % cols) * 3.5f, z = -((float)(count / cols) * 3.5f) * 0.5f + (float)(i / cols) * 3.5f;
+        entity_spawn(type, v3(x, MAX(gen_height_at(x, z), (float)gen_sea_level()) + 2.0f, z));
+    }
+}
+
 static void fly_camera(Camera *cam, double dt) {
     float speed = (key_down(GLFW_KEY_LEFT_SHIFT) ? 40.0f : 10.0f) * (float)dt;
     V3 move = v3(0, 0, 0);
@@ -201,7 +227,7 @@ static void draw_selection_box(void) {
 /* Reads the keyboard and mouse into the player and mirrors the result into the camera. While a menu has the
  * input, the player still simulates (gravity, water) but receives no commands. */
 static void drive_player(Camera *cam, double dt) {
-    bool menu = console_open() || hud_inventory_open() || menu_is_open();
+    bool menu = console_open() || hud_inventory_open() || menu_is_open() || screen_is_open(NULL);
     PlayerInput in = {0};
     if (!menu && g_player.dead) {
         if (key_pressed(GLFW_KEY_SPACE)) player_respawn(&g_player, player_find_spawn());
@@ -295,6 +321,14 @@ static void overlay_world_page(float x, float y) {
     overlay_text_line(&x, &y, "uploads this frame %d", g_scene_stats.uploads_this_frame);
 }
 
+static void overlay_hydrology_page(float x, float y) {
+    GenHydrologySample h;
+    gen_hydrology_at(g_player.pos.x, g_player.pos.z, &h);
+    overlay_text_line(&x, &y, "habitat %s  type %d  flags 0x%x", gen_habitat_at(&h), h.type, h.flags);
+    overlay_text_line(&x, &y, "ground %.2f  water %.2f  bed %.2f  channel %.2f", h.ground_y, h.water_y, h.bed_y, h.channel);
+    overlay_text_line(&x, &y, "flow %.0f cells  water distance %.1f  downstream %.1f %.1f", h.flow, h.water_dist, h.downstream_x, h.downstream_z);
+}
+
 static void overlay_jobs_page(float x, float y) {
     static const char *names[JOB_KIND_COUNT] = {"gen", "light", "mesh", "save", "far", "other"};
     overlay_text_line(&x, &y, "workers %d  queued %d  in flight %d", jobs_worker_count(), jobs_queued(), jobs_in_flight());
@@ -374,6 +408,8 @@ static int run_viewer(void) {
     }
     world_init(seed);
     entity_world_init(seed);
+    if (persist) entity_load();
+    if (g_opt.bench_entities > 0) bench_spawn_entities(g_opt.bench_entities);
     if (persist) game_time_set(save_meta()->day_time);
     atmosphere_init_state();
     gfx_apply();
@@ -392,6 +428,7 @@ static int run_viewer(void) {
     if (gl) {
         overlay_add_page("world", overlay_world_page);
         overlay_add_page("jobs", overlay_jobs_page);
+        overlay_add_page("hydrology", overlay_hydrology_page);
     }
     g_scene_cfg.wireframe = g_opt.wireframe;
     int rd = g_gfx.render_distance;
@@ -456,22 +493,23 @@ static int run_viewer(void) {
         if (gl) {
             window_poll();
             console_update();
-            if (play && !console_open() && !menu_is_open() && key_pressed(GLFW_KEY_E)) hud_set_inventory_open(!hud_inventory_open());
+            if (play && !console_open() && !menu_is_open() && !screen_is_open(NULL) && key_pressed(GLFW_KEY_E)) hud_set_inventory_open(!hud_inventory_open());
             if (!console_open() && key_pressed(GLFW_KEY_ESCAPE)) {
-                if (menu_is_open()) menu_back();
+                if (screen_is_open(NULL)) { /* screen_update already handled Escape for the top screen */ }
+                else if (menu_is_open()) menu_back();
                 else if (hud_inventory_open()) hud_set_inventory_open(false);
                 else if (play) menu_set_open(true);
                 else if (g_in.cursor_captured) window_set_cursor_captured(false);
                 else g_win.should_close = true;
             }
-            if (!console_open() && !hud_inventory_open() && !menu_is_open() && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
+            if (!console_open() && !hud_inventory_open() && !menu_is_open() && !screen_is_open(NULL) && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT] && !g_in.cursor_captured) window_set_cursor_captured(true);
             if (key_pressed(GLFW_KEY_F3)) overlay_cycle();
             if (key_pressed(GLFW_KEY_F4)) g_scene_cfg.wireframe = !g_scene_cfg.wireframe;
             if (key_pressed(GLFW_KEY_F5)) hot_reload_now();
             hot_reload_poll(frame_start, g_opt.dev);
         }
         if (g_opt.benchmark && !g_opt.camera_set) {
-            benchmark_camera(&cam, frame);
+            benchmark_camera(&cam, g_opt.bench_entities > 0 ? 0 : frame); /* the entity benchmark holds the view still */
             if (matrix && frame_start - bench_start >= matrix_settle_s(case_index) + g_opt.bench_seconds) {
                 perf_report_case(bench_case_at(case_index), case_index, bench_case_total(), time_now_s() - record_start, cold);
                 perf_reset_samples();
@@ -505,6 +543,7 @@ static int run_viewer(void) {
         double stream_ms = (time_now_s() - stream_start) * 1000.0;
         if (persist && frame_start - last_autosave > AUTOSAVE_INTERVAL_S) {
             world_save_dirty();
+            entity_save();
             last_autosave = frame_start;
         }
         double render_start = time_now_s();
@@ -546,7 +585,9 @@ static int run_viewer(void) {
             FrameSample fs = {.frame_ms = (float)frame_ms, .cpu_ms = (float)cpu_ms, .stream_ms = (float)stream_ms,
                               .render_ms = (float)((cpu_end - render_start) * 1000.0), .swap_ms = (float)(frame_ms - cpu_ms),
                               .scale = post_scale(), .draw_calls = g_scene_stats.draw_calls, .uploads = g_scene_stats.uploads_this_frame,
-                              .vertices = (u32)g_scene_stats.vertices_drawn};
+                              .vertices = (u32)g_scene_stats.vertices_drawn,
+                              .entity_draw_calls = g_entity_stats.draw_calls, .entity_instances = g_entity_stats.instances, .entity_culled = g_entity_stats.culled,
+                              .entity_lod = {g_entity_stats.lod[0], g_entity_stats.lod[1], g_entity_stats.lod[2]}, .entity_upload_bytes = g_entity_stats.upload_bytes};
             perf_record_frame(&fs);
         }
         if (!gl) sleep_ms(1);
@@ -579,6 +620,7 @@ static int run_viewer(void) {
     }
     if (play) { dfe_event_t ev = {.name = "player_leave", .text = "player"}; event_fire(&ev); }
     { dfe_event_t ev = {.name = "world_unload"}; event_fire(&ev); }
+    if (persist) entity_save();
     server_shutdown();
     world_shutdown();
     save_close();
@@ -602,10 +644,18 @@ static int run_viewer(void) {
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0); /* keep log lines ordered with stderr and visible if the process is killed */
-    if (argc >= 2 && !strcmp(argv[1], "mod")) return modtool_run(argc, argv);
+    if (argc >= 2 && (!strcmp(argv[1], "mod") || (argc >= 3 && !strcmp(argv[1], "--headless") && !strcmp(argv[2], "mod")))) {
+        if (argc >= 3 && !strcmp(argv[1], "--headless")) g_opt.headless = true;
+        return modtool_run(argc, argv);
+    }
     if (!parse_args(argc, argv)) return 2;
     if (!setup_vfs()) return 1;
+    if (g_diag_argv) return hydro_diag_run(g_diag_argc, g_diag_argv);
     if (g_opt.selftest) return selftest_run() == 0 ? 0 : 1;
+    if (g_opt.repair_world) {
+        char dir[600]; snprintf(dir, sizeof dir, "saves/%s", g_opt.world_name);
+        return save_repair_world(dir) ? 0 : 1;
+    }
     int result;
     do {
         result = run_viewer();

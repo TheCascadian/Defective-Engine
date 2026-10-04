@@ -38,6 +38,8 @@ static struct {
     /* Per-frame scratch. */
     Chunk **visible;
     int visible_n, visible_cap;
+    struct QItem *vis_queue;
+    size_t vis_queue_cap;
     u32 *cell_stamp;
     Chunk **cell_chunk;
     u8 *cell_entry;
@@ -159,8 +161,11 @@ void scene_upload_slots(MeshSlot slots[LAYER_COUNT], MeshOutput *out, const i32 
                 glBindBuffer(GL_ARRAY_BUFFER, p->vbo);
                 glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)fresh.first * sizeof(MeshVertex), (GLsizeiptr)n * sizeof(MeshVertex), out->verts[l]);
                 glBindBuffer(GL_TEXTURE_BUFFER, p->origin_buf);
-                for (u32 g = 0; g < granules; g++)
-                    glBufferSubData(GL_TEXTURE_BUFFER, (GLintptr)((fresh.first / MESH_GRANULE + g) * 4 * sizeof(i32)), 4 * sizeof(i32), origin);
+                i32 *origins = xmalloc((size_t)granules * 4 * sizeof(i32));
+                for (u32 g = 0; g < granules; g++) memcpy(origins + (size_t)g * 4, origin, 4 * sizeof(i32));
+                glBufferSubData(GL_TEXTURE_BUFFER, (GLintptr)(fresh.first / MESH_GRANULE * 4 * sizeof(i32)),
+                                (GLsizeiptr)granules * 4 * sizeof(i32), origins);
+                free(origins);
                 g_scene_stats.upload_bytes_total += (u64)n * sizeof(MeshVertex);
             }
         }
@@ -252,7 +257,7 @@ void scene_shutdown(void) {
     lod_shutdown();
     atmosphere_gl_shutdown();
     glDeleteBuffers(1, &S.ibo);
-    free(S.visible); free(S.casters); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
+    free(S.visible); free(S.vis_queue); free(S.casters); free(S.cell_stamp); free(S.cell_chunk); free(S.cell_entry);
     free(S.slot_list); free(S.draw_count); free(S.draw_index); free(S.draw_base);
     memset(&S, 0, sizeof S);
 }
@@ -306,7 +311,11 @@ static void walk_visibility(const Camera *cam, int rd) {
     int ccy = CLAMP(ifloor(cam->pos.y / 32.0f), vmin, vmax);
     int ox = ccx - rd - 1, oz = ccz - rd - 1;
     S.frame++;
-    QItem *queue = xmalloc(cells * sizeof(QItem));
+    if (S.vis_queue_cap < cells) {
+        S.vis_queue_cap = cells;
+        S.vis_queue = xrealloc(S.vis_queue, cells * sizeof(QItem));
+    }
+    QItem *queue = S.vis_queue;
     size_t qh = 0, qt = 0;
     queue[qt++] = (QItem){ccx, ccy, ccz, 0};
     #define CELL(cx, cy, cz) ((((size_t)((cy) - vmin) * dim) + (size_t)((cz) - oz)) * dim + (size_t)((cx) - ox))
@@ -343,7 +352,6 @@ static void walk_visibility(const Camera *cam, int rd) {
         }
     }
     #undef CELL
-    free(queue);
     g_scene_stats.chunks_in_range = in_range;
     g_scene_stats.chunks_culled_frustum = culled_frustum;
     g_scene_stats.chunks_visible = S.visible_n;

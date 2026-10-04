@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Validate, test, and package a Defective Engine mod without loading a world."""
-import argparse, json, os, sys, zipfile
+"""Validate, run headless runtime tests, and package a Defective Engine mod."""
+import argparse, json, os, subprocess, sys, zipfile
 from pathlib import Path
 
 ID = __import__('re').compile(r'^[a-z][a-z0-9_]*$')
@@ -59,12 +59,27 @@ def main():
     p=argparse.ArgumentParser(prog='dfe mod'); sub=p.add_subparsers(dest='cmd',required=True)
     for name in ('validate','test','package'):
         q=sub.add_parser(name); q.add_argument('path',type=Path); q.add_argument('-o','--output',type=Path)
+    t=sub.choices['test']
+    t.add_argument('--ticks', type=int, default=100); t.add_argument('--seed', type=int)
+    t.add_argument('--world'); t.add_argument('--timeout', type=int); t.add_argument('--json', action='store_true')
+    t.add_argument('--verbose', action='store_true'); t.add_argument('--no-cleanup', action='store_true'); t.add_argument('--allow-native', action='store_true')
     a=p.parse_args(); root=a.path.resolve(); errors=validate(root)
     if errors:
         for e in errors: print('error:',e,file=sys.stderr)
         return 1
     if a.cmd=='validate': print(f'valid mod: {root.name}'); return 0
-    if a.cmd=='test': print(f'mod tests passed: {root.name}'); return 0
+    if a.cmd=='test':
+        binary = Path(os.environ.get('DFE_BIN', root.parent.parent/'build/dfe'))
+        if not binary.is_file(): binary = Path('build/dfe')
+        cmd=[str(binary), '--headless', 'mod', 'test', str(root), '--ticks', str(a.ticks)]
+        if a.seed is not None: cmd += ['--seed', str(a.seed)]
+        if a.world: cmd += ['--world', a.world]
+        if a.timeout is not None: cmd += ['--timeout', str(a.timeout)]
+        if a.json: cmd.append('--json')
+        if a.verbose: cmd.append('--verbose')
+        if a.no_cleanup: cmd.append('--no-cleanup')
+        if a.allow_native: cmd.append('--allow-native')
+        return subprocess.run(cmd).returncode
     out=a.output or root.with_suffix('.dfe.zip')
     with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
         for path in sorted(p for p in root.rglob('*') if p.is_file() and '.git' not in p.parts): z.write(path,path.relative_to(root))

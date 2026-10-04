@@ -106,10 +106,11 @@ static void cmd_give(const char *args, void *user) {
     (void)user;
     char name[80];
     int count = 1;
-    if (sscanf(args, "%79s %d", name, &count) < 1) { console_print("usage: give <namespace:block> [count]"); return; }
+    if (sscanf(args, "%79s %d", name, &count) < 1) { console_print("usage: give <namespace:item or block> [count]"); return; }
+    const ItemDef *def = item_find(name);
     u16 state = block_parse_state(name);
-    if (state == STATE_UNLOADED) { console_print("unknown block \"%s\". Use a registered name such as base:stone", name); return; }
-    int left = inventory_add(&g_inv, state, CLAMP(count, 1, INV_SLOTS * INV_MAX_STACK));
+    if (!def && state == STATE_UNLOADED) { console_print("unknown item or block \"%s\". Use a registered name such as base:stone or base:feather", name); return; }
+    int left = inventory_add_item(&g_inv, name, CLAMP(count, 1, INV_SLOTS * INV_MAX_STACK));
     console_print("gave %d x %s%s", count - left, name, left ? " (inventory full)" : "");
 }
 

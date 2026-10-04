@@ -342,7 +342,11 @@ void camera_update(Camera *c, float aspect) {
 /* -------------------------------------------------------------- 2D batch */
 
 #define UI_MAX_VERTS 24576
-#define FONT_BAKE_PX 32.0f
+/* The UI font (Monocraft) draws one font pixel as 1/12 of its pixel height. Baking at 48 px makes that exactly 4 texels,
+ * and drawing at any multiple of 12 px makes it a whole number of screen pixels, so text is pixel-exact with nearest sampling. */
+#define FONT_BAKE_PX 48.0f
+#define FONT_PIXEL_GRID 12.0f
+#define FONT_BASELINE 0.75f
 #define FONT_ATLAS_SIZE 512
 #define FONT_FIRST_CHAR 32
 #define FONT_CHAR_COUNT 95
@@ -411,8 +415,8 @@ bool ui_load_font(void) {
     glBindTexture(GL_TEXTURE_2D, g_ui.font_tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     free(bitmap);
@@ -484,14 +488,31 @@ static void ui_quad(float x0, float y0, float x1, float y1, float u0, float v0, 
     g_ui.vert_count += 6;
 }
 
+/* Crisp rendering: every edge lands on a whole pixel. Both edges are rounded, not the size, so neighbours that share an
+ * edge in layout units share it on screen too (no gaps or doubled lines). A visible span is never thinner than one pixel. */
+float ui_snap(float v) { return roundf(v); }
+float ui_snap_text(float size) { return FONT_PIXEL_GRID * MAX(1.0f, roundf(size / FONT_PIXEL_GRID)); }
+
+void ui_snap_span(float a, float len, float *lo, float *hi) {
+    *lo = roundf(a);
+    *hi = roundf(a + len);
+    if (len > 0.001f && *hi <= *lo) *hi = *lo + 1.0f;
+}
+
 void ui_rect(float x, float y, float w, float h, u32 color) {
+    float x0, x1, y0, y1;
+    ui_snap_span(x, w, &x0, &x1);
+    ui_snap_span(y, h, &y0, &y1);
     ui_set_texture(g_ui.font_tex, 0);
-    ui_quad(x, y, x + w, y + h, g_ui.white_u, g_ui.white_v, g_ui.white_u, g_ui.white_v, color, color);
+    ui_quad(x0, y0, x1, y1, g_ui.white_u, g_ui.white_v, g_ui.white_u, g_ui.white_v, color, color);
 }
 
 void ui_rect_gradient(float x, float y, float w, float h, u32 top, u32 bottom) {
+    float x0, x1, y0, y1;
+    ui_snap_span(x, w, &x0, &x1);
+    ui_snap_span(y, h, &y0, &y1);
     ui_set_texture(g_ui.font_tex, 0);
-    ui_quad(x, y, x + w, y + h, g_ui.white_u, g_ui.white_v, g_ui.white_u, g_ui.white_v, top, bottom);
+    ui_quad(x0, y0, x1, y1, g_ui.white_u, g_ui.white_v, g_ui.white_u, g_ui.white_v, top, bottom);
 }
 
 void ui_line(float x0, float y0, float x1, float y1, float thickness, u32 color) {
@@ -512,12 +533,15 @@ void ui_line(float x0, float y0, float x1, float y1, float thickness, u32 color)
 }
 
 void ui_image(GLuint tex, float x, float y, float w, float h, float u0, float v0, float u1, float v1, u32 color) {
+    float x0, x1, y0, y1;
+    ui_snap_span(x, w, &x0, &x1);
+    ui_snap_span(y, h, &y0, &y1);
     ui_set_texture(tex, 1);
-    ui_quad(x, y, x + w, y + h, u0, v0, u1, v1, color, color);
+    ui_quad(x0, y0, x1, y1, u0, v0, u1, v1, color, color);
 }
 
 float ui_text_width(float size, const char *text) {
-    float scale = size / FONT_BAKE_PX, w = 0;
+    float scale = ui_snap_text(size) / FONT_BAKE_PX, w = 0;
     for (; *text; text++) {
         int c = (u8)*text;
         if (c < FONT_FIRST_CHAR || c >= FONT_FIRST_CHAR + FONT_CHAR_COUNT) continue;
@@ -527,7 +551,7 @@ float ui_text_width(float size, const char *text) {
 }
 
 static void ui_text_pass(float x, float y, float size, u32 color, const char *text) {
-    float scale = size / FONT_BAKE_PX;
+    float scale = size / FONT_BAKE_PX; /* size is already a whole number of pixels */
     float cx = 0, cy = 0;
     x = roundf(x);
     y = roundf(y);
@@ -536,7 +560,8 @@ static void ui_text_pass(float x, float y, float size, u32 color, const char *te
         if (c < FONT_FIRST_CHAR || c >= FONT_FIRST_CHAR + FONT_CHAR_COUNT) continue;
         stbtt_aligned_quad q;
         stbtt_GetBakedQuad(g_ui.glyphs, FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, c - FONT_FIRST_CHAR, &cx, &cy, &q, 1);
-        ui_quad(x + q.x0 * scale, y + (q.y0 + FONT_BAKE_PX * 0.78f) * scale, x + q.x1 * scale, y + (q.y1 + FONT_BAKE_PX * 0.78f) * scale, q.s0, q.t0, q.s1, q.t1, color, color);
+        /* At a multiple of the pixel grid every offset below is a whole number of pixels. */
+        ui_quad(x + q.x0 * scale, y + (q.y0 + FONT_BAKE_PX * FONT_BASELINE) * scale, x + q.x1 * scale, y + (q.y1 + FONT_BAKE_PX * FONT_BASELINE) * scale, q.s0, q.t0, q.s1, q.t1, color, color);
     }
 }
 
@@ -553,12 +578,18 @@ void ui_set_text_shadow(float offset, u32 color) {
 
 void ui_reset_text_shadow(void) { ui_set_text_shadow(-1.0f, 0); }
 
+u32 rgba_shadow(u32 color) {
+    /* rgba() stores RGB in independent byte channels; mask before shifting to prevent bleed. */
+    return ((color & 0x00FCFCFCu) >> 2) | (color & 0xFF000000u);
+}
+
 void ui_text(float x, float y, float size, u32 color, const char *text) {
     if (!g_ui.font_ready) return;
+    size = ui_snap_text(size);
     ui_set_texture(g_ui.font_tex, 0);
-    float off = g_shadow_offset >= 0.0f ? g_shadow_offset : MAX(1.0f, roundf(size / 8.0f));
+    float off = g_shadow_offset >= 0.0f ? g_shadow_offset : MAX(1.0f, size / FONT_PIXEL_GRID);
     if (off > 0.0f) {
-        u32 shadow = g_shadow_color ? g_shadow_color : (((color >> 2) & 0x003F3F3Fu) | (color & 0xFF000000u));
+        u32 shadow = g_shadow_color ? g_shadow_color : rgba_shadow(color);
         ui_text_pass(x + off, y + off, size, shadow, text);
     }
     ui_text_pass(x, y, size, color, text);
@@ -640,6 +671,7 @@ void overlay_draw(void) {
     ui_rect(0, 0, 440, g_ov.page >= 3 ? 8 + OVERLAY_FONT_PX * 1.15f * 40 : 205, rgba(0, 0, 0, g_ov.page >= 3 ? 150 : 90));
     overlay_text_line(&x, &y, "%.0f fps  frame %.2f ms  cpu %.2f ms", g_ov.fps_value, g_ov.frame_ms_last, g_ov.cpu_ms_last);
     overlay_text_line(&x, &y, "mem %.0f MB (peak %.0f MB)  draws %d", mem_current_rss_bytes() / 1048576.0, mem_peak_rss_bytes() / 1048576.0, g_stats.draw_calls_last);
+    overlay_text_line(&x, &y, "entities %d drawn %d culled  draws %d  lod %d/%d/%d  upload %u B", g_entity_stats.drawn, g_entity_stats.culled, g_entity_stats.draw_calls, g_entity_stats.lod[0], g_entity_stats.lod[1], g_entity_stats.lod[2], g_entity_stats.upload_bytes);
     if (perf_gpu_available()) {
         float gpu = 0;
         for (int k = 0; k < GPU_SECTION_COUNT; k++) gpu += perf_gpu_latest_ms((GpuSection)k);

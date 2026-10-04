@@ -15,13 +15,14 @@
 #define REGION_SHIFT 4
 #define REGION_COLS (1 << (2 * REGION_SHIFT))
 #define REGION_MAGIC 0x52454644u /* "DFER" */
-#define REGION_VERSION 1u
-#define REGION_HEADER_BYTES 16
-#define REGION_ENTRY_BYTES 12
+#define REGION_VERSION 2u
+#define REGION_HEADER_BYTES 20
+#define REGION_ENTRY_BYTES 16
 #define REGION_DATA_START (REGION_HEADER_BYTES + REGION_COLS * REGION_ENTRY_BYTES)
 #define LEGACY_REGION_SHIFT 3
 #define LEGACY_REGION_COLS (1 << (2 * LEGACY_REGION_SHIFT))
-#define LEGACY_REGION_DATA_START (REGION_HEADER_BYTES + LEGACY_REGION_COLS * REGION_ENTRY_BYTES)
+#define LEGACY_REGION_HEADER_BYTES 16
+#define LEGACY_REGION_DATA_START (LEGACY_REGION_HEADER_BYTES + LEGACY_REGION_COLS * 12)
 #define REGION_CACHE 8
 #define COLUMN_MAGIC 0x31434644u /* "DFC1" */
 #define CHUNK_PALETTED 1u
@@ -30,7 +31,8 @@
 #define COMPACT_MIN_WASTE (1u << 20)
 #define MAX_COLUMN_LAYERS 4096
 
-typedef struct RegionEntry { u32 offset, comp_size, raw_size; } RegionEntry;
+typedef struct RegionEntry { u32 offset, comp_size, raw_size, crc32; } RegionEntry;
+typedef struct LegacyRegionEntry { u32 offset, comp_size, raw_size; } LegacyRegionEntry;
 
 typedef struct Region {
     int rx, rz;
@@ -38,6 +40,8 @@ typedef struct Region {
     bool exists;
     RegionEntry entries[REGION_COLS];
     u32 file_end;
+    u32 data_start;
+    bool legacy;
     u64 stamp;
 } Region;
 
@@ -64,6 +68,16 @@ static struct {
     u16 *rt_to_saved; /* runtime block id to name table index */
     int jobs_inflight;
 } S;
+
+static u32 crc32_bytes(const void *data, size_t len) {
+    const u8 *p = data;
+    u32 crc = 0xffffffffu;
+    while (len--) {
+        crc ^= *p++;
+        for (int i = 0; i < 8; i++) crc = (crc >> 1) ^ (0xedb88320u & (u32)-(int)(crc & 1));
+    }
+    return ~crc;
+}
 
 /* ------------------------------------------------------------ byte buffer */
 
@@ -138,6 +152,27 @@ static bool meta_read(void) {
         LOGE("World file %s line %d is unreadable (%s). Fix or delete it; the region files beside it are untouched.", path, line, err);
         return false;
     }
+    const Json *schema = json_get(j, "schema_version");
+    int schema_version = DFE_SAVE_SCHEMA_VERSION;
+    if (!schema) {
+        LOGW("World file %s has no schema_version; treating it as legacy schema version %d.", path, schema_version);
+    } else if (schema->type != JSON_NUMBER || schema->num != floor(schema->num)) {
+        LOGE("World file %s has an invalid schema_version; expected integer %d.", path, DFE_SAVE_SCHEMA_VERSION);
+        json_free(j);
+        return false;
+    } else {
+        schema_version = (int)schema->num;
+        if (schema_version < DFE_SAVE_SCHEMA_VERSION) {
+            LOGE("World file %s uses unsupported schema_version %d; this engine supports version %d. Start a new world or migrate the save.", path, schema_version, DFE_SAVE_SCHEMA_VERSION);
+            json_free(j);
+            return false;
+        }
+        if (schema_version > DFE_SAVE_SCHEMA_VERSION) {
+            LOGE("World file %s uses schema_version %d, newer than this engine's supported version %d. Update the engine or start a new world.", path, schema_version, DFE_SAVE_SCHEMA_VERSION);
+            json_free(j);
+            return false;
+        }
+    }
     u64 seed_low = (u64)json_num(j, "seed", 0);
     u64 seed_high = (u64)json_num(j, "seed_high", 0);
     S.seed = seed_low | (seed_high << 32);
@@ -189,6 +224,7 @@ static bool meta_write(void) {
     JsonWriter w = {0};
     jw_begin_obj(&w);
     jw_key(&w, "version"); jw_num(&w, META_VERSION);
+    jw_key(&w, "schema_version"); jw_num(&w, DFE_SAVE_SCHEMA_VERSION);
     jw_key(&w, "seed"); jw_num(&w, (double)(S.seed & 0xFFFFFFFFull));
     jw_key(&w, "seed_high"); jw_num(&w, (double)(S.seed >> 32));
     jw_key(&w, "time"); jw_num(&w, S.meta.day_time);
@@ -258,8 +294,38 @@ static bool meta_write(void) {
 
 static void region_path(const Region *r, char *out, size_t cap) { snprintf(out, cap, "%s/region/r.%d.%d.dfr", S.dir, r->rx, r->rz); }
 
+static bool region_backup(const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    /* Rotate from the end; remove only the oldest backup. */
+    char old[640]; snprintf(old, sizeof old, "%s.bak.2", path); remove(old);
+    for (int i = 1; i >= 0; i--) {
+        char from[640], to[640];
+        snprintf(from, sizeof from, "%s.bak.%d", path, i);
+        snprintf(to, sizeof to, "%s.bak.%d", path, i + 1);
+        rename(from, to);
+    }
+    snprintf(out, cap, "%s.bak.0", path);
+    if (rename(path, out) != 0) { out[0] = 0; return false; }
+    return true;
+}
+
+static bool region_backup_copy(const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    size_t n = 0; u8 *data = file_read(path, &n);
+    if (!data) return false;
+    char from[640], to[640];
+    snprintf(from, sizeof from, "%s.bak.2", path); remove(from);
+    snprintf(from, sizeof from, "%s.bak.1", path); snprintf(to, sizeof to, "%s.bak.2", path); rename(from, to);
+    snprintf(from, sizeof from, "%s.bak.0", path); snprintf(to, sizeof to, "%s.bak.1", path); rename(from, to);
+    snprintf(out, cap, "%s.bak.0", path);
+    bool ok = file_write_atomic(out, data, n);
+    free(data);
+    return ok;
+}
+
 static void region_flush_header(Region *r) {
-    u32 head[4] = {REGION_MAGIC, REGION_VERSION, 0, 0};
+    u32 head[5] = {REGION_MAGIC, REGION_VERSION, 0, REGION_COLS, 0};
+    head[4] = crc32_bytes(head, 16);
     fseek(r->f, 0, SEEK_SET);
     fwrite(head, sizeof head, 1, r->f);
     fwrite(r->entries, sizeof r->entries, 1, r->f);
@@ -327,83 +393,53 @@ static Region *region_get(int rx, int rz) {
     }
     memset(slot, 0, sizeof *slot);
     slot->rx = rx; slot->rz = rz; slot->stamp = ++S.stamp;
+    slot->data_start = REGION_DATA_START;
     char path[600];
     region_path(slot, path, sizeof path);
     slot->f = fopen(path, "r+b");
     if (!slot->f) return slot;
-    u32 head[4];
+    u32 head[5] = {0};
     fseek(slot->f, 0, SEEK_END);
     long size = ftell(slot->f);
     fseek(slot->f, 0, SEEK_SET);
-    if (fread(head, sizeof head, 1, slot->f) != 1 || head[0] != REGION_MAGIC || head[1] != REGION_VERSION) {
-        LOGE("Region file %s is damaged or from a newer version. It was set aside as .bad and its columns will regenerate.", path);
+    if (fread(head, 4 * sizeof(u32), 1, slot->f) != 1 || head[0] != REGION_MAGIC) {
+        char bak[640]; region_backup(path, bak, sizeof bak);
+        LOGE("Region file %s has an invalid header; backup: %s. Run --repair-world to attempt recovery.", path, bak[0] ? bak : "unavailable");
         fclose(slot->f);
         slot->f = NULL;
-        char bad[620];
-        snprintf(bad, sizeof bad, "%s.bad", path);
-        remove(bad);
-        rename(path, bad);
         memset(slot->entries, 0, sizeof slot->entries);
         return slot;
     }
-    if (size >= LEGACY_REGION_DATA_START && size < REGION_DATA_START) {
-        RegionEntry old[LEGACY_REGION_COLS];
-        if (fread(old, sizeof old, 1, slot->f) == 1) {
-            char tmp[620];
-            snprintf(tmp, sizeof tmp, "%s.migrate", path);
-            FILE *out = fopen(tmp, "wb");
-            if (out) {
-                Region n = {0};
-                n.rx = rx; n.rz = rz; n.f = out; n.file_end = REGION_DATA_START;
-                region_flush_header(&n);
-                bool ok = true;
-                for (int old_slot = 0; old_slot < LEGACY_REGION_COLS && ok; old_slot++) {
-                    RegionEntry e = old[old_slot];
-                    if (!e.comp_size) continue;
-                    if (e.offset < LEGACY_REGION_DATA_START || (u64)e.offset + e.comp_size > (u64)size) { ok = false; break; }
-                    u8 *blob = xmalloc(e.comp_size);
-                    fseek(slot->f, (long)e.offset, SEEK_SET);
-                    ok = fread(blob, 1, e.comp_size, slot->f) == e.comp_size;
-                    if (ok) {
-                        int x = old_slot & ((1 << LEGACY_REGION_SHIFT) - 1);
-                        int z = old_slot >> LEGACY_REGION_SHIFT;
-                        int new_slot = (z << REGION_SHIFT) | x;
-                        e.offset = n.file_end;
-                        fseek(out, (long)n.file_end, SEEK_SET);
-                        ok = fwrite(blob, 1, e.comp_size, out) == e.comp_size;
-                        n.entries[new_slot] = e;
-                        n.file_end += e.comp_size;
-                    }
-                    free(blob);
-                }
-                if (ok) region_flush_header(&n);
-                ok = fclose(out) == 0 && ok;
-                fclose(slot->f); slot->f = NULL;
-                if (ok) {
-                    remove(path);
-                    if (rename(tmp, path) == 0) {
-                        slot->f = fopen(path, "r+b");
-                        memcpy(slot->entries, n.entries, sizeof n.entries);
-                        slot->file_end = n.file_end;
-                        slot->exists = slot->f != NULL;
-                        return slot;
-                    }
-                }
-                remove(tmp);
-            }
-        }
-        LOGE("Legacy region file %s could not be migrated; its columns will regenerate.", path);
+    if (head[1] > REGION_VERSION) {
+        char bak[640]; region_backup(path, bak, sizeof bak);
+        LOGE("Region file %s uses unsupported version %u (engine supports %u); backup: %s. Update the engine or run --repair-world.", path, head[1], REGION_VERSION, bak[0] ? bak : "unavailable");
         fclose(slot->f); slot->f = NULL;
+        memset(slot->entries, 0, sizeof slot->entries);
+        return slot;
+    }
+    if (head[1] == REGION_VERSION && (fread(&head[4], sizeof(u32), 1, slot->f) != 1 || head[3] != REGION_COLS || head[4] != crc32_bytes(head, 16))) {
+        char bak[640]; region_backup(path, bak, sizeof bak);
+        LOGE("Region file %s failed its header checksum; backup: %s. Run --repair-world to attempt recovery.", path, bak[0] ? bak : "unavailable");
+        fclose(slot->f); slot->f = NULL;
+        memset(slot->entries, 0, sizeof slot->entries);
+        return slot;
+    }
+    if (head[1] == 1) {
+        LegacyRegionEntry old[REGION_COLS];
+        slot->legacy = true;
+        slot->data_start = LEGACY_REGION_DATA_START;
+        fseek(slot->f, LEGACY_REGION_HEADER_BYTES, SEEK_SET);
+        if (fread(old, sizeof old, 1, slot->f) != 1) { fclose(slot->f); slot->f = NULL; return slot; }
+        for (int i = 0; i < REGION_COLS; i++) slot->entries[i] = (RegionEntry){old[i].offset, old[i].comp_size, old[i].raw_size, 0};
+        slot->file_end = (u32)size; slot->exists = true;
+        LOGW("Legacy region file %s has no CRCs; it will be upgraded on its next save.", path);
         return slot;
     }
     if (fread(slot->entries, sizeof slot->entries, 1, slot->f) != 1 || size < REGION_DATA_START) {
-        LOGE("Region file %s is damaged or from a newer version. It was set aside as .bad and its columns will regenerate.", path);
+        char bak[640]; region_backup(path, bak, sizeof bak);
+        LOGE("Region file %s has a damaged index; backup: %s. Run --repair-world to attempt recovery.", path, bak[0] ? bak : "unavailable");
         fclose(slot->f);
         slot->f = NULL;
-        char bad[620];
-        snprintf(bad, sizeof bad, "%s.bad", path);
-        remove(bad);
-        rename(path, bad);
         memset(slot->entries, 0, sizeof slot->entries);
         return slot;
     }
@@ -422,8 +458,50 @@ static bool region_create_if_needed(Region *r) {
     if (!r->f) { LOGE("Could not create region file %s. Check that the save folder is writable.", path); return false; }
     memset(r->entries, 0, sizeof r->entries);
     r->file_end = REGION_DATA_START;
+    r->data_start = REGION_DATA_START;
     region_flush_header(r);
     r->exists = true;
+    return true;
+}
+
+static bool region_write_atomic(Region *r, int changed, const u8 *blob, size_t blob_len) {
+    char path[600], tmp[620];
+    region_path(r, path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *out = fopen(tmp, "wb");
+    if (!out) return false;
+    RegionEntry entries[REGION_COLS] = {0};
+    u32 at = REGION_DATA_START;
+    bool ok = true;
+    for (int i = 0; i < REGION_COLS && ok; i++) {
+        if (i == changed) {
+            entries[i] = (RegionEntry){at, (u32)blob_len, r->entries[i].raw_size, crc32_bytes(blob, blob_len)};
+            if (fseek(out, (long)at, SEEK_SET) != 0 || fwrite(blob, 1, blob_len, out) != blob_len) ok = false;
+            at += (u32)blob_len;
+            continue;
+        }
+        const RegionEntry *old = &r->entries[i];
+        if (!old->comp_size) continue;
+        u8 *copy = xmalloc(old->comp_size);
+        if (fseek(r->f, (long)old->offset, SEEK_SET) != 0 || fread(copy, 1, old->comp_size, r->f) != old->comp_size ||
+            fseek(out, (long)at, SEEK_SET) != 0 || fwrite(copy, 1, old->comp_size, out) != old->comp_size) ok = false;
+        entries[i] = *old; entries[i].offset = at;
+        free(copy);
+        at += old->comp_size;
+    }
+    if (ok) {
+        Region n = *r; n.f = out; memcpy(n.entries, entries, sizeof entries);
+        region_flush_header(&n);
+        ok = fflush(out) == 0;
+    }
+    if (fclose(out) != 0) ok = false;
+    if (!ok) { remove(tmp); return false; }
+    fclose(r->f); r->f = NULL;
+    if (rename(tmp, path) != 0) { remove(tmp); return false; }
+    r->f = fopen(path, "r+b");
+    if (!r->f) return false;
+    memcpy(r->entries, entries, sizeof entries);
+    r->file_end = at; r->data_start = REGION_DATA_START; r->legacy = false;
     return true;
 }
 
@@ -656,6 +734,25 @@ bool save_active(void) { return S.open; }
 u64 save_seed(void) { return S.seed; }
 SaveMeta *save_meta(void) { return &S.meta; }
 
+static void entities_path(char *out, size_t cap) { snprintf(out, cap, "%s/entities.json", S.dir); }
+
+bool save_write_entities(const char *text, size_t len) {
+    if (!S.open) return false;
+    char path[600];
+    entities_path(path, sizeof path);
+    bool ok = file_write_atomic(path, text, len);
+    if (!ok) LOGE("Could not write %s. Check that the save folder is writable and the disk is not full.", path);
+    return ok;
+}
+
+u8 *save_read_entities(size_t *len) {
+    if (!S.open) return NULL;
+    char path[600];
+    entities_path(path, sizeof path);
+    if (!path_exists(path)) return NULL;
+    return file_read(path, len);
+}
+
 static void pending_remove(int cx, int cz, u64 seq) {
     for (int i = 0; i < S.pending.n; i++) {
         Pending *p = &S.pending.d[i];
@@ -678,17 +775,9 @@ typedef struct SaveJob { int cx, cz; u64 seq; } SaveJob;
 static void write_column(int cx, int cz, const u8 *comp, int comp_size, size_t raw_size) {
     Region *r = region_get(cx >> REGION_SHIFT, cz >> REGION_SHIFT);
     if (!region_create_if_needed(r)) return;
-    RegionEntry *e = &r->entries[column_slot(cx, cz)];
-    u32 at = e->offset;
-    if (!e->comp_size || (u32)comp_size > e->comp_size) { at = r->file_end; r->file_end += (u32)comp_size; }
-    fseek(r->f, (long)at, SEEK_SET);
-    fwrite(comp, 1, (size_t)comp_size, r->f);
-    e->offset = at;
-    e->comp_size = (u32)comp_size;
-    e->raw_size = (u32)raw_size;
-    fseek(r->f, (long)(REGION_HEADER_BYTES + column_slot(cx, cz) * REGION_ENTRY_BYTES), SEEK_SET);
-    fwrite(e, sizeof *e, 1, r->f);
-    fflush(r->f);
+    int slot = column_slot(cx, cz);
+    r->entries[slot].raw_size = (u32)raw_size;
+    if (!region_write_atomic(r, slot, comp, (size_t)comp_size)) LOGE("Could not atomically save region for column (%d, %d). The previous region remains in place.", cx, cz);
 }
 
 static void save_job_run(void *data, int worker) {
@@ -755,10 +844,17 @@ bool save_load_column(int cx, int cz, SavedColumn *out) {
     if (!raw) {
         Region *r = region_get(cx >> REGION_SHIFT, cz >> REGION_SHIFT);
         const RegionEntry *e = &r->entries[column_slot(cx, cz)];
-        if (r->f && e->comp_size && e->offset >= REGION_DATA_START && (u64)e->offset + e->comp_size <= r->file_end && e->raw_size < (1u << 28)) {
+        if (r->f && e->comp_size && e->offset >= r->data_start && (u64)e->offset + e->comp_size <= r->file_end && e->raw_size < (1u << 28)) {
             comp = xmalloc(e->comp_size);
             fseek(r->f, (long)e->offset, SEEK_SET);
-            if (fread(comp, 1, e->comp_size, r->f) != e->comp_size) { free(comp); comp = NULL; }
+            if (fread(comp, 1, e->comp_size, r->f) != e->comp_size || (!r->legacy && crc32_bytes(comp, e->comp_size) != e->crc32)) {
+                if (!r->legacy) {
+                    char path[600], bak[640]; region_path(r, path, sizeof path);
+                    region_backup_copy(path, bak, sizeof bak);
+                    LOGE("Column (%d, %d) in %s failed its CRC and will be regenerated; backup: %s.", cx, cz, path, bak[0] ? bak : "unavailable");
+                }
+                free(comp); comp = NULL;
+            }
             raw_len = e->raw_size;
             comp_len = e->comp_size;
         }
@@ -798,4 +894,33 @@ void save_close(void) {
     vec_free(S.pending);
     mutex_destroy(S.lock);
     memset(&S, 0, sizeof S);
+}
+
+bool save_repair_world(const char *dir) {
+    char regions[600]; snprintf(regions, sizeof regions, "%s/region", dir);
+    StrList files = {0}; dir_list(regions, &files);
+    int scanned = 0, damaged = 0, columns = 0;
+    for (int i = 0; i < files.n; i++) {
+        if (strncmp(files.d[i], "r.", 2) || !strstr(files.d[i], ".dfr")) continue;
+        char path[700]; snprintf(path, sizeof path, "%s/%s", regions, files.d[i]);
+        size_t len = 0; u8 *data = file_read(path, &len); scanned++;
+        if (!data || len < REGION_HEADER_BYTES) { damaged++; free(data); continue; }
+        u32 *head = (u32 *)data;
+        bool good = len >= REGION_DATA_START && head[0] == REGION_MAGIC && head[1] == REGION_VERSION && head[2] == 0 && head[3] == REGION_COLS && head[4] == crc32_bytes(head, 16);
+        if (!good) {
+            char bak[700]; region_backup_copy(path, bak, sizeof bak);
+            LOGE("Repair: %s has an invalid header; original preserved at %s.", path, bak[0] ? bak : "unavailable");
+            damaged++; free(data); continue;
+        }
+        RegionEntry *entries = (RegionEntry *)(data + REGION_HEADER_BYTES);
+        for (int c = 0; c < REGION_COLS; c++) {
+            RegionEntry *e = &entries[c]; if (!e->comp_size) continue;
+            if ((u64)e->offset + e->comp_size > len || crc32_bytes(data + e->offset, e->comp_size) != e->crc32) { damaged++; continue; }
+            columns++;
+        }
+        free(data);
+    }
+    strlist_free(&files);
+    printf("repair: scanned %d regions, verified %d columns, damaged entries %d; originals are retained as .bak.0\n", scanned, columns, damaged);
+    return damaged == 0;
 }

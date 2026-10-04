@@ -3,20 +3,31 @@
  * Item icons are small isometric cubes drawn once on the CPU from the block textures into one atlas, so a mod's
  * block gets an icon with no extra art and the HUD costs one texture bind. */
 #include "dfe.h"
+#include "ui.h"
+#include "icons.h"
+#include "screen.h"
 
 #include <GLFW/glfw3.h>
+#include "stb_image.h"
 
 #define ICON_PX 32
-#define SLOT_PX 44.0f
-#define SLOT_GAP 4.0f
-#define HOTBAR_MARGIN 14.0f
+/* Pixel-exact layout: g_k is an integer (screen pixels per art pixel) and every length is a whole multiple of it.
+ * Item icons are 32 px art, so they are drawn at exactly 32 * g_k pixels with nearest sampling. The hotbar uses the HUD
+ * scale and text, the inventory the integer icon scale of the UI scale and the UI text. */
+static float g_k = 1.0f, g_t = 1.0f;
+static void use_hud_scale(int width, int height) { g_k = ui_hud_scale(width, height); g_t = ui_hud_text_scale(); }
+#define SLOT_PX (44.0f * g_k)
+#define SLOT_GAP (4.0f * g_k)
+#define HOTBAR_MARGIN (14.0f * g_k)
+#define SLOT_ICON_PAD (6.0f * g_k)
+#define SLOT_EDGE (2.0f * g_k)
 #define CROSS_ARM 9.0f
 #define CROSS_THICK 2.0f
 #define NAME_TOAST_S 1.6
 #define PALETTE_COLS 9
 #define PALETTE_ROWS 5
-#define PANEL_PAD 12.0f
-#define TEXT_SIZE 16.0f
+#define PANEL_PAD (12.0f * g_k)
+#define TEXT_SIZE ui_snap_text(16.0f * g_k * g_t)
 
 static struct {
     GLuint atlas;
@@ -28,9 +39,12 @@ static struct {
     double toast_until;
 } H;
 
-bool hud_init(void) { return true; }
+bool hud_init(void) { icons_load(); return ui_load() || true; }
 
 void hud_shutdown(void) {
+    screen_shutdown();
+    ui_status_shutdown();
+    icons_shutdown();
     if (H.atlas) glDeleteTextures(1, &H.atlas);
     memset(&H, 0, sizeof H);
 }
@@ -88,9 +102,58 @@ static void draw_flat_icon(u8 *icon, const BlockDef *b) {
         }
 }
 
+/* Non-block items (feather, raw pork, tools) have no block texture. Use textures/item/<name>.png from the item's
+ * namespace when a mod ships one, otherwise draw a shaded gem coloured from the id so each item stays distinct. */
+static u32 id_hash(const char *id) {
+    u32 h = 2166136261u;
+    for (const char *c = id; *c; c++) h = (h ^ (u8)*c) * 16777619u;
+    return h;
+}
+
+static bool load_item_png(u8 *icon, const char *id) {
+    const char *colon = strchr(id, ':');
+    if (!colon) return false;
+    char path[200];
+    snprintf(path, sizeof path, "assets/%.*s/textures/item/%s.png", (int)(colon - id), id, colon + 1);
+    size_t size;
+    u8 *file = vfs_read(path, &size, NULL);
+    if (!file) return false;
+    int w, h, comp;
+    u8 *px = stbi_load_from_memory(file, (int)size, &w, &h, &comp, 4);
+    free(file);
+    if (!px) return false;
+    const int margin = 2, span = ICON_PX - 2 * margin;
+    for (int y = 0; y < span; y++)
+        for (int x = 0; x < span; x++) /* nearest neighbour keeps pixel art crisp */
+            memcpy(icon + ((size_t)(y + margin) * ICON_PX + x + margin) * 4, px + ((size_t)(y * w / span) * w + x * w / span) * 4, 4);
+    stbi_image_free(px);
+    return true;
+}
+
+static void draw_generic_item_icon(u8 *icon, const char *id) {
+    u32 h = id_hash(id);
+    float base[3] = {(float)(110 + (h & 127)), (float)(110 + ((h >> 8) & 127)), (float)(110 + ((h >> 16) & 127))};
+    for (int y = 0; y < ICON_PX; y++)
+        for (int x = 0; x < ICON_PX; x++) {
+            float dx = fabsf((float)x + 0.5f - ICON_PX * 0.5f), dy = fabsf((float)y + 0.5f - ICON_PX * 0.5f);
+            float d = dx + dy; /* diamond distance */
+            if (d > 13.0f) continue;
+            float shade = d > 11.0f ? 0.45f : 1.15f - 0.5f * ((float)y / ICON_PX) - 0.2f * ((float)x / ICON_PX);
+            u8 *o = icon + ((size_t)y * ICON_PX + x) * 4;
+            for (int i = 0; i < 3; i++) o[i] = (u8)CLAMP((int)(base[i] * shade), 0, 255);
+            o[3] = 255;
+        }
+}
+
+int hud_item_cell(const char *id) {
+    for (int i = 0; i < item_definition_count(); i++)
+        if (!strcmp(item_definition_at(i)->id, id)) return g_block_count + i;
+    return -1;
+}
+
 void hud_build_icons(void) {
     if (H.atlas) { glDeleteTextures(1, &H.atlas); H.atlas = 0; }
-    int n = MAX(g_block_count, 1);
+    int n = MAX(g_block_count + item_definition_count(), 1);
     H.cols = 1;
     while (H.cols * H.cols < n) H.cols++;
     int dim = H.cols * ICON_PX;
@@ -104,12 +167,19 @@ void hud_build_icons(void) {
         int ox = (i % H.cols) * ICON_PX, oy = (i / H.cols) * ICON_PX;
         for (int y = 0; y < ICON_PX; y++) memcpy(atlas + ((size_t)(oy + y) * dim + ox) * 4, icon + (size_t)y * ICON_PX * 4, ICON_PX * 4);
     }
+    for (int i = 0; i < item_definition_count(); i++) {
+        const char *id = item_definition_at(i)->id;
+        memset(icon, 0, (size_t)ICON_PX * ICON_PX * 4);
+        if (!load_item_png(icon, id)) draw_generic_item_icon(icon, id);
+        int cell = g_block_count + i, ox = (cell % H.cols) * ICON_PX, oy = (cell / H.cols) * ICON_PX;
+        for (int y = 0; y < ICON_PX; y++) memcpy(atlas + ((size_t)(oy + y) * dim + ox) * 4, icon + (size_t)y * ICON_PX * 4, ICON_PX * 4);
+    }
     glGenTextures(1, &H.atlas);
     glBindTexture(GL_TEXTURE_2D, H.atlas);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, dim, dim, 0, GL_RGBA, GL_UNSIGNED_BYTE, atlas);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); /* pixel art drawn at whole-number scales */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     free(atlas);
@@ -117,11 +187,54 @@ void hud_build_icons(void) {
     H.ready = true;
 }
 
-static void draw_icon(u16 state, float x, float y, float size) {
-    const BlockDef *b = block_of_state(state);
-    if (!b || !H.ready) return;
+/* Name of a stack: items without a block (feather, raw pork) are named by id; the state alone reads as air. */
+static const BlockDef *stack_block(const ItemStack *s) {
+    return s->state == STATE_AIR && s->item_id[0] ? NULL : block_of_state(s->state);
+}
+
+static const char *stack_name(const ItemStack *s) {
+    return stack_block(s) ? item_name(s->state) : s->item_id;
+}
+
+/* Creative palette: every block, then every item that is not a block (feather, raw pork, equipment). */
+static const ItemDef *palette_extra(int idx) {
+    int n = item_count();
+    if (idx < n) return NULL;
+    int seen = n;
+    for (int i = 0; i < item_definition_count(); i++) {
+        const ItemDef *d = item_definition_at(i);
+        if (d->place[0] || block_find(d->id)) continue;
+        if (seen++ == idx) return d;
+    }
+    return NULL;
+}
+
+static int palette_total(void) {
+    int n = item_count();
+    for (int i = 0; i < item_definition_count(); i++) {
+        const ItemDef *d = item_definition_at(i);
+        if (!d->place[0] && !block_find(d->id)) n++;
+    }
+    return n;
+}
+
+static ItemStack palette_stack(int idx, int count) {
+    ItemStack st = {0};
+    if (idx < item_count()) { st.state = item_state_at(idx); st.count = (u8)count; return st; }
+    const ItemDef *d = palette_extra(idx);
+    if (d) { st.count = (u8)count; snprintf(st.item_id, sizeof st.item_id, "%s", d->id); }
+    return st;
+}
+
+static void draw_icon(const ItemStack *s, float x, float y, float size) {
+    const BlockDef *b = stack_block(s);
+    if (!H.ready) return;
+    int idx;
+    if (b) idx = b->id;
+    else if (s->item_id[0] && (idx = hud_item_cell(s->item_id)) >= 0) {}
+    else return;
     float cell = 1.0f / (float)H.cols;
-    float u0 = (float)(b->id % H.cols) * cell, v0 = (float)(b->id / H.cols) * cell;
+    float u0 = (float)(idx % H.cols) * cell, v0 = (float)(idx / H.cols) * cell;
     ui_image(H.atlas, x, y, size, size, u0, v0, u0 + cell, v0 + cell, rgba(255, 255, 255, 255));
 }
 
@@ -130,14 +243,14 @@ static void draw_icon(u16 state, float x, float y, float size) {
 static void draw_slot(const ItemStack *s, float x, float y, bool selected) {
     ui_rect(x, y, SLOT_PX, SLOT_PX, rgba(20, 22, 28, 190));
     if (selected) {
-        ui_rect(x - 2, y - 2, SLOT_PX + 4, 2, rgba(255, 255, 255, 235));
-        ui_rect(x - 2, y + SLOT_PX, SLOT_PX + 4, 2, rgba(255, 255, 255, 235));
-        ui_rect(x - 2, y, 2, SLOT_PX, rgba(255, 255, 255, 235));
-        ui_rect(x + SLOT_PX, y, 2, SLOT_PX, rgba(255, 255, 255, 235));
+        ui_rect(x - SLOT_EDGE, y - SLOT_EDGE, SLOT_PX + 2 * SLOT_EDGE, SLOT_EDGE, rgba(255, 255, 255, 235));
+        ui_rect(x - SLOT_EDGE, y + SLOT_PX, SLOT_PX + 2 * SLOT_EDGE, SLOT_EDGE, rgba(255, 255, 255, 235));
+        ui_rect(x - SLOT_EDGE, y, SLOT_EDGE, SLOT_PX, rgba(255, 255, 255, 235));
+        ui_rect(x + SLOT_PX, y, SLOT_EDGE, SLOT_PX, rgba(255, 255, 255, 235));
     }
     if (!s->count) return;
-    float pad = 4.0f;
-    draw_icon(s->state, x + pad, y + pad, SLOT_PX - 2 * pad);
+    float pad = SLOT_ICON_PAD;
+    draw_icon(s, x + pad, y + pad, SLOT_PX - 2 * pad);
     if (s->count > 1 || g_creative) {
         char n[8];
         snprintf(n, sizeof n, "%d", s->count);
@@ -166,13 +279,23 @@ static Layout inventory_layout(int width, int height) {
     float rows_h = (float)(palette_rows + 3 + 1) * (SLOT_PX + SLOT_GAP) + (g_creative ? PANEL_PAD : 0) + PANEL_PAD;
     l.panel_w = grid_w + 2 * PANEL_PAD;
     l.panel_h = rows_h + PANEL_PAD + TEXT_SIZE;
-    l.panel_x = ((float)width - l.panel_w) * 0.5f;
-    l.panel_y = ((float)height - l.panel_h) * 0.5f;
+    l.panel_x = floorf(((float)width - l.panel_w) * 0.5f);
+    l.panel_y = floorf(((float)height - l.panel_h) * 0.5f);
     l.left = l.panel_x + PANEL_PAD;
     l.palette_top = l.panel_y + PANEL_PAD + TEXT_SIZE;
     l.main_top = l.palette_top + (float)palette_rows * (SLOT_PX + SLOT_GAP) + (g_creative ? PANEL_PAD : 0);
     l.hotbar_top = l.main_top + 3.0f * (SLOT_PX + SLOT_GAP) + PANEL_PAD * 0.5f;
     return l;
+}
+
+/* The inventory uses the integer icon scale of the UI scale, then steps down one whole step at a time until the panel
+ * fits the window. It never uses a fractional scale, so the 32 px item art stays pixel-exact. */
+static void use_ui_scale(int width, int height) {
+    g_t = ui_ui_text_scale();
+    for (g_k = ui_icon_scale(ui_gui_scale(width, height)); g_k > 1.0f; g_k -= 1.0f) {
+        Layout l = inventory_layout(width, height);
+        if (l.panel_w <= (float)width && l.panel_h <= (float)height) break;
+    }
 }
 
 static void draw_inventory(int width, int height) {
@@ -181,32 +304,36 @@ static void draw_inventory(int width, int height) {
     ui_rect(l.panel_x, l.panel_y, l.panel_w, l.panel_h, rgba(34, 38, 48, 235));
     ui_text(l.left, l.panel_y + PANEL_PAD * 0.5f, TEXT_SIZE, rgba(220, 225, 235, 255), g_creative ? "Creative inventory" : "Inventory");
     const char *hover = NULL;
+    char palette_name[64]; /* a palette stack is a loop local, so its item_id must be copied out */
     if (g_creative) {
-        int total = item_count();
+        int total = palette_total();
         for (int r = 0; r < PALETTE_ROWS; r++)
             for (int c = 0; c < PALETTE_COLS; c++) {
                 int idx = (r + H.palette_scroll) * PALETTE_COLS + c;
                 float x, y;
                 slot_pos(l.left, l.palette_top, c, r, &x, &y);
-                ItemStack st = {idx < total ? item_state_at(idx) : STATE_AIR, idx < total ? 1 : 0};
+                ItemStack st = idx < total ? palette_stack(idx, 1) : (ItemStack){0};
                 draw_slot(&st, x, y, false);
-                if (st.count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(st.state);
+                if (st.count && mouse_in(x, y, SLOT_PX, SLOT_PX)) {
+                    snprintf(palette_name, sizeof palette_name, "%s", stack_name(&st));
+                    hover = palette_name;
+                }
             }
     }
     for (int i = INV_HOTBAR; i < INV_SLOTS; i++) {
         float x, y;
         slot_pos(l.left, l.main_top, (i - INV_HOTBAR) % INV_HOTBAR, (i - INV_HOTBAR) / INV_HOTBAR, &x, &y);
         draw_slot(&g_inv.slot[i], x, y, false);
-        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(g_inv.slot[i].state);
+        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = stack_name(&g_inv.slot[i]);
     }
     for (int i = 0; i < INV_HOTBAR; i++) {
         float x, y;
         slot_pos(l.left, l.hotbar_top, i, 0, &x, &y);
         draw_slot(&g_inv.slot[i], x, y, i == g_inv.selected);
-        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = item_name(g_inv.slot[i].state);
+        if (g_inv.slot[i].count && mouse_in(x, y, SLOT_PX, SLOT_PX)) hover = stack_name(&g_inv.slot[i]);
     }
     if (g_inv.cursor.count) {
-        draw_icon(g_inv.cursor.state, (float)g_in.mouse_x - 16, (float)g_in.mouse_y - 16, 32);
+        draw_icon(&g_inv.cursor, (float)g_in.mouse_x - 16, (float)g_in.mouse_y - 16, 32);
         char n[8];
         snprintf(n, sizeof n, "%d", g_inv.cursor.count);
         ui_text((float)g_in.mouse_x + 6, (float)g_in.mouse_y + 4, TEXT_SIZE * 0.85f, rgba(255, 255, 255, 255), n);
@@ -218,7 +345,7 @@ static void draw_inventory(int width, int height) {
 }
 
 static void click_palette(const Layout *l) {
-    int total = item_count();
+    int total = palette_total();
     for (int r = 0; r < PALETTE_ROWS; r++)
         for (int c = 0; c < PALETTE_COLS; c++) {
             int idx = (r + H.palette_scroll) * PALETTE_COLS + c;
@@ -227,8 +354,9 @@ static void click_palette(const Layout *l) {
             if (idx >= total || !mouse_in(x, y, SLOT_PX, SLOT_PX)) continue;
             for (int b = 0; b < 2; b++) {
                 if (!g_in.mouse_pressed[b]) continue;
-                g_inv.cursor.state = item_state_at(idx);
-                g_inv.cursor.count = (u8)(b == 0 ? INV_MAX_STACK : 1);
+                const ItemDef *d = palette_extra(idx);
+                int max = d ? d->max_stack : INV_MAX_STACK;
+                g_inv.cursor = palette_stack(idx, b == 0 ? max : 1);
             }
         }
 }
@@ -247,16 +375,19 @@ void hud_set_inventory_open(bool open) {
     if (open == H.inventory_open) return;
     H.inventory_open = open;
     if (!open && g_inv.cursor.count) { /* what the mouse still holds goes back to the bag, or is discarded if full */
-        inventory_add(&g_inv, g_inv.cursor.state, g_inv.cursor.count);
+        if (g_inv.cursor.item_id[0] && !stack_block(&g_inv.cursor)) inventory_add_item(&g_inv, g_inv.cursor.item_id, g_inv.cursor.count);
+        else inventory_add(&g_inv, g_inv.cursor.state, g_inv.cursor.count);
         g_inv.cursor = (ItemStack){0};
     }
     window_set_cursor_captured(!open);
 }
 
 void hud_update(void) {
+    screen_update(g_win.width, g_win.height);
     if (!H.inventory_open) return;
+    use_ui_scale(g_win.width, g_win.height);
     Layout l = inventory_layout(g_win.width, g_win.height);
-    int rows = (item_count() + PALETTE_COLS - 1) / PALETTE_COLS;
+    int rows = (palette_total() + PALETTE_COLS - 1) / PALETTE_COLS;
     if (g_creative) {
         H.palette_scroll = CLAMP(H.palette_scroll - (int)g_in.scroll, 0, MAX(rows - PALETTE_ROWS, 0));
         click_palette(&l);
@@ -296,13 +427,6 @@ static void draw_hurt_cracks(int width, int height) {
                     paths[i][j * 2 + 2] * width, paths[i][j * 2 + 3] * height, 1.5f, color);
 }
 
-static void draw_health(int width) {
-    float ratio = CLAMP(g_player.health / PLAYER_MAX_HEALTH, 0.0f, 1.0f);
-    float x = ((float)width - 160.0f) * 0.5f;
-    ui_rect(x, 14.0f, 160.0f, 8.0f, rgba(10, 10, 12, 180));
-    ui_rect(x, 14.0f, 160.0f * ratio, 8.0f, rgba(196, 54, 47, 230));
-}
-
 static void draw_death(int width, int height) {
     ui_rect(0, 0, (float)width, (float)height, rgba(48, 8, 10, 190));
     const char *title = "You died";
@@ -312,6 +436,7 @@ static void draw_death(int width, int height) {
 }
 
 static void draw_hotbar(int width, int height) {
+    use_hud_scale(width, height);
     float left = ((float)width - row_width(INV_HOTBAR)) * 0.5f, top = (float)height - SLOT_PX - HOTBAR_MARGIN;
     for (int i = 0; i < INV_HOTBAR; i++) {
         float x, y;
@@ -324,7 +449,7 @@ static void draw_hotbar(int width, int height) {
     }
     const ItemStack *held = &g_inv.slot[g_inv.selected];
     if (held->count && time_now_s() < H.toast_until) {
-        const char *n = item_name(held->state);
+        const char *n = stack_name(held);
         float w = ui_text_width(TEXT_SIZE, n);
         ui_text(((float)width - w) * 0.5f, top - TEXT_SIZE - 10, TEXT_SIZE, rgba(255, 255, 255, 235), n);
     }
@@ -334,8 +459,10 @@ void hud_draw(int width, int height) {
     if (!H.ready) return;
     if (g_player.dead) { draw_death(width, height); return; }
     draw_hurt_cracks(width, height);
-    draw_health(width);
+    ui_status_update();
+    ui_status_draw(width, height);
     draw_crosshair(width, height);
     draw_hotbar(width, height);
-    if (H.inventory_open) draw_inventory(width, height);
+    if (H.inventory_open) { use_ui_scale(width, height); draw_inventory(width, height); }
+    screen_draw(width, height);
 }

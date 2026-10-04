@@ -11,3 +11,10 @@ settings.json
 .DS_Store
 compile_commands.json
 CMakeUserPresets.json
+.claude/
+.codegraph/
+.mcp.json
+CLAUDE.md
+codegraph.json
+skills-lock.json
+tests/

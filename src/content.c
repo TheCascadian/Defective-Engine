@@ -81,8 +81,11 @@ static bool parse_item(const char *ns,const char *rel,const char *stem) {
     ItemDef d={0};full_id(d.id,sizeof d.id,ns,stem);snprintf(d.kind,sizeof d.kind,"%s",json_str(j,"type","material"));snprintf(d.place,sizeof d.place,"%s",json_str(j,"place",""));
     d.max_stack=CLAMP(json_int_default(j,"max_stack",64),1,64);d.durability=CLAMP(json_int_default(j,"durability",0),0,65535);d.damage=(float)json_num(j,"damage",1.0);d.protection=(float)json_num(j,"protection",0);const char*slot=json_str(j,"slot","");d.equip_slot=!strcmp(slot,"head")?0:!strcmp(slot,"chest")?1:!strcmp(slot,"legs")?2:!strcmp(slot,"feet")?3:-1;
     if(d.equip_slot>=0)d.max_stack=1;
-    const Json*a=json_get(j,"tags");for(int i=0;a&&a->type==JSON_ARRAY&&i<a->count&&d.tag_n<8;i++){const char*tag=json_as_str(a->items[i],"");if(!valid_id(tag))data_error(ns,rel,a->items[i]->line,"item tags must be namespaced identifiers");else snprintf(d.tags[d.tag_n++],ITEM_ID_LEN,"%s",tag);}
-    if(d.place[0]&&!block_find(d.place))data_error(ns,rel,j->line,"place references unknown block '%s'",d.place);
+    bool ok=true; const Json*a=json_get(j,"tags");
+    if (a && a->type != JSON_ARRAY) { data_error(ns,rel,a->line,"item tags must be an array"); ok=false; }
+    for(int i=0;a&&a->type==JSON_ARRAY&&i<a->count&&d.tag_n<8;i++){const char*tag=json_as_str(a->items[i],"");if(!valid_id(tag)){data_error(ns,rel,a->items[i]->line,"item tags must be namespaced identifiers");ok=false;}else snprintf(d.tags[d.tag_n++],ITEM_ID_LEN,"%s",tag);}
+    if(d.place[0]&&!block_find(d.place)){data_error(ns,rel,j->line,"place references unknown block '%s'",d.place);ok=false;}
+    if (!ok) { json_free(j); return false; }
     int at=-1;for(int i=0;i<items_n;i++)if(!strcmp(items[i].id,d.id))at=i;if(at<0)at=items_n++;items[at]=d;content_register("item",d.id);json_free(j);return true;
 }
 static bool parse_ingredient(Ingredient *o,const char *s,int count) { if((s[0]=='#'&&valid_id(s+1))||valid_id(s)){snprintf(o->id,sizeof o->id,"%s",s);o->count=CLAMP(count,1,64);return true;}return false; }
@@ -97,46 +100,51 @@ static bool parse_recipe(const char *ns,const char *rel,const char *stem) {
     r.output.count=(u8)CLAMP(json_int(out,"count",1),1,64);
     const ItemDef *od=item_find(r.output_id); const BlockDef *ob=block_find(r.output_id);
     r.output.state=od&&od->place[0]?block_parse_state(od->place):ob?ob->default_state:STATE_AIR;
-    if(!valid_id(r.output_id)||(!od&&!ob)) data_error(ns,rel,out?out->line:1,"recipe result item is unknown");
+    bool ok=true;
+    if(!valid_id(r.output_id)||(!od&&!ob)){data_error(ns,rel,out?out->line:1,"recipe result item is unknown");ok=false;}
     if(!strcmp(r.kind,"shaped")) {
         const Json *pat=json_get(j,"pattern"),*key=json_get(j,"key");
-        if(!pat||pat->type!=JSON_ARRAY||pat->count>3) data_error(ns,rel,j->line,"shaped recipe pattern must contain up to three rows");
+        if(!pat||pat->type!=JSON_ARRAY||pat->count>3){data_error(ns,rel,j->line,"shaped recipe pattern must contain up to three rows");ok=false;}
         else for(int y=0;y<pat->count;y++) {
             const char *row=json_as_str(pat->items[y],"");
-            if(strlen(row)>3) data_error(ns,rel,pat->items[y]->line,"recipe row exceeds 3 columns");
+            if(strlen(row)>3){data_error(ns,rel,pat->items[y]->line,"recipe row exceeds 3 columns");ok=false;}
             snprintf(r.pattern[y],sizeof r.pattern[y],"%.3s",row);r.height=MAX(r.height,y+1);r.width=MAX(r.width,(int)MIN(strlen(row),3));
             for(int x=0;row[x]&&x<3;x++) if(row[x]!=' '&&r.n<9) {
                 char ch[2]={row[x],0}; const Json *ko=json_get(key,ch);
                 const char *ref=ko&&ko->type==JSON_OBJECT?json_str(ko,"item",""):json_str(key,ch,"");
                 int count=ko&&ko->type==JSON_OBJECT?json_int(ko,"count",1):1;
-                r.cell[y*3+x]=r.n;
-                if(!parse_ingredient(&r.ing[r.n++],ref,count)) data_error(ns,rel,ko?ko->line:j->line,"recipe key '%c' has invalid item",row[x]);
+                Ingredient ing={0};
+                if(!parse_ingredient(&ing,ref,count)){data_error(ns,rel,ko?ko->line:j->line,"recipe key '%c' has invalid item",row[x]);ok=false;}
+                else { r.cell[y*3+x]=r.n; r.ing[r.n++]=ing; }
             }
         }
     } else if(!strcmp(r.kind,"shapeless")) {
         const Json *arr=json_get(j,"ingredients");
-        if(!arr||arr->type!=JSON_ARRAY||arr->count>9) data_error(ns,rel,j->line,"shapeless recipe ingredients must be an array (maximum 9)");
+        if(!arr||arr->type!=JSON_ARRAY||arr->count>9){data_error(ns,rel,j->line,"shapeless recipe ingredients must be an array (maximum 9)");ok=false;}
         else for(int i=0;i<arr->count;i++) {
             const Json *it=arr->items[i]; const char *ref=json_as_str(it,""); int count=1;
             if(it->type==JSON_OBJECT){ref=json_str(it,"item","");count=json_int(it,"count",1);}
-            if(!parse_ingredient(&r.ing[r.n++],ref,count)) data_error(ns,rel,it->line,"invalid recipe ingredient");
+            Ingredient ing={0};if(!parse_ingredient(&ing,ref,count)){data_error(ns,rel,it->line,"invalid recipe ingredient");ok=false;}else r.ing[r.n++]=ing;
         }
     } else if(!strcmp(r.kind,"processing")) {
         const Json *arr = json_get(j,"ingredients");
         if (!arr) arr = json_get(j,"inputs");
-        if (!arr || arr->type != JSON_ARRAY || arr->count < 1 || arr->count > 9) data_error(ns,rel,j->line,"processing recipe inputs must contain one to nine ingredients");
-        else for (int i=0; i<arr->count; i++) { const Json *it=arr->items[i]; const char *ref=json_as_str(it,""); int count=1; if(it->type==JSON_OBJECT){ref=json_str(it,"item","");count=json_int(it,"count",1);} if(!parse_ingredient(&r.ing[r.n++],ref,count)) data_error(ns,rel,it->line,"invalid processing ingredient"); }
+        if (!arr || arr->type != JSON_ARRAY || arr->count < 1 || arr->count > 9){data_error(ns,rel,j->line,"processing recipe inputs must contain one to nine ingredients");ok=false;}
+        else for (int i=0; i<arr->count; i++) { const Json *it=arr->items[i]; const char *ref=json_as_str(it,""); int count=1; if(it->type==JSON_OBJECT){ref=json_str(it,"item","");count=json_int(it,"count",1);} Ingredient ing={0};if(!parse_ingredient(&ing,ref,count)){data_error(ns,rel,it->line,"invalid processing ingredient");ok=false;}else r.ing[r.n++]=ing; }
         r.process_time=(float)MAX(0.0,json_num(j,"time",json_num(j,"duration",1.0)));
-    } else data_error(ns,rel,j->line,"recipe type must be shaped, shapeless, or processing");
+    } else { data_error(ns,rel,j->line,"recipe type must be shaped, shapeless, or processing");ok=false; }
+    if (!ok) { json_free(j); return false; }
     recipes[recipes_n++]=r; content_register("recipe",r.id); json_free(j); return true;
 }
 static bool parse_loot(const char*ns,const char*rel,const char*stem) {
     Json*j=NULL;if(!json_file(rel,ns,&j))return false;if(j->type!=JSON_OBJECT){json_free(j);return false;}if(loots_n>=LOOT_MAX){data_error(ns,rel,j->line,"loot registry capacity (%d) exceeded",LOOT_MAX);json_free(j);return false;}LootTable t={0};full_id(t.id,sizeof t.id,ns,stem);const Json*a=json_get(j,"pools");if(!a)a=json_get(j,"entries");
-    for(int i=0;a&&a->type==JSON_ARRAY&&i<a->count&&t.n<32;i++){const Json*e=a->items[i];LootEntry*x=&t.entries[t.n++];snprintf(x->item,sizeof x->item,"%s",json_str(e,"item",""));x->min=CLAMP(json_int(e,"min",1),0,4096);x->max=CLAMP(json_int(e,"max",x->min),x->min,4096);x->chance=(float)CLAMP(json_num(e,"chance",1.0),0.0,1.0);if(!item_find(x->item)&&!block_find(x->item))data_error(ns,rel,e->line,"loot entry references unknown item '%s'",x->item);}
+    if (!a || a->type != JSON_ARRAY) { data_error(ns,rel,j->line,"loot table needs a pools array"); json_free(j); return false; }
+    bool ok=true;for(int i=0;i<a->count&&t.n<32;i++){const Json*e=a->items[i];LootEntry x={0};snprintf(x.item,sizeof x.item,"%s",json_str(e,"item",""));x.min=CLAMP(json_int(e,"min",1),0,4096);x.max=CLAMP(json_int(e,"max",x.min),x.min,4096);x.chance=(float)CLAMP(json_num(e,"chance",1.0),0.0,1.0);if(!item_find(x.item)&&!block_find(x.item)){data_error(ns,rel,e->line,"loot entry references unknown item '%s'",x.item);ok=false;}else t.entries[t.n++]=x;}
+    if (!ok) { json_free(j); return false; }
     loots[loots_n++]=t;content_register("loot",t.id);json_free(j);return true;
 }
 static void scan_domain(const char*domain,const char*kind) {
-    StrList ns={0};vfs_list("data",&ns);for(int a=0;a<ns.n;a++){char dir[180];snprintf(dir,sizeof dir,"data/%s/%s",ns.d[a],domain);StrList fs={0};vfs_list(dir,&fs);for(int b=0;b<fs.n;b++){size_t ln=strlen(fs.d[b]);if(ln<6||strcmp(fs.d[b]+ln-5,".json"))continue;char rel[280],stem[ITEM_ID_LEN],id[ITEM_ID_LEN];snprintf(rel,sizeof rel,"%s/%s",dir,fs.d[b]);snprintf(stem,sizeof stem,"%.*s",(int)MIN(ln-5,sizeof stem-1),fs.d[b]);full_id(id,sizeof id,ns.d[a],stem);content_register(kind,id);if(!strcmp(domain,"items"))parse_item(ns.d[a],rel,stem);else if(!strcmp(domain,"recipes"))parse_recipe(ns.d[a],rel,stem);else if(!strcmp(domain,"loot_tables"))parse_loot(ns.d[a],rel,stem);}strlist_free(&fs);}strlist_free(&ns);
+    StrList ns={0};vfs_list("data",&ns);for(int a=0;a<ns.n;a++){char dir[180];snprintf(dir,sizeof dir,"data/%s/%s",ns.d[a],domain);StrList fs={0};vfs_list(dir,&fs);for(int b=0;b<fs.n;b++){size_t ln=strlen(fs.d[b]);if(ln<6||strcmp(fs.d[b]+ln-5,".json"))continue;char rel[280],stem[ITEM_ID_LEN],id[ITEM_ID_LEN];snprintf(rel,sizeof rel,"%s/%s",dir,fs.d[b]);snprintf(stem,sizeof stem,"%.*s",(int)MIN(ln-5,sizeof stem-1),fs.d[b]);full_id(id,sizeof id,ns.d[a],stem);bool loaded=false;if(!strcmp(domain,"items"))loaded=parse_item(ns.d[a],rel,stem);else if(!strcmp(domain,"recipes"))loaded=parse_recipe(ns.d[a],rel,stem);else if(!strcmp(domain,"loot_tables"))loaded=parse_loot(ns.d[a],rel,stem);if(loaded)content_register(kind,id);}strlist_free(&fs);}strlist_free(&ns);
 }
 static void register_runtime_domains(void) {
     for (int i = 0; i < g_block_count; i++) content_register("block", g_blocks[i]->name);

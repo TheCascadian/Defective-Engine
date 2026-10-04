@@ -5,6 +5,7 @@
  * for most players. Rejected: baking presets into the executable, which would leave mods unable to target a
  * machine class. */
 #include "dfe.h"
+#include "ui.h"
 
 #define SETTINGS_FILE "settings.json"
 #define MIN_RENDER_DISTANCE 2
@@ -57,6 +58,9 @@ static bool read_preset(Preset *p, const char *stem, const char *rel, const char
     p->fog = json_bool(root, "fog", true);
     p->min_scale = (float)json_num(root, "min_scale", DEFAULT_MIN_SCALE);
     p->target_fps = (float)json_num(root, "target_fps", DEFAULT_TARGET_FPS);
+    p->entity_max_drawn = json_int(root, "entity_max_drawn", MAX_ENTITIES);
+    p->entity_lod1 = (float)json_num(root, "entity_lod1", 32.0);
+    p->entity_lod2 = (float)json_num(root, "entity_lod2", 96.0);
     snprintf(p->shadows, sizeof p->shadows, "%s", json_str(root, "shadows", ""));
     snprintf(p->godrays, sizeof p->godrays, "%s", json_str(root, "godrays", ""));
     snprintf(p->fog_quality, sizeof p->fog_quality, "%s", json_str(root, "fog_quality", ""));
@@ -65,6 +69,8 @@ static bool read_preset(Preset *p, const char *stem, const char *rel, const char
         data_error(owner, rel, root->line, "render_distance must be %d to %d chunks.", MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE);
         errors++;
     }
+    if (p->entity_max_drawn < 0 || p->entity_max_drawn > MAX_ENTITIES) { data_error(owner, rel, root->line, "entity_max_drawn must be 0 to %d entities.", MAX_ENTITIES); errors++; }
+    if (!(p->entity_lod1 >= 4.0f && p->entity_lod2 >= p->entity_lod1 && p->entity_lod2 <= 1024.0f)) { data_error(owner, rel, root->line, "entity_lod1 and entity_lod2 are distances in blocks with 4 <= entity_lod1 <= entity_lod2 <= 1024."); errors++; }
     if (p->far_chunks < 0 || p->far_chunks > 64) { data_error(owner, rel, root->line, "far_chunks must be 0 (off) to 64 chunks."); errors++; }
     if (p->min_scale < MIN_SCALE_FLOOR || p->min_scale > 1.0f) {
         data_error(owner, rel, root->line, "min_scale must be %.1f to 1; below %.1f the picture is too soft to play.", MIN_SCALE_FLOOR, MIN_SCALE_FLOOR);
@@ -141,6 +147,7 @@ void settings_defaults(void) {
     snprintf(g_settings.preset, sizeof g_settings.preset, "%s", DEFAULT_PRESET);
     g_settings.dynamic_resolution = -1;
     g_settings.ui_scale = -1;
+    g_settings.hud_scale = g_settings.hud_text_scale = g_settings.ui_text_scale = 1.0f;
     g_settings.render_scale = 1.0f;
     g_settings.fov_deg = DEFAULT_FOV;
     g_settings.vsync = true;
@@ -165,11 +172,15 @@ void settings_load(void) {
     g_settings.render_distance = CLAMP(json_int(root, "render_distance", 0), 0, MAX_RENDER_DISTANCE);
     g_settings.dynamic_resolution = CLAMP(json_int(root, "dynamic_resolution", -1), -1, 1);
     g_settings.ui_scale = CLAMP(json_int(root, "ui_scale", -1), -1, 4);
+    g_settings.hud_scale = CLAMP((float)json_num(root, "hud_scale", 1.0), 0.5f, 3.0f);
+    g_settings.hud_text_scale = CLAMP((float)json_num(root, "hud_text_scale", 1.0), 0.75f, 2.0f);
+    g_settings.ui_text_scale = CLAMP((float)json_num(root, "ui_text_scale", 1.0), 0.75f, 2.0f);
     g_settings.render_scale = CLAMP((float)json_num(root, "render_scale", 1.0), MIN_SCALE_FLOOR, 1.0f);
     g_settings.fov_deg = CLAMP((float)json_num(root, "fov", DEFAULT_FOV), MIN_FOV, MAX_FOV);
     g_settings.vsync = json_bool(root, "vsync", true);
     g_settings.shadows_off = !json_bool(root, "shadows", true);
     snprintf(g_settings.shadow_quality, sizeof g_settings.shadow_quality, "%s", json_str(root, "shadow_quality", ""));
+    g_settings.shadow_distance = CLAMP(json_int(root, "shadow_distance", 0), 0, 1024);
     g_settings.godrays_off = !json_bool(root, "godrays", true);
     snprintf(g_settings.godray_quality, sizeof g_settings.godray_quality, "%s", json_str(root, "godray_quality", ""));
     g_settings.fog_off = !json_bool(root, "fog", true);
@@ -177,17 +188,20 @@ void settings_load(void) {
     g_settings.auto_jump_off = !json_bool(root, "auto_jump", true);
     g_settings.view_bob_off = !json_bool(root, "view_bobbing", true);
     g_settings.motion_fx_off = !json_bool(root, "motion_effects", true);
+    ui_overrides_load(root);
     json_free(root);
 }
 
 bool settings_save(void) {
-    char text[768];
+    char text[1792], hud[512] = "";
+    ui_overrides_write(hud, sizeof hud);
     int n = snprintf(text, sizeof text,
-                     "{\n  \"preset\": \"%s\",\n  \"ui_scale\": %d,\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s\n}\n",
+                     "{\n  \"preset\": \"%s\",\n  \"ui_scale\": %d,\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"shadow_distance\": %d,\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s,\n  \"hud_scale\": %.2f,\n  \"hud_text_scale\": %.2f,\n  \"ui_text_scale\": %.2f,\n  \"hud_elements\": {%s}\n}\n",
                      g_settings.preset, g_settings.ui_scale, g_settings.render_distance, g_settings.dynamic_resolution, g_settings.render_scale, g_settings.fov_deg,
-                     g_settings.vsync ? "true" : "false", g_settings.shadows_off ? "false" : "true", g_settings.shadow_quality,
+                     g_settings.vsync ? "true" : "false", g_settings.shadows_off ? "false" : "true", g_settings.shadow_quality, g_settings.shadow_distance,
                      g_settings.godrays_off ? "false" : "true", g_settings.godray_quality, g_settings.fog_off ? "false" : "true", g_settings.fog_quality,
-                     g_settings.auto_jump_off ? "false" : "true", g_settings.view_bob_off ? "false" : "true", g_settings.motion_fx_off ? "false" : "true");
+                     g_settings.auto_jump_off ? "false" : "true", g_settings.view_bob_off ? "false" : "true", g_settings.motion_fx_off ? "false" : "true",
+                     g_settings.hud_scale, g_settings.hud_text_scale, g_settings.ui_text_scale, hud);
     if (!file_write_atomic(SETTINGS_FILE, text, (size_t)n)) {
         LOGW("could not write %s; check that the folder is writable. Settings apply for this session only.", SETTINGS_FILE);
         return false;
@@ -222,6 +236,8 @@ void gfx_apply(void) {
     if (!level) level = shadow_level_find(p->shadows);
     g->shadows = !g_settings.shadows_off && !g_opt.no_render && level != NULL;
     if (level) g->shadow = *level;
+    if (level && g_settings.shadow_distance > 0)
+        g->shadow.distance = (float)CLAMP(g_settings.shadow_distance, 16, 1024);
     const FogLevel *fl = g_settings.fog_quality[0] ? fog_level_find(g_settings.fog_quality) : NULL;
     if (!fl) fl = fog_level_find(p->fog_quality);
     if (!fl && p->fog && fog_level_count()) fl = fog_level_at(fog_level_count() / 2);
@@ -235,6 +251,11 @@ void gfx_apply(void) {
     if (gl) g->godray = *gl;
     g_scene_cfg.render_distance = g->render_distance;
     g_scene_cfg.far_chunks = g->far_chunks;
+    g_entity_cfg.max_drawn = p->entity_max_drawn;
+    g_entity_cfg.lod1_distance = p->entity_lod1;
+    g_entity_cfg.lod2_distance = p->entity_lod2;
+    g_entity_cfg.instancing = !g_opt.entity_legacy;
+    if (g_opt.entity_legacy) { g_entity_cfg.lod1_distance = g_entity_cfg.lod2_distance = 1e9f; g_entity_cfg.min_screen = 0.0f; }
     g_scene_cfg.fov_deg = g->fov_deg;
     g_atmo.clouds = g->clouds;
     g_atmo.stars = g->stars;

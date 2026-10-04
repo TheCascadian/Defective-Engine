@@ -29,6 +29,13 @@ Contents
 
 ---
 
+## Player movement model
+
+* **Collision**: the player is an axis-aligned box (0.6 wide) moved against the voxel grid one axis at a time: the larger horizontal displacement first (exact ties: x), then the other horizontal axis, then vertical. Every overlap test shrinks the box by `PLAYER_COLLISION_EPSILON` (1 mm); a snap to a face leaves twice that gap, so resting contact never snags on a flush seam. Unloaded columns are solid. Chunk boundaries do not matter: queries go through the global block lookup.
+* **Ground detection**: `on_ground` is set when the vertical move hits a floor, which tests the whole box footprint. Friction uses `player_ground_probe`, which looks `PLAYER_GROUND_PROBE_DISTANCE` (5 cm) below the feet at every cell under the footprint and averages their friction.
+* **Auto-step**: only from the ground (not flying or airborne), and unless auto-jump is off. The box is lifted `PLAYER_STEP_HEIGHT` (one block), the blocked move is repeated, and it settles back down with the normal collision. Walls two blocks high, ceilings and a blocked head all refuse the step. Walking off a ledge of up to one block snaps down instead of going airborne; larger drops fall.
+* **Known limitation**: a diagonal move exactly 45 degrees into an outer corner resolves x before z.
+
 ## Quick start
 
 A mod is a folder inside the game's `mods` folder. The smallest useful mod is a manifest and one block.
@@ -224,7 +231,7 @@ A block is one JSON file at `data/<namespace>/blocks/<name>.json`. Its id is `<n
 | `random_tick` | bool | false | Receives random ticks (used by game systems that grow or spread blocks). |
 | `climbable` | bool | false | The player can climb it. |
 | `item` | bool | true | Whether the block has an inventory item. |
-| `friction` | number | 1.0 | Ground movement speed multiplier, clamped to 0.5..1.1. Lower values slow ground movement; they do not add coasting. |
+| `friction` | number | 1.0 | Ground movement speed multiplier, clamped to 0.05..1.1 (so `base:ice` at 0.2 is honoured). Lower values slow ground movement; they do not add coasting. When the player's box stands on several blocks, the mean friction of the solid cells under the footprint is used. |
 | `hardness` | number | 1.0 | Seconds to break by hand. Negative means unbreakable. |
 | `tool` | string | none | Preferred tool, for example `pick`, `axe` or `shovel`. |
 | `drops` | string | the block itself | Block id dropped when broken. |
@@ -264,6 +271,8 @@ A texture id such as `mymod:block/ruby` names the file `assets/mymod/textures/bl
 ### World generation settings
 
 `data/<namespace>/worldgen/default.json` sets the sea level, the level where deep stone begins and the blocks terrain is built from. The base game's file is the complete list of keys; copy it and change values:
+
+Rivers, lakes and the sea come from one region-scale drainage solve, described in full in [HYDROLOGY.md](HYDROLOGY.md): the query contract, the `"hydrology"` parameter object and its clamps, the `"habitat"` and `"water_distance"` keys for features, structures, ores and entities, and the `--dump-*` diagnostics.
 
 ```json
 {
@@ -348,9 +357,11 @@ Weather darkens and greys these colours and pulls the fog in; a mod does not nee
 
 A preset with a mistake is reported on the error screen and ignored. The player's own choices in `settings.json` (render distance, dynamic resolution, render scale, field of view, vertical sync, shadows, godrays and fog) take precedence over the preset, and a value left at "preset" follows it. Quality level files contain data-driven renderer settings; the base files under `data/base/{shadows,godrays,fog}` are complete examples.
 
+The Graphics Settings screen also exposes Shadow Distance. It defaults to the distance from the selected shadow quality file, or can override it with a bounded 64–512 block choice. The setting is saved as `shadow_distance` in `settings.json`; `0` means follow the preset/mod quality file. Shadow quality files remain the mod-facing way to add resolutions, cascade counts, filtering taps, softness, bias and default distances.
+
 ### Entities
 
-`data/<namespace>/entities/<id>.json` defines an entity type. The type id is `<namespace>:<file name>`, so `data/mymod/entities/slime.json` is `mymod:slime`. The base game ships `base:hopper`.
+`data/<namespace>/entities/<id>.json` defines an entity type. The type id is `<namespace>:<file name>`, so `data/mymod/entities/slime.json` is `mymod:slime`. The base game ships `base:hopper`, `base:chicken` (passive, drops feathers and raw chicken) and `base:pig` (drops raw porkchop).
 
 ```json
 {
@@ -373,8 +384,38 @@ A preset with a mistake is reported on the error screen and ignored. The player'
 | `speed` | A multiplier of the player's walking speed, 0 to 4. Default 0.4. |
 | `wander` | When true the entity walks in random directions, rests, hops over one-block steps, swims up out of water and turns away from walls. When false it stands still. Default true. |
 | `lifetime` | Seconds until the entity removes itself, 0 for unlimited. |
+| `health` | Hit points, 0 to 100000. 0, the default, means the entity cannot be damaged. |
+| `behaviour` | `wander`, `static`, `hostile` or `passive`. Without it, `wander` follows the legacy flag. A hostile entity walks toward the player within `sight` blocks and hurts the player by `attack` on contact. A passive entity walks away from the player within `sight` blocks. |
+| `attack` | Damage a hostile entity deals per hit. Default 1. |
+| `sight` | Distance in blocks at which the player is noticed. Default 16. |
+| `save` | When true the entity is written with the world. Default true. |
+| `drops` | Array of `{"item": "ns:item", "min": 1, "max": 2}`, at most 4. Given to the player when the player kills the entity. |
 
-An entity is drawn as a body box and a head box, lit by the world light at its position and fogged like terrain. Its physics is the player's: gravity, water, step-up and collision with blocks. Terrain that is not loaded counts as solid, so an entity beyond the streamed area waits rather than falling out of the world. There are at most 256 entities at once. Entities are spawned from Lua (`dfe.entity_spawn`), from a native plugin, or with the console command `spawn`. They are not saved with the world.
+An entity is drawn as a body box and a head box, lit by the world light at its position and fogged like terrain. Its physics is the player's: gravity, water, step-up and collision with blocks. Terrain that is not loaded counts as solid, so an entity beyond the streamed area waits rather than falling out of the world. There are at most 256 entities at once. Entities are spawned from Lua, from a native plugin, or with the console command `spawn`.
+
+The player attacks an entity that has health by aiming at it within reach and pressing the left mouse button. A hit deals the held item's `damage` (at least 1; creative mode kills at once), knocks the entity back and has a 0.4 s cooldown. An entity in front of a block is hit instead of mining the block.
+
+Entities collide with the world, with the player and with each other. Two `static` entities do not push each other. Entities marked `save` are written to `entities.json` in the world folder and restored when the world loads. A record whose type is no longer loaded is kept and written back unchanged, so removing a mod does not delete its entities. Saved entities stay resident while their column is unloaded; the `cx` and `cz` fields in the file only record the column for reference.
+
+#### Entity rendering
+
+Visible entities are culled by fog distance, by the camera frustum and by screen size, sorted nearest first, capped at `entity_max_drawn` and given a level of detail: body and head boxes, one merged box beyond `entity_lod1` blocks, or a camera-facing impostor beyond `entity_lod2` blocks. These three keys are preset keys (see the presets section). With instancing each level is one draw call, so 100 entities cost two or three draws instead of two hundred. The overlay and the benchmark JSON (`entities` object) report draws, instances, culled count, level counts and upload bytes. `--bench-entities N` spawns N entities in front of the benchmark camera, and `--entity-legacy` forces the one-draw-per-part path with no LOD for before and after comparison. Entities do not cast shadows. There is no occlusion culling.
+
+#### Entity scripting
+
+| Lua | Meaning |
+|-----|---------|
+| `dfe.entity.spawn(type, pos, opts)` | Returns the id, or `nil` and a reason. `pos` is `{x, y, z}` or `{x = , y = , z = }`. `opts` takes the field names of `set`. |
+| `dfe.entity.despawn(id)` | Removes an entity. Fires `entity_despawn`, which can be cancelled. |
+| `dfe.entity.get(id)` | A table with `type`, `x`, `y`, `z`, `vx`, `vy`, `vz`, `yaw`, `health`, `max_health`, `age`, `behaviour`, `data`, or `nil`. |
+| `dfe.entity.set(id, fields)` | Changes the named fields: `x y z vx vy vz yaw health max_health behaviour data`. Health is applied last because it can kill. |
+| `dfe.entity.damage(id, amount)` | True when health dropped. Honours the 0.5 s invulnerability timer and the `entity_damage` and `entity_death` events. |
+| `dfe.entity.heal(id, amount)` | True when health rose. |
+| `dfe.entity.iter()` | Iterator over a snapshot of ids; the loop body may spawn and remove. |
+| `dfe.entity.near(pos, radius)` | Array of entity tables, nearest first, each with `distance`. |
+| `dfe.entity.on(event, fn)` | Subscribes to `entity_spawn`, `entity_tick`, `entity_damage`, `entity_death` or `entity_despawn`. The event has `entity_id`, and `damage` for `entity_damage`. Return `true` to cancel. |
+
+A cancelled `entity_death` leaves the entity alive with 1 health. Native plugins use the `entity_get`, `entity_set`, `entity_damage`, `entity_heal`, `entity_list` and `entity_near` function pointers added in API 1.3. Entity code runs on the main thread only. Limits: `model` is box-based only, there is no death animation, drops are given only for kills by the player, and entity `data` text is limited to 191 bytes.
 
 A type with a mistake is reported and the previous definition, if any, stays in use, which makes live editing with `--dev` safe.
 
@@ -438,6 +479,14 @@ An item definition can represent a stackable item, a placeable block item, or eq
 Tag files live under `data/<namespace>/tags/<registry>/<name>.json`. For example, `data/mymod/tags/items/metal.json` can contain `{"values":["base:iron_ingot","#othermod:metal"]}`. Entries are namespaced ids or references to another tag prefixed with `#`; `replace: true` clears earlier contributions to the same tag.
 
 Recipes live under `data/<namespace>/recipes/`. `type` may be `shaped`, `shapeless` or `processing`; results use an item id and optional count. Shaped recipes use up to three rows of three characters and a `key` map. Shapeless and processing recipes use an `ingredients` array; an ingredient may be an item id or `#tag`, with an optional count. Processing recipes may set `time` in seconds. Loot tables live under `data/<namespace>/loot_tables/`; each `pools` entry names an item and may set `min`, `max` and `chance`.
+
+Definitions are validated before they are registered. If a definition produces a `data_error`—for example, an unknown recipe ingredient, item reference, or worldgen block—the complete definition is discarded; no partially initialized registry entry is kept. The loader continues with other files, so check the data-error log and correct each reported definition.
+
+### Region save integrity and repair
+
+Region files use a versioned `DFER` header with a header CRC32 and a CRC32 for every compressed column. A failed header checksum or unsupported region version is backed up as `r.X.Z.dfr.bak.0` (with older backups rotated through `.bak.1` and `.bak.2`) before the damaged region is regenerated. A failed column checksum preserves the complete region backup and regenerates only that column; other columns remain loadable. Region updates are written through a temporary file and atomically renamed into place.
+
+Older region files without CRCs remain readable with a warning and are upgraded on their next save. To inspect a world and preserve damaged region files before recovery, run `dfe --repair-world NAME`; the command reports verified columns and damaged entries and leaves originals beside each region as `.bak.0`.
 
 The JSON schemas under `sdk/schemas/` are editor aids for these files. Runtime validation remains authoritative and reports errors during startup.
 
@@ -533,6 +582,8 @@ A state is an integer that identifies one block with one set of property values.
 
 Container keys are private to the calling mod and persist in the active world save. The inventory helpers operate on the active player; use the player-related events to react to changes. They do not expose arbitrary player position or movement control.
 
+World metadata includes `schema_version`, which identifies the JSON save-metadata structure and is independent of the existing `version` field. The current value is 2. Saves without this field are treated as legacy schema version 2 and logged with a warning; explicitly older or newer schema versions are rejected with an explanatory error. This prevents an engine from silently interpreting metadata it does not understand.
+
 #### Entities
 
 | Function | Description |
@@ -586,7 +637,9 @@ end)
 | `player_join`, `player_leave` | A player session starts or ends | `text` (`player`) | No |
 | `player_damage`, `player_death`, `player_respawn` | The player is damaged, dies or respawns | `name` | Damage and death events can be cancelled |
 | `entity_spawn` | An entity is about to spawn | `text` (entity type id) | Yes |
-| `entity_damage`, `entity_death` | An entity is damaged or dies | `name` | Damage and death events can be cancelled |
+| `entity_damage`, `entity_death` | An entity is damaged or about to die | `entity_id`, `damage` (damage only) | Yes. A cancelled death leaves 1 health |
+| `entity_tick` | An entity is about to be simulated | `entity_id`, `dt` | Yes, the entity skips that update |
+| `entity_despawn` | An entity is removed | `entity_id`, `text` (reason) | Yes, except for death and falling out of the world |
 
 Every table also has a `name` field with the event name.
 
@@ -615,7 +668,7 @@ Built-in commands:
 | `setblock x y z block` | Place a block or state, as the player. Fires the cancellable events. |
 | `gamemode creative\|survival` | Switch mode. Creative has instant breaking, a block palette and flight (F). Survival uses hardness, drops and consumes placed blocks. |
 | `tp x y z`, `teleport x y z` | Move the player to a loaded, unobstructed position and clear their velocity. |
-| `give block [count]` | Add items to the inventory. |
+| `give item [count]` | Add an item or block to the inventory, for example `give base:feather 3`. |
 | `lua code` | Run a Lua statement or expression in the sandbox and print the result. |
 | `spawn type [x y z]` | Spawn an entity three blocks in front of the player, or at the given position. |
 | `entities` | List entity types and how many entities are alive. |
@@ -672,14 +725,17 @@ The example plugin builds with CMake: configure with `-DDFE_BUILD_EXAMPLES=ON` a
 | `get_light(x, y, z, out[4])` | Sky, red, green, blue light. Returns false if unloaded. |
 | `world_seed()` | The full 64-bit seed. |
 | `game_time()` | Simulated seconds. |
-| `subscribe(event, fn, user, mod_id)` | Subscribe to an event. Returns a handle greater than 0, or 0 for an unknown event name. |
-| `register_command(name, help, fn, user, mod_id)` | Register a console command. Returns 0 on failure. |
+| `subscribe(event, fn, user, mod_id)` | Subscribe to an event. Returns a handle greater than 0, or 0 for an unknown event name. The plugin owns `user`; the engine never frees it. Keep it valid until the subscription is removed and free it after unregistering or during plugin shutdown. |
+| `register_command(name, help, fn, user, mod_id)` | Register a console command. Returns 0 on failure. The plugin owns `user`; the engine never frees it. Keep it valid until the command is removed and free it after unregistering or during plugin shutdown. |
 | `console_print(message)` | Write a line to the console. |
 | `state_string(state, out, size)` | Text of a state such as `"mymod:lamp[lit=on]"`. Added in API 1.1; check `struct_size` before use. Returns false for an invalid state. |
 | `entity_spawn(type, x, y, z)` | Spawn an entity. Returns a handle greater than 0, or 0 when the type is unknown or the limit is reached. Added in API 1.2; check `struct_size` before use. |
 | `entity_remove(handle)` | Remove an entity. Returns false for an unknown handle. API 1.2. |
 | `entity_position(handle, out)` | Write the feet position to `out[3]`. Returns false for an unknown handle. API 1.2. |
 | `entity_count()` | Number of entities alive. API 1.2. |
+| `entity_get(handle, out)`, `entity_set(handle, in, mask)` | Read or write a `dfe_entity_t`; `mask` uses `DFE_ENTITY_*` bits. API 1.3. |
+| `entity_damage(handle, amount)`, `entity_heal(handle, amount)` | Health changes through the events. API 1.3. |
+| `entity_list(out, cap)`, `entity_near(x, y, z, radius, out, cap)` | Handles in spawn order, or within a radius nearest first. API 1.3. |
 
 Event handlers have the signature `int fn(const dfe_event_t *ev, void *user)` and return nonzero to cancel a cancellable event. Command handlers have the signature `void fn(const char *args, void *user)`. The `dfe_event_t` fields are `name`, `x`, `y`, `z`, `state`, `dt` and `text`, filled as described in [Events](#events).
 
@@ -776,4 +832,72 @@ Run these commands from the repository root:
 ./build/dfe mod package path/to/mod -o mymod.dfe.zip
 ```
 
-`validate` checks the manifest and JSON registry files. `test` currently performs the same validation; it does not run the game or mod scripts. `package` validates first, then creates a zip archive (the `zip` utility must be installed). Schemas in `sdk/schemas/` cover mod manifests, items, recipes, loot tables, tags and save data. The runtime loader may enforce additional semantic rules beyond a JSON schema.
+`validate` checks the manifest and JSON registry files. `test` starts the engine's headless runtime: it loads base content and dependencies, creates a deterministic world, runs the mod's Lua entry points and the requested number of fixed ticks, then runs every `tests/*.lua` file in the target mod. A test file passes when it returns without an error; Lua `assert` is the recommended assertion mechanism. The command returns non-zero on content, initialization, tick-handler, or test failures. Use `--json` for CI output, for example:
+
+```
+./build/dfe --headless mod test path/to/mod --ticks 100 --seed 123 --json
+```
+
+Runtime test options include `--ticks N`, `--seed N`, `--world DIR`, `--timeout SECONDS`, `--verbose`, `--no-cleanup`, and `--allow-native`. The Lua sandbox's deterministic instruction budget protects against infinite scripts; `--timeout` is accepted for CI compatibility, while execution limits remain instruction-based. Headless mode does not create a window, OpenGL context, audio device, or read input. `package` validates first, then creates a zip archive (the `zip` utility must be installed). Schemas in `sdk/schemas/` cover mod manifests, items, recipes, loot tables, tags and save data. The runtime loader may enforce additional semantic rules beyond a JSON schema.
+
+## Status HUD (hud.json, theme, Lua)
+
+Implemented: `assets/dfe/ui/hud.json` (elements) and `assets/dfe/ui/theme/default.json` (colours), parsed once at start and on hot reload; a bad file keeps the previous layout.
+
+`hud.json`: `scale`, `elements[]` with `id`, `anchor` (top_left, top_center, top_right, center, bottom_left, bottom_center, bottom_right), `x`/`y` offset from the anchor, `w`/`h`, `align` ("right" anchors the right edge), `style` ("bar" or "pips"), `source`/`max` (PlayerStatus fields: health, hunger, saturation, stamina, magicka, xp, armor, `max_*`, `xp_next`, or custom names, custom max is `<name>_max`), `pip_value`, `pip_size`, `spacing`, `color` (theme colour name), `modes` (["survival"], ["creative"]; default both), `requires_max`, `hide_when_empty`, `label` ("level").
+
+Theme: `colors` (name -> `#rrggbb` or `#rrggbbaa`), `text_size`. Includes `bar_back` and `text`.
+
+Defaults: survival shows hearts, hunger, armor (when above 0), XP; stamina and magicka show only when their max is above 0. Creative hides all. `settings.json` key `hud_elements` (`{"hearts": true}`) forces an element on or off in any mode.
+
+Lua: `dfe.ui.get_status()`, `dfe.ui.set_status(name, value, max)` (custom bar fields), `dfe.ui.set_element_visible(id, true|false|nil)`, `dfe.ui.element_visible(id)`.
+
+Not implemented yet: icon atlas, effect icons, custom screens/widgets API, native plugin UI API, crafting/recipe book/tooltips/sorting, keybind data, accessibility options, hunger/stamina/magicka/XP gameplay (fields hold defaults).
+
+## Screens and widgets
+
+Implemented in `src/screen.c`. A screen is a panel centred in the window; widget `x`/`y` are relative to the panel. Types: `panel`, `label`, `button`, `slot` (frame only), `bar` (`value`/`max`, `text` names a theme colour), `list` (`items`, selectable, scrolls by `scroll`), `scroll` (read-only list). Screens stack (up to 8); `modal` dims and swallows clicks outside; Escape closes when `close_on_escape` (default true) or modal. Tab/Shift-Tab move focus, Up/Down move a focused list, Enter/Space activate. While any screen is open the game does not take movement or mouse-look input.
+
+Lua:
+```lua
+dfe.ui.register_screen("mymod:demo", {
+  title = "Demo", w = 240, h = 120, modal = true,
+  on_open = function(screen) end, on_close = function(screen) end,
+  widgets = {
+    {type = "button", id = "go", text = "Go", x = 10, y = 30, w = 60, h = 20,
+     on_click = function(screen, widget, index) dfe.log("info", "clicked " .. widget) end},
+    {type = "bar", id = "mana", x = 10, y = 70, w = 100, h = 6, value = 3, max = 10, text = "magicka"},
+  }})
+dfe.ui.open_screen("mymod:demo")
+dfe.ui.set_widget("mymod:demo", "mana", {value = 7})
+```
+Also `dfe.ui.register_widget(screen, spec)`, `dfe.ui.close_screen()` (pops the top screen), `dfe.ui.is_screen_open([id])`. List `index` is 1-based in Lua. A callback that errors is switched off and reported; scripted screens are removed when scripts shut down.
+
+Native: fill a `ScreenDef` and `Widget`s and call `screen_register`, `screen_add_widget`, `screen_open` (`src/screen.h`). There is no `dfe_api_t` entry yet, so plugins cannot use it.
+
+## Icons
+
+`assets/dfe/ui/icons.json` + `icons.png` (`{"cell":16,"icons":{"heart":[col,row]}}` or `{"x","y","w","h"}` rects; `missing` required, 256 icons max). Mods add `assets/<modid>/ui/icons.json`/`icons.png`; later roots override by name; unknown names draw `missing`. HUD elements do not use icons yet. `tools/gen_ui_icons.py` regenerates the default png.
+
+### HUD and UI scaling
+
+Four independent settings in `settings.json`:
+
+| Key | Range | Default | Affects |
+|---|---|---|---|
+| `ui_scale` | -1 (auto), 1 to 4 | -1 | menus, screens: whole screen pixels per art pixel |
+| `ui_text_scale` | 0.75 to 2 | 1 | text in menus, screens, widgets and the inventory |
+| `hud_scale` | 0.5 to 3 | 1 | multiplies the automatic scale for the hotbar and status HUD |
+| `hud_text_scale` | 0.75 to 2 | 1 | text in the HUD |
+
+Pixel precision: every scale that multiplies pixel art is a whole number.
+- `ui_gui_scale` is `ui_scale` or the automatic scale (window / 320x360, 1 to 4).
+- `ui_hud_scale` is `round(auto * hud_scale)` (1 to 8), then halved (floor, at least 1) because HUD art is drawn at twice the 16 px icon grid. Hotbar, hearts and bars multiply by it. `hud.json` lengths are in these art pixels.
+- The inventory uses the same halving of the GUI scale and steps down by whole steps until its panel fits the window.
+- Item icons (32 px) and UI icons (16 px) are drawn at exact integer multiples with nearest sampling.
+- The UI font (Monocraft) has a pixel grid of 12 px of text size. Text sizes snap to multiples of 12 (`ui_snap_text`), so each font pixel is a whole number of screen pixels.
+- Rectangles, images and glyph origins snap to whole pixels (`ui_snap_span`); both edges are rounded so neighbours that meet in layout units meet on screen.
+
+Text scale never shrinks a parent. A label or button grows only when its scaled text no longer fits (`ui_fit`, whole pixels, pad = 4 units).
+
+HUD pip elements can use artwork: set `"icon": "heart"` (a name from `icons.json`) and `pip_size` 16. The empty pip is the icon darkened, the filled part is drawn over it cut on a whole icon pixel (`icons_draw_part`).

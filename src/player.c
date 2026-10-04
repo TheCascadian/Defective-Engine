@@ -1,5 +1,16 @@
 /* Player controller: an axis-aligned box moved one axis at a time against the voxel grid.
  *
+ * Movement model (see docs/MODDING.md "Player movement"):
+ *  - One epsilon, PLAYER_COLLISION_EPSILON, shrinks the box for every overlap test and leaves a 2*epsilon gap after a
+ *    snap. Resting contact is therefore never an overlap, and float drift below the epsilon cannot snag on a seam.
+ *  - Per physics step: input -> velocity (friction/accel/gravity/jump) -> horizontal axes, the larger displacement first
+ *    (so the dominant direction wins at an outer corner instead of a fixed x-before-z bias), each followed by
+ *    step-up or step-down -> vertical axis. on_ground is set only by that vertical move hitting a floor.
+ *  - Auto-step lifts the box by PLAYER_STEP_HEIGHT, repeats the blocked move, and settles down with the same
+ *    move_axis; it only runs from the ground and never lifts into a ceiling.
+ *  - Ground friction is the mean of the solid cells under the box footprint (player_ground_friction), not the one cell
+ *    under the centre, so an edge or seam stand gives the same answer as a centred one.
+ *
  * Decisions:
  *  - Axis-separated resolution with a snap to the blocking face is exact for a box and cheap. A step never exceeds
  *    one block (terminal speed times the physics step is below one), so the box cannot tunnel through a wall.
@@ -10,7 +21,6 @@
 
 #define PHYSICS_STEP (1.0f / 60.0f)
 #define HALF_WIDTH (PLAYER_WIDTH * 0.5f)
-#define SKIN 0.001f            /* the box is shrunk by this much so resting contact is not an overlap */
 #define GRAVITY 30.0f
 #define JUMP_SPEED 9.2f
 #define TERMINAL_SPEED 50.0f
@@ -27,7 +37,6 @@
 #define SWIM_RESPONSE 7.0f
 #define CLIMB_RESPONSE 14.0f
 #define FLY_RESPONSE 8.0f
-#define STEP_HEIGHT 1.0f
 #define CLIMB_SPEED 3.0f
 #define SPAWN_SEARCH_RADIUS 640
 #define SPAWN_SEARCH_STEP 16
@@ -93,9 +102,9 @@ static bool cell_blocks(int x, int y, int z) {
 }
 
 bool box_blocked(V3 f, float half_width, float height) {
-    int x0 = ifloor(f.x - half_width + SKIN), x1 = ifloor(f.x + half_width - SKIN);
-    int y0 = ifloor(f.y + SKIN), y1 = ifloor(f.y + height - SKIN);
-    int z0 = ifloor(f.z - half_width + SKIN), z1 = ifloor(f.z + half_width - SKIN);
+    int x0 = ifloor(f.x - half_width + PLAYER_COLLISION_EPSILON), x1 = ifloor(f.x + half_width - PLAYER_COLLISION_EPSILON);
+    int y0 = ifloor(f.y + PLAYER_COLLISION_EPSILON), y1 = ifloor(f.y + height - PLAYER_COLLISION_EPSILON);
+    int z0 = ifloor(f.z - half_width + PLAYER_COLLISION_EPSILON), z1 = ifloor(f.z + half_width - PLAYER_COLLISION_EPSILON);
     for (int y = y0; y <= y1; y++)
         for (int z = z0; z <= z1; z++)
             for (int x = x0; x <= x1; x++)
@@ -112,9 +121,10 @@ static bool move_axis(Player *p, int axis, float delta) {
     float old = *c;
     *c = old + delta;
     if (!box_blocked(p->pos, p->half_width, p->height)) return false;
+
     float lo_extent = axis == 1 ? 0.0f : p->half_width, hi_extent = axis == 1 ? p->height : p->half_width;
-    if (delta > 0) *c = (float)ifloor(old + hi_extent + delta) - hi_extent - SKIN * 2.0f;
-    else *c = (float)(ifloor(old - lo_extent + delta) + 1) + lo_extent + SKIN * 2.0f;
+    if (delta > 0) *c = (float)ifloor(old + hi_extent + delta) - hi_extent - PLAYER_COLLISION_EPSILON * 2.0f;
+    else *c = (float)(ifloor(old - lo_extent + delta) + 1) + lo_extent + PLAYER_COLLISION_EPSILON * 2.0f;
     /* The snap can still overlap when the box starts inside a block, such as after a block is placed on it. */
     if (box_blocked(p->pos, p->half_width, p->height)) *c = old;
     return true;
@@ -154,10 +164,34 @@ static void approach_accel(float *v, float target, float acceleration, float dt)
     *v += CLAMP(delta, -acceleration * dt, acceleration * dt);
 }
 
+float player_effective_friction(float friction) {
+    /* Keep the safety bounds, but allow data-driven low-friction blocks such as ice. */
+    return isfinite(friction) ? CLAMP(friction, 0.05f, 1.1f) : 0.05f;
+}
+
+/* Probes the cells just under the box footprint. Returns how many are solid and their mean friction (1 when none). */
+int player_ground_probe(V3 f, float half_width, float *friction) {
+    int x0 = ifloor(f.x - half_width + PLAYER_COLLISION_EPSILON), x1 = ifloor(f.x + half_width - PLAYER_COLLISION_EPSILON);
+    int z0 = ifloor(f.z - half_width + PLAYER_COLLISION_EPSILON), z1 = ifloor(f.z + half_width - PLAYER_COLLISION_EPSILON);
+    int y = ifloor(f.y - PLAYER_GROUND_PROBE_DISTANCE);
+    int n = 0;
+    float sum = 0.0f;
+    for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++) {
+            u16 s = world_get_state(x, y, z);
+            if (s != STATE_UNLOADED && !state_solid(s)) continue;
+            const BlockDef *b = s == STATE_UNLOADED ? NULL : block_of_state(s);
+            sum += b ? CLAMP(b->friction, 0.05f, 2.0f) : 1.0f;
+            n++;
+        }
+    if (friction) *friction = n ? sum / (float)n : 1.0f;
+    return n;
+}
+
 static float ground_friction(const Player *p) {
-    u16 state = world_get_state(ifloor(p->pos.x), ifloor(p->pos.y - 0.05f), ifloor(p->pos.z));
-    const BlockDef *b = state == STATE_UNLOADED ? NULL : block_of_state(state);
-    return b ? CLAMP(b->friction, 0.05f, 2.0f) : 1.0f;
+    float f;
+    player_ground_probe(p->pos, p->half_width, &f);
+    return f;
 }
 
 static void horizontal_wish(const Player *p, const PlayerInput *in, float speed, float *wx, float *wz) {
@@ -174,9 +208,15 @@ static void horizontal_wish(const Player *p, const PlayerInput *in, float speed,
 static bool try_step_up(Player *p, int axis, float delta) {
     if (g_settings.auto_jump_off) return false;
     Player t = *p;
-    if (move_axis(&t, 1, STEP_HEIGHT)) return false;
-    if (move_axis(&t, axis, delta)) return false;
-    move_axis(&t, 1, -STEP_HEIGHT);
+    /* Do not use move_axis for the lift: the player is already touching the
+     * ledge, so resolving that move can snap back to the old height before
+     * the horizontal clearance is tested. */
+    t.pos.y += PLAYER_STEP_HEIGHT;
+    if (box_blocked(t.pos, t.half_width, t.height)) return false;
+    float *c = axis == 0 ? &t.pos.x : &t.pos.z;
+    *c += delta;
+    if (box_blocked(t.pos, t.half_width, t.height)) return false;
+    move_axis(&t, 1, -PLAYER_STEP_HEIGHT);
     float gained = axis == 0 ? fabsf(t.pos.x - p->pos.x) : fabsf(t.pos.z - p->pos.z);
     if (gained < fabsf(delta) * 0.5f) return false;
     *p = t;
@@ -185,20 +225,30 @@ static bool try_step_up(Player *p, int axis, float delta) {
 
 static bool try_step_down(Player *p) {
     Player t = *p;
-    if (!move_axis(&t, 1, -(STEP_HEIGHT + 0.01f))) return false;
+    if (!move_axis(&t, 1, -(PLAYER_STEP_HEIGHT + 0.01f))) return false;
     *p = t;
     return true;
+}
+
+/* Horizontal move on one axis plus the ledge handling that belongs to it. */
+static void move_horizontal(Player *p, int axis, float delta, bool was_ground) {
+    float *vel = axis == 0 ? &p->vel.x : &p->vel.z;
+    if (move_axis(p, axis, delta)) {
+        if (!(was_ground && !p->flying && try_step_up(p, axis, delta))) *vel = 0;
+    } else if (delta != 0.0f && was_ground && !p->flying) try_step_down(p);
 }
 
 static void collide_and_move(Player *p, float dt) {
     bool was_ground = p->on_ground;
     float dx = p->vel.x * dt, dy = p->vel.y * dt, dz = p->vel.z * dt;
-    if (move_axis(p, 0, dx)) {
-        if (!(was_ground && !p->flying && try_step_up(p, 0, dx))) p->vel.x = 0;
-    } else if (dx != 0.0f && was_ground && !p->flying) try_step_down(p);
-    if (move_axis(p, 2, dz)) {
-        if (!(was_ground && !p->flying && try_step_up(p, 2, dz))) p->vel.z = 0;
-    } else if (dz != 0.0f && was_ground && !p->flying) try_step_down(p);
+    /* Larger displacement first; exact ties go to x so the result is still deterministic. */
+    if (fabsf(dz) > fabsf(dx)) {
+        move_horizontal(p, 2, dz, was_ground);
+        move_horizontal(p, 0, dx, was_ground);
+    } else {
+        move_horizontal(p, 0, dx, was_ground);
+        move_horizontal(p, 2, dz, was_ground);
+    }
     bool hit = move_axis(p, 1, dy);
     p->on_ground = hit && dy < 0;
     if (hit) p->vel.y = 0;
@@ -234,9 +284,10 @@ static void step_walk(Player *p, const PlayerInput *in, float dt) {
     float wx, wz, speed = (in->sprint && in->forward > 0 ? SPRINT_SPEED : WALK_SPEED) * (in->speed_scale > 0 ? in->speed_scale : 1.0f);
     horizontal_wish(p, in, speed, &wx, &wz);
     if (p->on_ground) {
-        float grip = CLAMP(ground_friction(p), 0.5f, 1.1f);
-        p->vel.x = wx * grip;
-        p->vel.z = wz * grip;
+        float grip = player_effective_friction(ground_friction(p));
+        float movement_grip = in->sprint && in->forward > 0 ? 1.0f : grip;
+        p->vel.x = wx * movement_grip;
+        p->vel.z = wz * movement_grip;
     } else {
         bool has_wish = fabsf(wx) + fabsf(wz) > 1e-4f;
         float accel = has_wish ? AIR_ACCEL : AIR_DRAG;

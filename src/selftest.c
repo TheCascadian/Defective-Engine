@@ -533,11 +533,19 @@ static void test_save_roundtrip(void) {
     CHECK(crystal && stone && glass);
     if (!crystal || !stone || !glass || data_error_count()) return;
     const char *dir = "selftest_world";
+    const u64 seed = 0x123456789ABCDEF0ull;
     remove_tree_files(dir);
     jobs_init(2);
-    CHECK(save_open(dir, 99));
-    CHECK(save_seed() == 99);
+    CHECK(save_open(dir, seed));
+    CHECK(save_seed() == seed);
     world_init(save_seed());
+    int gen_lo, gen_hi;
+    gen_band(&gen_lo, &gen_hi);
+    size_t generated_count = (size_t)(gen_hi - gen_lo + 1) * CHUNK_VOL;
+    u16 *unseen_before = xmalloc(generated_count * sizeof(u16));
+    u16 *unseen_after = xmalloc(generated_count * sizeof(u16));
+    GenScratch *unseen_scratch = gen_scratch_create();
+    gen_column(unseen_scratch, 20, -17, unseen_before);
     world_flush_generation(0, 0, 2);
     int ground = ifloor(gen_height_at(5, 5));
     for (int z = 2; z < 22; z++)
@@ -556,7 +564,7 @@ static void test_save_roundtrip(void) {
 
     jobs_init(2);
     CHECK(save_open(dir, 12345));
-    CHECK(save_seed() == 99); /* an existing world keeps its own seed */
+    CHECK(save_seed() == seed); /* an existing world keeps its exact 64-bit seed */
     SavedColumn untouched = {0};
     bool found_untouched = save_load_column(1, 1, &untouched);
     CHECK(found_untouched);
@@ -565,6 +573,11 @@ static void test_save_roundtrip(void) {
         free(untouched.chunks);
     }
     world_init(save_seed());
+    gen_column(unseen_scratch, 20, -17, unseen_after);
+    CHECK(!memcmp(unseen_before, unseen_after, generated_count * sizeof(u16)));
+    gen_scratch_destroy(unseen_scratch);
+    free(unseen_before);
+    free(unseen_after);
     world_flush_generation(0, 0, 2);
     CHECK(world_get_state(5, ey + 3, 5) == want_state && want_state == crystal->default_state);
     CHECK(world_get_light(6, ey + 3, 5) == want_light);
@@ -674,6 +687,8 @@ static void test_gen_determinism(void) {
             if (downstream.wet) {
                 routed_steps++;
                 CHECK(downstream.water_y <= sample.water_y + 0.01f);
+                CHECK(sample.water_y - downstream.water_y < 3.0f);
+                CHECK(sample.water_y - downstream.water_y >= 0.74f);
             }
         }
     CHECK(routed_samples > 0);

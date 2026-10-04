@@ -24,6 +24,8 @@
 #define BIOME_JITTER 0.11f  /* climate noise units; the width of the blended band between two biomes */
 #define LINE_WOBBLE 10.0f   /* tree and snow lines move by up to this many blocks so they never read as a ruled stripe */
 #define STEEP_SLOPE 5.0f    /* local relief before ordinary soil gives way to exposed rock */
+#define RIVER_CHANNEL_MIN 0.58f
+#define RIVER_MIN_DROP 0.75f
 
 typedef enum { BIOME_OCEAN, BIOME_BEACH, BIOME_DESERT, BIOME_TUNDRA, BIOME_SWAMP, BIOME_FOREST, BIOME_PLAINS, BIOME_MOUNTAIN, BIOME_COUNT } Biome;
 
@@ -575,6 +577,21 @@ static float terrain_base_height(float wx, float wz) {
     return h;
 }
 
+static float terrain_grade_at(float x, float z) {
+    float wx, wz;
+    terrain_coordinates(x - 2.0f, z, &wx, &wz);
+    float west = terrain_base_height(wx, wz);
+    terrain_coordinates(x + 2.0f, z, &wx, &wz);
+    float east = terrain_base_height(wx, wz);
+    terrain_coordinates(x, z - 2.0f, &wx, &wz);
+    float north = terrain_base_height(wx, wz);
+    terrain_coordinates(x, z + 2.0f, &wx, &wz);
+    float south = terrain_base_height(wx, wz);
+    float dx = (east - west) * 0.25f;
+    float dz = (south - north) * 0.25f;
+    return sqrtf(dx * dx + dz * dz);
+}
+
 static float river_strength_at(float wx, float wz) {
     float rx = wx, rz = wz;
     fnlDomainWarp2D(&N.river_warp, &rx, &rz);
@@ -607,21 +624,31 @@ static float river_strength_at(float wx, float wz) {
     return flow * shore * (1.0f - 0.85f * highland);
 }
 
+static float river_channel_at(float x, float z, float wx, float wz) {
+    float channel = river_strength_at(wx, wz);
+    if (channel < RIVER_CHANNEL_MIN) return 0.0f;
+    float grade = terrain_grade_at(x, z);
+    if (grade >= 0.95f) return 0.0f;
+    channel *= 1.0f - smooth01((grade - 0.30f) / 0.65f);
+    return channel >= RIVER_CHANNEL_MIN ? channel : 0.0f;
+}
+
 /* Keep only channel-mask samples that continue to a lower channel sample. The fixed candidate order makes ties
  * deterministic; selecting by terrain alone would let noise-painted rivers cut straight across hillsides. */
 static bool river_downstream_at(float x, float z, float base, float *out_x, float *out_z, float *out_height) {
+    const float max_drop = 2.5f;
     static const float dirs[8][2] = {
         {1.0f, 0.0f}, {0.70710678f, 0.70710678f}, {0.0f, 1.0f}, {-0.70710678f, 0.70710678f},
         {-1.0f, 0.0f}, {-0.70710678f, -0.70710678f}, {0.0f, -1.0f}, {0.70710678f, -0.70710678f}
     };
-    float lowest = base - 0.25f;
+    float lowest = base - RIVER_MIN_DROP;
     bool found = false;
     for (int i = 0; i < 8; i++) {
         float nx = x + dirs[i][0] * 2.0f, nz = z + dirs[i][1] * 2.0f;
         float wx, wz;
         terrain_coordinates(nx, nz, &wx, &wz);
         float height = terrain_base_height(wx, wz);
-        if (height >= lowest || river_strength_at(wx, wz) < 0.58f) continue;
+        if (height >= lowest || height < base - max_drop || river_channel_at(nx, nz, wx, wz) < RIVER_CHANNEL_MIN) continue;
         lowest = height;
         *out_x = nx;
         *out_z = nz;
@@ -637,9 +664,9 @@ void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
     float wx, wz;
     terrain_coordinates(x, z, &wx, &wz);
     float base = terrain_base_height(wx, wz);
-    float channel = river_strength_at(wx, wz);
+    float channel = river_channel_at(x, z, wx, wz);
     memset(out, 0, sizeof *out);
-    if (channel < 0.58f) return;
+    if (channel < RIVER_CHANNEL_MIN) return;
     float downstream_height;
     if (!river_downstream_at(x, z, base, &out->downstream_x, &out->downstream_z, &downstream_height)) return;
     float water_y = MIN(base, downstream_height) - 0.75f;
@@ -647,7 +674,8 @@ void gen_hydrology_at(float x, float z, GenHydrologySample *out) {
     out->channel = channel;
     out->type = channel > 0.84f ? 3 : (channel > 0.70f ? 2 : 1);
     out->water_y = water_y;
-    out->bed_y = out->water_y - (1.5f + channel * 2.5f);
+    float bed_depth = (0.25f + channel * 3.5f) * smooth01((channel - 0.55f) / 0.35f);
+    out->bed_y = out->water_y - bed_depth;
     out->wet = true;
 }
 

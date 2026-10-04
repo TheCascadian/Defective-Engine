@@ -138,7 +138,9 @@ static bool meta_read(void) {
         LOGE("World file %s line %d is unreadable (%s). Fix or delete it; the region files beside it are untouched.", path, line, err);
         return false;
     }
-    S.seed = (u64)json_num(j, "seed", 0) + ((u64)json_num(j, "seed_high", 0) * 4294967296.0);
+    u64 seed_low = (u64)json_num(j, "seed", 0);
+    u64 seed_high = (u64)json_num(j, "seed_high", 0);
+    S.seed = seed_low | (seed_high << 32);
     const Json *p = json_get(j, "player");
     if (p) {
         S.meta.has_player = true;

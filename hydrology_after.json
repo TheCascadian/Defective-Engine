@@ -1,0 +1,12 @@
+{
+  "label": "",
+  "gl": "",
+  "width": 0, "height": 0, "preset": "low", "render_distance": 8, "far_chunks": 0, "workers": 6, "cores": 12,
+  "frames": 5545, "seconds": 10.003, "fps_avg": 554.35, "fps_low1": 46.81, "scale_avg": 1.000, "scale_min": 1.000,
+  "frame_ms": {"avg": 0.750, "p50": 0.113, "p95": 3.563, "p99": 5.586, "max": 309.603}, "hitches": 5,
+  "cpu_ms": {"total": 0.750, "stream": 0.594, "render": 0.000, "swap": 0.000},
+  "gpu_available": false, "gpu_ms": {"total": 0.000, "opaque": 0.000, "cutout": 0.000, "sky": 0.000, "water": 0.000, "rain": 0.000, "ui": 0.000, "post": 0.000, "entity": 0.000},
+  "draw_calls": 0.0,
+  "entities": {"requested": 0, "legacy": false, "draw_calls": 0.0, "instances": 0.0, "culled": 0.0, "lod": [0.0, 0.0, 0.0], "upload_bytes": 0},
+  "peak_memory_mb": 120.2, "cold_start_s": 2.184
+}

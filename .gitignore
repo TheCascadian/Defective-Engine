@@ -18,3 +18,5 @@ CLAUDE.md
 codegraph.json
 skills-lock.json
 tests/
+node_modules/
+__pycache__/

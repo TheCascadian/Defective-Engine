@@ -5,6 +5,27 @@ everything is listed under one heading, newest work first, grouped by area. Shor
 
 ## Unreleased
 
+### PBR block shading
+- Shader-only surface depth for opaque cube blocks: optional `<name>_n.png` (normal) and `<name>_r.png` (roughness, height) companions and a per-block `"pbr"` key (`normal`, `roughness`, `metalness`, `bump_strength`). They are loaded into two texture arrays beside the colour array. The shading is a normal map, a screen-space height bump, sky-from-above ambient, one Blinn-Phong lobe with Schlick Fresnel (shared with the water Fresnel), and at most 4 shadow taps on mapped pixels. See "PBR maps" in docs/MODDING.md and `examples/mods/pbr_stone`.
+- Base maps for stone, deep stone, cobblestone, limestone, planks, gravel and the ores. Generate them with `tools/gen_base_assets.py --pbr-only`.
+- Rulings: this is additive, so the mod API stays 1 (`u_anim` grows from RG8 to RGBA8 and `.rg` is unchanged). PBR runs only in the near, non-LOD opaque pass. The tangent frame is derived from the face normal in `chunk.frag`, with no new varyings: varyings cost every opaque pixel about 17% in measurement, and this way `chunk.vert` is unchanged. JSON `roughness` overrides the `_r` red channel, and height comes only from the map. The first block with `"pbr"` that uses a texture owns that texture's settings. The PBR result is blended back to the flat result between 16 and 32 blocks from the camera.
+
+### Terrain overhaul
+- Data-driven biomes (`data/<ns>/biomes/*.json`, schema `sdk/schemas/biome.schema.json`): climate boxes, surface layers with slope, river, height, snowline and noise-patch rules, plants and per-biome features. 24 base biomes. Active only under Forever Worlds epoch 1 (`"kernel": 1` in `biomes.json`); epoch 0 is byte-identical, guarded by the golden digest test.
+- 11 new tree species, 50 new block textures and 42 new blocks (terracotta, limestone, tuff, peat, flora, per-species logs and leaves), a seamless water texture, `chance_per_mille` for features.
+- Added `--dump-biomes`, `tools/forge_import.py`, `tools/check_tileable.py`, the `biomes` self-test group and `DFE_DIAG_FW=1` for the tree diagnostics.
+
+### Trees
+- Replaced the single tree shape with data-driven species (`data/<ns>/trees/*.json`, schema in `sdk/schemas/tree.schema.json`), 11 base species, 12 shape types, chunk-independent placement from biome, climate, substrate, elevation, slope and hydrology, understory and deadwood. See [docs/TREES.md](docs/TREES.md).
+- Added `--dump-trees`, `--dump-tree-shape`, `--tree-bench` and the `trees` self-test group.
+
+### Forever Worlds (experimental)
+- Added the Experimental Features menu and Forever Worlds: versioned generation epochs with a hashed registry, per-column
+  chunk generation metadata, progressive blending of terrain, biomes, caves and structures across epoch borders, seam
+  carving and a structure policy. Off by default and bit-identical to the old generator when off. See
+  [docs/FOREVER_WORLDS.md](docs/FOREVER_WORLDS.md).
+- Added `--headless --test-forever-worlds`, `--forever-bench` and `tools/forever_perf.py`.
+
 ### Menus and UI
 - Redesigned the title, world select, create, edit, delete, options and pause screens in Minecraft's visual language:
   bevelled grey buttons, a tiled dirt backdrop, a stone-block logo and shadowed text, with an integer GUI scale taken

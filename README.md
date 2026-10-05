@@ -164,4 +164,4 @@ Validate a mod folder, run its data/registry validation check, or package it as 
 ./build/dfe mod package path/to/mod -o mymod.dfe.zip
 ```
 
-`test` currently performs the same manifest and JSON registry validation as `validate`; it does not launch the game or execute Lua gameplay tests. JSON schemas for manifests, items, recipes, loot tables, tags and saves are in [sdk/schemas](sdk/schemas).
+`test` starts the headless runtime: it loads the mod, runs its Lua entry points and a number of fixed ticks (`--ticks N`, `--seed N`, `--json`), then runs every `tests/*.lua` file in the mod. It exits non-zero on content, tick-handler or test failures. See [docs/MODDING.md](docs/MODDING.md). JSON schemas for manifests, items, recipes, loot tables, tags and saves are in [sdk/schemas](sdk/schemas).

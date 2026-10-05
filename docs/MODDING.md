@@ -268,9 +268,87 @@ A texture id such as `mymod:block/ruby` names the file `assets/mymod/textures/bl
 * A texture that is taller than it is wide is an animation: frames are stacked vertically and each frame is as tall as the texture is wide. Add a file next to it with the same name and a `.json` extension to set the speed: `{"fps": 3}`.
 * A texture with fully transparent pixels should be used with `"layer": "cutout"`. A texture that is uniformly semi-transparent, like water, should be used with `"layer": "translucent"`.
 
+### PBR maps
+
+Opaque cube blocks can carry surface relief and a specular highlight. It is all done in the terrain shader from two extra texture arrays: no extra geometry, no extra draw pass. A texture without PBR maps or a `"pbr"` key renders exactly as before.
+
+**Companion files.** Next to `<name>.png`, the engine looks for two optional files with the same size and frame layout (a single frame is reused for every frame of an animation):
+
+| File | Channels | Missing means |
+|------|----------|---------------|
+| `<name>_n.png` | Tangent-space normal, OpenGL convention: red = right in the image (+u), green = up in the image, blue = out of the face. Flat is `(128, 128, 255)`. | flat normal |
+| `<name>_r.png` | Red: roughness (0 mirror, 255 matte). Green: height (0 deep, 255 raised, 128 neutral). Blue is ignored. | roughness 0.8, height 0.5 |
+
+Finding either file turns PBR on for that texture.
+
+**Block key.** `"pbr"` is an optional object in a block file. Every key in it is optional:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `normal` | texture id | `<texture>_n` | Normal map to use for every face texture of this block instead of the companion. A missing file is a data error. |
+| `roughness` | number, 0 to 1 | from `_r`, else 0.8 | When given, replaces the `_r` map's roughness channel. Height still comes from the map. |
+| `metalness` | number, 0 to 1 | 0 | Tints the highlight by the albedo and darkens the diffuse part. |
+| `bump_strength` | number, 0 to 2 | 1 | Scales the height relief (screen-space bump from the `_r` green channel). |
+
+The `"pbr"` key also turns PBR on when there are no companion files. Settings belong to a texture, not a block: when two blocks with `"pbr"` share a texture, the one loaded first wins.
+
+**Limits.** PBR applies only in the near opaque pass on cube faces. Cutout blocks (leaves, plants), translucent blocks (water, glass) and the far terrain keep the plain model. Relief fades out between 16 and 32 blocks from the camera, and normal-mapped pixels take at most 4 shadow samples.
+
+**Worked example** (`examples/mods/pbr_stone`):
+
+```
+pbr_stone/
+  mod.json
+  assets/pbr_stone/textures/block/polished_stone.png
+  assets/pbr_stone/textures/block/polished_stone_n.png
+  assets/pbr_stone/textures/block/polished_stone_r.png
+  data/pbr_stone/blocks/polished_stone.json
+```
+
+```json
+{
+  "textures": {"all": "pbr_stone:block/polished_stone"},
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone",
+  "pbr": {"normal": "pbr_stone:block/polished_stone_n", "roughness": 0.35, "metalness": 0.0, "bump_strength": 0.6}
+}
+```
+
+Here `"normal"` names the file the companion rule would find anyway; it is spelled out to show the key. `"roughness": 0.35` makes the polished stone shinier than its `_r` map says. `tools/gen_base_assets.py` has `make_normal` and `make_roughness_height`, which derive both maps from a colour PNG (Sobel on blurred luminance, deterministic). `python3 tools/gen_base_assets.py --pbr-only` rebuilds the base game's maps alone.
+
+**Tuning.** `data/<namespace>/pbr.json` (the engine ships `data/dfe/pbr.json`; the last mod to supply the file wins, so a pack should copy and edit it whole) sets every global PBR knob. Every key is optional and clamped. It reloads with the shaders.
+
+| Key | Range | Effect |
+|---|---|---|
+| `bump_strength` | 0 to 4 | Global multiplier on relief and on each block's `bump_strength`. |
+| `height_depth` | 0 to 0.5 | Blocks of relief at full height range (default 0.0625, one texel). Sets how deep contact shadows and cavities read. |
+| `normal_strength` | 0 to 4 | Tilt of the normal map. 0 is flat. |
+| `fade_start`, `fade_end` | blocks | Relief fades out between these distances. |
+| `specular_strength` | 0 to 8 | Brightness of the sun/moon highlight. |
+| `roughness_scale`, `roughness_bias` | 0 to 4, -1 to 1 | Applied to every roughness value: `r * scale + bias`. |
+| `metalness_scale` | 0 to 2 | Multiplier on block `metalness`. |
+| `sky_specular` | 0 to 4 | Sky reflection, which also shows on faces turned from the sun. |
+| `diffuse_response` | 0 to 3 | How strongly the normal map changes the diffuse light. 0 ignores it. |
+| `sky_lean` | 0 to 3 | How much normals tipped toward the sky catch ambient light. |
+| `cavity_ao` | 0 to 1 | Darkening of texels below the neutral height. |
+| `shade_floor` | 0 to 1 | Minimum light on PBR surfaces, lifts deep shade. |
+| `self_shadow_strength` | 0 to 1 | Darkness of contact shadows that raised texels cast on their neighbours. 0 is off. |
+| `self_shadow_reach` | 0 to 8 | Contact shadow length, in multiples of the relief depth. |
+| `self_shadow_steps` | 0 to 16 | Ray steps per pixel; 0 is off. More is smoother and slower. |
+| `shadow_tap_cap` | 1 to 16 | Soft-shadow samples for PBR pixels. |
+
+Players change the same values in Options > Graphics Settings > Shaders. **Texture Quality** picks Default (this file), Off, Low, Medium, High or Ultra; **Style** (Natural, Clean, Crisp, Realistic, Chunky) scales relief, parallax, bevels, outlines, highlights, contact shadows and colour grading on top of the quality level, saved as `texture_style`. Moving any slider switches to Custom (styles then no longer apply), saved in `settings.json` as `texture_quality` and `shaders`. The Shaders menu also holds the shadow, godray and fog options.
+
+The shadow map is always looked up with the face normal, not the mapped one, so bump detail can no longer cast the block's own shadow onto its shaded side.
+
+**For shader authors.** `chunk.frag` gets `u_tex_normal` (unit 4) and `u_tex_rh` (unit 5), which share `u_tex`'s layer indices, plus `u_bump_strength`. `u_anim` is now RGBA: `.rg` is unchanged, `.b` is 0 for a layer without PBR, otherwise 1 + bump_strength × 127, and `.a` is metalness. A pack that does not declare the new uniforms still works. `shadow.glsl` adds `shadow_visibility_capped(rel, normal, light_dir, max_taps)` and defines `DFE_SHADOW_TAP_CAP`. `chunk.frag` calls it only when that macro is defined, so an older `shadow.glsl` override still compiles.
+
 ### World generation settings
 
 `data/<namespace>/worldgen/default.json` sets the sea level, the level where deep stone begins and the blocks terrain is built from. The base game's file is the complete list of keys; copy it and change values:
+
+Epochs, the experimental feature registry and the structure `forever_worlds_policy` key are described in [FOREVER_WORLDS.md](FOREVER_WORLDS.md).
 
 Rivers, lakes and the sea come from one region-scale drainage solve, described in full in [HYDROLOGY.md](HYDROLOGY.md): the query contract, the `"hydrology"` parameter object and its clamps, the `"habitat"` and `"water_distance"` keys for features, structures, ores and entities, and the `--dump-*` diagnostics.
 
@@ -291,7 +369,43 @@ Rivers, lakes and the sea come from one region-scale drainage solve, described i
 }
 ```
 
-The roles from `stone` to `water` are required. The decoration roles from `log` onward are optional; leaving one out removes that feature. Biome layout, cave shapes and tree shapes are built into the generator. Data-driven definitions for them and a Lua generator hook arrive in a later milestone.
+The roles from `stone` to `water` are required. The decoration roles from `log` onward are optional; leaving one out removes that feature. Cave shapes are built into the generator. Biomes are data under the Forever Worlds kernel 1 (see [Biome files](#biome-files)); the original biome layout stays in place for epoch 0. Trees are data: see [TREES.md](TREES.md). A Lua generator hook arrives in a later milestone.
+
+### Biome files
+
+`data/<namespace>/biomes/<name>.json` defines one biome (schema: `sdk/schemas/biome.schema.json`). They are read only when Forever Worlds is on and the current epoch's `biomes.json` has `"kernel": 1` (epoch 1 of the engine assets does). Epoch 0 and worlds without Forever Worlds keep the original generator, bit for bit.
+
+The base mod defines the eight original biomes (`ocean`, `beach`, `desert`, `tundra`, `swamp`, `forest`, `plains`, `mountain`; all are required, and they must not carry `features`, `ores` or `structures`) and 16 more. At most 32 biomes can exist. The table order is the eight originals, then the rest sorted by id.
+
+```json
+{
+  "id": "base:steppe",
+  "role": "land",
+  "priority": 2,
+  "climate": { "temperature": {"center": 0.3, "extent": 0.35}, "humidity": {"center": -0.55, "extent": 0.35}, "height": [0, 110], "weirdness": [-1, 1] },
+  "surface": [
+    { "block": "base:clay", "when": { "river_min": 0.55, "patch": {"noise": "b", "lo": 0.3, "hi": 2} } },
+    { "block": "base:dry_grass_block", "when": { "patch": {"noise": "a", "lo": -2, "hi": 0.3} } },
+    { "block": "base:grass_block" },
+    { "block": "base:dirt", "depth": 3 }
+  ],
+  "plants": [ { "block": "base:dry_grass", "chance": 22, "on": ["base:dry_grass_block", "base:grass_block"] } ],
+  "tree_density_scale": 0.15,
+  "features": [ { "id": "base:steppe_boulder", "block": "base:andesite", "chance_per_mille": 2, "radius": 1 } ]
+}
+```
+
+* `role`: `land` (default), `ocean` (chosen wherever the ground is below sea level) or `shore` (the waterline band).
+* `climate`: a biome is picked by the nearest climate centre (temperature and humidity, squared distance) among land biomes whose `height` and `weirdness` ranges contain the column. `priority` subtracts `priority * 0.02` from the distance, so higher priority wins close calls; variants such as `flower_forest` and `volcanic_plain` sit on the same climate as a common biome and take over where weirdness is high.
+* `surface`: layers with `depth` 0 are the top block; the first whose `when` matches wins and the last must have no `when`. Layers with `depth` n > 0 are subsurface tiers down to n blocks below the surface; entries with the same depth are alternatives; depths do not decrease. A layer cannot be air.
+* `when` keys: `slope_min`, `slope_max` (slope >= min and < max), `river_min`, `near_river`, `water_dist_max`, `height_min`, `height_max`, `above_snowline`, `above_treeline`, `patch` (one object or up to three, noise `a` broad, `b` fine or `detail`, matches `lo <= v < hi`) and `stripe` (`period`, `lo`, `hi`: y mod period in [lo, hi), for banded terrain).
+* `plants`: one roll per column picks at most one plant. `chance` is a percent in steps of 0.1. The entry counts only if the ground block is in `on`, `habitat` (`dry`, `any`, `river`, `lake`, `shore`, `wetland`) and `water_dist` allow it, and the optional `density_noise` is in range.
+* `tree_density_scale` multiplies tree site density. The `treeline` tag makes the biome follow the alpine tree rules. Trees pick biomes by id in their species file (`"biomes"`).
+* `features`, `ores`, `structures`: same format as in `worldgen`, limited to this biome. Features also accept `chance_per_mille` (0..1000) for finer odds than whole percent. The engine allows 64 features in all.
+
+Check coverage with `--dump-biomes SEED [N] [STEP] [KERNEL]`: it prints each biome's share and mean height and warns about land biomes under 1% or over 35% of columns.
+
+New blocks in the base mod for this: terracotta (red, orange, white), red sandstone, limestone, tuff, permafrost, peat, mossy cobblestone (cold, warm), tree logs and leaves per species, and flora (cornflower, daisy, pink tulip, lavender, orange poppy, bluebell, fern, dry grass, meadow grass, berry bush, azalea bush, cattail, heather, snow shrub). Plants are single-block cross shapes.
 
 ### Atmosphere
 
@@ -810,8 +924,8 @@ The README explains how to read the report and decide whether a frame is CPU or 
 Stated plainly so that mod authors can plan.
 
 * Lua can read basic player information and per-mod player state, and can add/count inventory items, craft/process recipes, roll loot and use save-backed containers. It cannot read or change arbitrary player position or directly inspect individual inventory slots.
-* Lua world generators, data-driven biomes, ores and structures, and custom screens are planned and are not part of mod API 1. Block, texture, entity type, preset, atmosphere, shader and world setting data are available now.
-* Entities have no scripted behaviour, no health, no models beyond the two-box shape and no collision with the player or each other, and they are not saved with the world. Their movement is a wander; a mod that wants other behaviour can move them by removing and respawning, or wait for the behaviour API.
+* Lua world generators and Lua-defined ores and structures are planned and are not part of mod API 1. Biome files apply only to worlds with Forever Worlds on and an epoch whose `biomes.json` sets `"kernel": 1`. Block, texture, entity type, preset, atmosphere, shader, biome and world setting data are available now.
+* Entities have health, behaviours (`wander`, `static`, `hostile`, `passive`), block collision, Lua/native scripting and are saved with the world. Limits: box-based models only, no death animation, no entity-to-entity collision, at most 256 at once.
 * Mods can persist structured state under the active world save through `dfe.storage`. Data is namespaced by mod id and survives save/reload. The value is JSON-backed, so tables, arrays, booleans, numbers and strings are all valid. Block edits and player state persist because the world is saved, and the mod storage is part of the same save stream.
 * `dfe.storage` is per-mod: a script in `base` can only read and write keys in `base`, never in another mod's namespace. A key must be a short identifier such as `quest.stage` or `economy.gold`.
 * `dfe.seed()` returns only the low 32 bits of the seed. Use the C API for all 64 bits.
@@ -852,7 +966,7 @@ Defaults: survival shows hearts, hunger, armor (when above 0), XP; stamina and m
 
 Lua: `dfe.ui.get_status()`, `dfe.ui.set_status(name, value, max)` (custom bar fields), `dfe.ui.set_element_visible(id, true|false|nil)`, `dfe.ui.element_visible(id)`.
 
-Not implemented yet: icon atlas, effect icons, custom screens/widgets API, native plugin UI API, crafting/recipe book/tooltips/sorting, keybind data, accessibility options, hunger/stamina/magicka/XP gameplay (fields hold defaults).
+Not implemented yet: effect icons, native plugin UI API, crafting/recipe book/tooltips/sorting, keybind data, accessibility options, hunger/stamina/magicka/XP gameplay (fields hold defaults).
 
 ## Screens and widgets
 
@@ -877,7 +991,7 @@ Native: fill a `ScreenDef` and `Widget`s and call `screen_register`, `screen_add
 
 ## Icons
 
-`assets/dfe/ui/icons.json` + `icons.png` (`{"cell":16,"icons":{"heart":[col,row]}}` or `{"x","y","w","h"}` rects; `missing` required, 256 icons max). Mods add `assets/<modid>/ui/icons.json`/`icons.png`; later roots override by name; unknown names draw `missing`. HUD elements do not use icons yet. `tools/gen_ui_icons.py` regenerates the default png.
+`assets/dfe/ui/icons.json` + `icons.png` (`{"cell":16,"icons":{"heart":[col,row]}}` or `{"x","y","w","h"}` rects; `missing` required, 256 icons max). Mods add `assets/<modid>/ui/icons.json`/`icons.png`; later roots override by name; unknown names draw `missing`. HUD pip elements can use icons (`"icon"`, see the HUD section). `tools/gen_ui_icons.py` regenerates the default png.
 
 ### HUD and UI scaling
 

@@ -317,6 +317,9 @@ static void test_worldgen_data_driven(void) {
 }
 
 void test_hydrology(void);
+void test_trees(void);
+void test_biomes(void);
+void test_forever_worlds(void);
 static void test_worldgen_features_and_structures(void) {
     vfs_reset();
     vfs_add_root("engine_assets", "dfe");
@@ -557,7 +560,7 @@ static void test_world_light(void) {
 }
 
 /* Generated terrain and edits survive a save, unload and reload. */
-static void remove_tree_files(const char *dir) {
+void remove_tree_files(const char *dir) {
     char path[600];
     StrList names = {0};
     snprintf(path, sizeof path, "%s/region", dir);
@@ -812,6 +815,51 @@ static void test_gen_determinism(void) {
     free(b);
 }
 
+/* Epoch-0 guard: digests are over block names (not state ids) so new blocks cannot disturb them. Captured from the
+ * pre-overhaul generator; a mismatch means legacy worldgen output changed. */
+static u64 golden_column_digest(GenScratch *s, int cx, int cz, u16 *buf, size_t n) {
+    gen_column(s, cx, cz, buf);
+    u64 h = 1469598103934665603ull;
+    for (size_t i = 0; i < n; i++) {
+        BlockDef *b = block_of_state(buf[i]);
+        const char *nm = b ? b->name : "?";
+        for (; *nm; nm++) h = (h ^ (u8)*nm) * 1099511628211ull;
+        h = (h ^ (u64)(b ? buf[i] - b->default_state : 0xffff)) * 1099511628211ull;
+    }
+    return h;
+}
+
+static void test_gen_golden_epoch0(void) {
+    registry_reset();
+    data_error_reset();
+    registry_load_blocks();
+    registry_load_worldgen_config();
+    if (data_error_count()) { CHECK(false); return; }
+    static const struct { u64 seed; int cx, cz; u64 digest; } G[8] = {
+        {777, 0, 0, 0xb8e6d85295bc6d45ull}, {777, -3, 7, 0xeeba96804bd2485bull}, {777, 20, -15, 0x15f3538be5325e70ull}, {777, -40, -40, 0x617aabd60ec34d68ull},
+        {1, 5, 5, 0x9e5f1fc23ba434bdull}, {1, -12, 30, 0x551b9f5d4f574dd0ull}, {424242, 0, 0, 0xac2483916627e9a6ull}, {424242, 64, -64, 0x2f534eea26450ad6ull},
+    };
+    int lo = 0, hi = 0;
+    u64 cur_seed = 0;
+    GenScratch *s = gen_scratch_create();
+    for (int i = 0; i < 8; i++) {
+        if (i == 0 || G[i].seed != cur_seed) {
+            if (i) gen_shutdown();
+            gen_init(G[i].seed);
+            cur_seed = G[i].seed;
+            gen_band(&lo, &hi);
+        }
+        size_t n = (size_t)(hi - lo + 1) * CHUNK_VOL;
+        u16 *buf = xmalloc(n * sizeof(u16));
+        u64 d = golden_column_digest(s, G[i].cx, G[i].cz, buf, n);
+        if (getenv("DFE_GOLDEN_PRINT")) printf("GOLDEN %d 0x%016llxull\n", i, (unsigned long long)d);
+        CHECK(d == G[i].digest);
+        free(buf);
+    }
+    gen_scratch_destroy(s);
+    gen_shutdown();
+}
+
 static void test_river_smoothness(void) {
     registry_reset();
     data_error_reset();
@@ -837,6 +885,7 @@ static void test_world_and_mesh(void) {
     test_save_schema_version();
     test_save_budget();
     test_gen_determinism();
+    test_gen_golden_epoch0();
     test_river_smoothness();
     registry_reset();
     BlockDef st = {0};
@@ -1078,7 +1127,7 @@ static void test_example_mods(void) {
     mods_resolve();
     mods_mount();
     CHECK(data_error_count() == 0);
-    CHECK(mods_loaded_count() == 8);
+    CHECK(mods_loaded_count() == 9);
     /* The shader pack replaces an engine shader through the same override rule as any other asset. */
     size_t pack_size = 0;
     const char *pack_owner = NULL;
@@ -1091,6 +1140,11 @@ static void test_example_mods(void) {
     registry_load_worldgen_config();
     CHECK(data_error_count() == 0);
     CHECK(gen_sea_level() == 74); /* highsea shadows base's worldgen file */
+    /* pbr_stone: the "pbr" key parses into the block; blocks without it keep the defaults that mean "plain". */
+    const BlockDef *polished = block_find("pbr_stone:polished_stone"), *plain = block_find("base:dirt");
+    CHECK(polished && polished->has_pbr && !strcmp(polished->pbr_normal, "pbr_stone:block/polished_stone_n"));
+    CHECK(polished && fabsf(polished->pbr_roughness - 0.35f) < 1e-4f && fabsf(polished->pbr_bump - 0.6f) < 1e-4f && polished->pbr_metalness == 0.0f);
+    CHECK(plain && !plain->has_pbr && plain->pbr_roughness < 0.0f && plain->pbr_bump == 1.0f);
     u16 lamp_on = block_parse_state("gems:lamp[lit=on]"), lamp_off = block_parse_state("gems:lamp[lit=off]");
     u16 ruby = block_parse_state("gems:ruby_block");
     CHECK(lamp_on != STATE_UNLOADED && lamp_off != STATE_UNLOADED && ruby != STATE_UNLOADED);
@@ -2104,6 +2158,9 @@ int selftest_run(void) {
         {"worldgen", test_worldgen_data_driven},
         {"worldgen-features", test_worldgen_features_and_structures},
         {"hydrology", test_hydrology},
+        {"trees", test_trees},
+        {"biomes", test_biomes},
+        {"forever-worlds", test_forever_worlds},
         {"world-light-mesh", test_world_and_mesh},
         {"vfs", test_vfs},
         {"mod-storage", test_mod_storage},
@@ -2122,6 +2179,17 @@ int selftest_run(void) {
         groups[i].fn();
         printf("selftest %-14s %s\n", groups[i].name, g_failures == before ? "ok" : "FAILED");
     }
+    printf("selftest total: %d checks, %d failures\n", g_checks, g_failures);
+    return g_failures;
+}
+
+/* ./build/dfe --headless --test-forever-worlds [--seed N]: only the Forever Worlds group. */
+void forever_test_set_seed(u64 seed);
+int selftest_run_forever(u64 seed) {
+    if (seed) forever_test_set_seed(seed);
+    int before = g_failures;
+    test_forever_worlds();
+    printf("selftest forever-worlds %s\n", g_failures == before ? "ok" : "FAILED");
     printf("selftest total: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures;
 }

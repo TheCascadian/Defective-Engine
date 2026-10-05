@@ -1,0 +1,35 @@
+{
+  "bump_strength": 1.0,
+  "height_depth": 0.0625,
+  "normal_strength": 1.0,
+  "fade_start": 16,
+  "fade_end": 32,
+
+  "specular_strength": 1.0,
+  "roughness_scale": 1.0,
+  "roughness_bias": 0.0,
+  "metalness_scale": 1.0,
+  "sky_specular": 0.3,
+
+  "diffuse_response": 1.0,
+  "sky_lean": 1.0,
+  "cavity_ao": 0.5,
+  "shade_floor": 0.0,
+
+  "self_shadow_strength": 0.5,
+  "self_shadow_reach": 1.0,
+  "self_shadow_steps": 5,
+  "shadow_tap_cap": 4,
+
+  "parallax_depth": 0.02,
+  "parallax_steps": 8,
+  "texel_bevel": 0.0,
+  "texel_bevel_width": 0.4,
+  "block_bevel": 0.0,
+  "block_bevel_width": 0.12,
+  "texel_outline": 0.0,
+  "block_outline": 0.0,
+  "albedo_contrast": 1.1,
+  "saturation": 1.08,
+  "luminance_relief": 0.9
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experimental feature registry (data/dfe/experimental_features.json)",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "name", "version", "released", "status", "description"],
+    "additionalProperties": false,
+    "properties": {
+      "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,47}$" },
+      "name": { "type": "string", "minLength": 1, "maxLength": 63 },
+      "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+      "released": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+      "status": { "enum": ["Stable", "Experimental", "Deprecated", "Requires new world"] },
+      "requires_new_world": { "type": "boolean", "default": false },
+      "description": { "type": "string", "minLength": 1, "maxLength": 1023 }
+    }
+  }
+}

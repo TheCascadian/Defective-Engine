@@ -385,51 +385,54 @@ static bool controls_rows(float cx, int height) {
     return false;
 }
 
-/* Draws the graphics screen centred on cx and returns true when Done was pressed. */
-static bool graphics_rows(float cx, int height) {
-    if (g_in_controls) return controls_rows(cx, height);
+/* Copies the active PBR values into the player's own set and switches to it, so a slider starts from what is on screen. */
+static void pbr_make_custom(void) {
+    if (!strcmp(g_settings.texture_quality, "custom")) return;
+    g_settings.pbr = g_pbr;
+    snprintf(g_settings.texture_quality, sizeof g_settings.texture_quality, "custom");
+}
+
+/* Texture quality: position 0 follows data/dfe/pbr.json, 1..n are the presets; "custom" is entered by editing a slider. */
+static void step_texture_quality(int step) {
+    int n = pbr_preset_count() + 1, cur = 0;
+    for (int i = 0; i < pbr_preset_count(); i++) if (!strcmp(g_settings.texture_quality, pbr_preset_id(i))) cur = i + 1;
+    cur = wrap(cur + step, n);
+    snprintf(g_settings.texture_quality, sizeof g_settings.texture_quality, "%s", cur ? pbr_preset_id(cur - 1) : "");
+    pbr_resolve();
+}
+
+static void step_texture_style(int step) {
+    int n = pbr_style_count(), cur = 0;
+    for (int i = 0; i < n; i++) if (!strcmp(g_settings.texture_style, pbr_style_id(i))) cur = i;
+    snprintf(g_settings.texture_style, sizeof g_settings.texture_style, "%s", pbr_style_id(wrap(cur + step, n)));
+    pbr_resolve();
+}
+
+static const char *texture_style_label(void) {
+    for (int i = 0; i < pbr_style_count(); i++) if (!strcmp(g_settings.texture_style, pbr_style_id(i))) return pbr_style_name(i);
+    return pbr_style_name(0);
+}
+
+/* Shaders sub-menu: pages of PBR sliders plus the shadow, godray and fog options. */
+static bool g_in_shaders;
+static int g_shader_page;
+static const char *SHADER_PAGES[] = {"Relief", "Lighting", "Contact Shadows", "Atmosphere", "Depth & Bevel"};
+
+/* Shadow, godray and fog rows, shared with the Atmosphere page. */
+static void atmosphere_rows(UIWStack *rows_p, bool *changed_p) {
+    UIWStack rows = *rows_p;
+    bool changed = *changed_p;
     char v[64];
-    bool changed = false;
-    const Preset *p = preset_find(g_settings.preset);
     int step;
-    screen_title(cx, U(15), "Graphics Settings");
-    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
-    UIWRect row = uiw_stack_next(&rows, BH());
-    UIWStack cells = uiw_hstack(row, U(10));
-    UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    if ((step = option_button(1, left.x, left.y, "Preset", p ? p->name : g_settings.preset))) { step_preset(step); changed = true; }
-    if (g_settings.render_distance > 0) snprintf(v, sizeof v, "%d chunks", g_settings.render_distance);
-    else snprintf(v, sizeof v, "preset (%d)", p ? p->render_distance : 0);
-    if ((step = option_button(2, right.x, right.y, "Render Distance", v))) { step_render_distance(step); changed = true; }
-
-    row = uiw_stack_next(&rows, MAX(U(30), text_size() * 1.9f));
-    cells = uiw_hstack(row, U(10));
-    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    snprintf(v, sizeof v, "%s", g_settings.dynamic_resolution < 0 ? "Preset" : g_settings.dynamic_resolution ? "On" : "Off");
-    if ((step = option_button(3, left.x, left.y, "Dynamic Res", v))) { step_dynamic(step); changed = true; }
-    snprintf(v, sizeof v, "%d%%", (int)(g_settings.render_scale * 100.0f + 0.5f));
-    mc_text(right.x, right.y, text_size() * 0.9f, COL_WHITE, "Render Scale");
-    mc_text(right.x + right.w - ui_text_width(text_size() * 0.9f, v), right.y, text_size() * 0.9f, COL_WHITE, v);
-    UIWRect slider = {right.x, right.y + text_size(), right.w, right.h - text_size()};
-    if (uiw_slider(&g_settings_ui, 4, slider, &g_settings.render_scale, SCALE_MIN, SCALE_MAX, SCALE_STEP)) changed = true;
-    uiw_tooltip(right, "Render scale (0.50 to 1.00)", text_size());
-
-    row = uiw_stack_next(&rows, BH());
-    cells = uiw_hstack(row, U(10));
-    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
-    snprintf(v, sizeof v, "%d", (int)g_settings.fov_deg);
-    if ((step = option_button(5, left.x, left.y, "FOV", v))) { step_fov(step); changed = true; }
-    if ((step = option_button(6, right.x, right.y, "VSync", g_settings.vsync ? "On" : "Off"))) { g_settings.vsync = !g_settings.vsync; changed = true; }
+    UIWRect row, left, right;
+    UIWStack cells;
+    const Preset *cur_preset = preset_find(g_settings.preset);
     row = uiw_stack_next(&rows, BH());
     cells = uiw_hstack(row, U(10));
     left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
     if (option_button(10, left.x, left.y, "Shadows", g_settings.shadows_off ? "Off" : "On")) { g_settings.shadows_off = !g_settings.shadows_off; changed = true; }
     const ShadowLevel *sl = g_settings.shadow_quality[0] ? shadow_level_find(g_settings.shadow_quality) : NULL;
-    const Preset *cur_preset = preset_find(g_settings.preset);
     const ShadowLevel *auto_level = cur_preset ? shadow_level_find(cur_preset->shadows) : NULL;
     if (sl) snprintf(v, sizeof v, "%s", sl->name);
     else snprintf(v, sizeof v, "Preset (%s)", auto_level ? auto_level->name : "none");
@@ -476,6 +479,129 @@ static bool graphics_rows(float cx, int height) {
     if (fq) snprintf(v, sizeof v, "%s", fq->name);
     else snprintf(v, sizeof v, "Preset (%s)", auto_fq ? auto_fq->name : "none");
     if ((step = option_button(23, right.x, right.y, "Fog Quality", v))) { step_fog_quality(step); changed = true; }
+    *rows_p = rows;
+    *changed_p = changed;
+}
+
+static bool shaders_rows(float cx, int height) {
+    screen_title(cx, U(15), "Shaders");
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, BH());
+    UIWStack cells = uiw_hstack(row, U(10));
+    UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    bool changed = false;
+    char v[64];
+    int ti = -1, step;
+    for (int i = 0; i < pbr_preset_count(); i++) if (!strcmp(g_settings.texture_quality, pbr_preset_id(i))) ti = i;
+    if (!strcmp(g_settings.texture_quality, "custom")) snprintf(v, sizeof v, "Custom");
+    else if (ti >= 0) snprintf(v, sizeof v, "%s", pbr_preset_name(ti));
+    else snprintf(v, sizeof v, "Default");
+    if ((step = option_button(40, left.x, left.y, "Texture Quality", v))) { step_texture_quality(step); changed = true; }
+    if ((step = option_button(43, right.x, right.y, "Style", texture_style_label()))) { step_texture_style(step); changed = true; }
+    row = uiw_stack_next(&rows, BH());
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if ((step = option_button(41, left.x, left.y, "Page", SHADER_PAGES[g_shader_page]))) g_shader_page = wrap(g_shader_page + step, ARRAY_LEN(SHADER_PAGES));
+    if (option_button(42, right.x, right.y, "PBR Surfaces", g_pbr.f.enabled > 0.5f ? "On" : "Off")) {
+        pbr_make_custom();
+        g_settings.pbr.f.enabled = g_settings.pbr.f.enabled > 0.5f ? 0.0f : 1.0f;
+        changed = true;
+    }
+    row = uiw_stack_next(&rows, BH());
+    if (button(row.x, row.y, row.w, "Reset Page", true)) {
+        pbr_make_custom();
+        const PbrCfg *hi = pbr_preset_cfg(3);
+        for (int i = 1; i < PBR_FIELD_COUNT; i++) if (PBR_FIELDS[i].group == g_shader_page) g_settings.pbr.v[i] = hi->v[i];
+        changed = true;
+    }
+    if (g_shader_page == 3) {
+        atmosphere_rows(&rows, &changed);
+    } else {
+        int cell = 0;
+        cells = (UIWStack){0};
+        for (int i = 1; i < PBR_FIELD_COUNT; i++) {
+            const PbrField *fd = &PBR_FIELDS[i];
+            if (fd->group != g_shader_page) continue;
+            if (cell % 2 == 0) {
+                row = uiw_stack_next(&rows, MAX(U(30), text_size() * 1.9f));
+                cells = uiw_hstack(row, U(10));
+            }
+            UIWRect c = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+            snprintf(v, sizeof v, "%.*f", fd->decimals, g_pbr.v[i]);
+            mc_text(c.x, c.y, text_size() * 0.9f, COL_WHITE, fd->label);
+            mc_text(c.x + c.w - ui_text_width(text_size() * 0.9f, v), c.y, text_size() * 0.9f, COL_WHITE, v);
+            UIWRect slider = {c.x, c.y + text_size(), c.w, c.h - text_size()};
+            float val = g_pbr.v[i];
+            if (uiw_slider(&g_settings_ui, 100 + i, slider, &val, fd->lo, fd->hi, fd->step)) {
+                pbr_make_custom();
+                g_settings.pbr.v[i] = val;
+                changed = true;
+            }
+            cell++;
+        }
+    }
+    if (changed) { pbr_resolve(); settings_changed(); }
+    float y = rows.cursor - rows.gap + U(2);
+    mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, "Editing a slider switches Texture Quality to Custom.");
+    float done_y = MAX(y + U(22), (float)height - U(34));
+    if (button(cx - UW(WIDE_W) * 0.5f, done_y, UW(WIDE_W), "Done", true)) g_in_shaders = false;
+    return false;
+}
+
+/* Draws the graphics screen centred on cx and returns true when Done was pressed. */
+static bool graphics_rows(float cx, int height) {
+    if (g_in_controls) return controls_rows(cx, height);
+    if (g_in_shaders) return shaders_rows(cx, height);
+    char v[64];
+    bool changed = false;
+    const Preset *p = preset_find(g_settings.preset);
+    int step;
+    screen_title(cx, U(15), "Graphics Settings");
+    UIWStack rows = uiw_vstack((UIWRect){cx - UW(155), U(40), UW(310), 0}, U(4));
+    UIWRect row = uiw_stack_next(&rows, BH());
+    UIWStack cells = uiw_hstack(row, U(10));
+    UIWRect left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    UIWRect right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    if ((step = option_button(1, left.x, left.y, "Preset", p ? p->name : g_settings.preset))) { step_preset(step); changed = true; }
+    if (g_settings.render_distance > 0) snprintf(v, sizeof v, "%d chunks", g_settings.render_distance);
+    else snprintf(v, sizeof v, "preset (%d)", p ? p->render_distance : 0);
+    if ((step = option_button(2, right.x, right.y, "Render Distance", v))) { step_render_distance(step); changed = true; }
+
+    row = uiw_stack_next(&rows, MAX(U(30), text_size() * 1.9f));
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    snprintf(v, sizeof v, "%s", g_settings.dynamic_resolution < 0 ? "Preset" : g_settings.dynamic_resolution ? "On" : "Off");
+    if ((step = option_button(3, left.x, left.y, "Dynamic Res", v))) { step_dynamic(step); changed = true; }
+    snprintf(v, sizeof v, "%d%%", (int)(g_settings.render_scale * 100.0f + 0.5f));
+    mc_text(right.x, right.y, text_size() * 0.9f, COL_WHITE, "Render Scale");
+    mc_text(right.x + right.w - ui_text_width(text_size() * 0.9f, v), right.y, text_size() * 0.9f, COL_WHITE, v);
+    UIWRect slider = {right.x, right.y + text_size(), right.w, right.h - text_size()};
+    if (uiw_slider(&g_settings_ui, 4, slider, &g_settings.render_scale, SCALE_MIN, SCALE_MAX, SCALE_STEP)) changed = true;
+    uiw_tooltip(right, "Render scale (0.50 to 1.00)", text_size());
+
+    row = uiw_stack_next(&rows, BH());
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    snprintf(v, sizeof v, "%d", (int)g_settings.fov_deg);
+    if ((step = option_button(5, left.x, left.y, "FOV", v))) { step_fov(step); changed = true; }
+    if ((step = option_button(6, right.x, right.y, "VSync", g_settings.vsync ? "On" : "Off"))) { g_settings.vsync = !g_settings.vsync; changed = true; }
+    row = uiw_stack_next(&rows, BH());
+    cells = uiw_hstack(row, U(10));
+    left = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    right = uiw_stack_next(&cells, (row.w - U(10)) * 0.5f);
+    {
+        int ti = -1;
+        for (int i = 0; i < pbr_preset_count(); i++) if (!strcmp(g_settings.texture_quality, pbr_preset_id(i))) ti = i;
+        if (!strcmp(g_settings.texture_quality, "custom")) snprintf(v, sizeof v, "Custom");
+        else if (ti >= 0) snprintf(v, sizeof v, "%s", pbr_preset_name(ti));
+        else snprintf(v, sizeof v, "Default");
+        if ((step = option_button(40, left.x, left.y, "Texture Quality", v))) { step_texture_quality(step); changed = true; }
+    }
+    if (button(right.x, right.y, right.w, "Shaders...", true)) { g_in_shaders = true; g_shader_page = 0; }
     float y = rows.cursor - rows.gap + U(2);
     mc_text_centered(cx, y, text_size() * 0.85f, COL_GREY, "Right click steps backwards. Render scale applies while dynamic resolution is off.");
     if (changed) settings_changed();
@@ -545,6 +671,7 @@ static bool settings_rows(float cx, int height) {
 static void leave_settings(void) {
     g_in_controls = false;
     g_in_graphics = false;
+    g_in_shaders = false;
     g_in_interface = false;
     g_in_data = false;
     g_wipe_stage = 0;
@@ -571,6 +698,7 @@ static bool settings_step_back(void) {
     if (g_in_data && g_wipe_stage) { g_wipe_stage = 0; return true; }
     if (g_in_data) { g_in_data = false; return true; }
     if (g_in_controls) { g_in_controls = false; return true; }
+    if (g_in_shaders) { g_in_shaders = false; return true; }
     if (g_in_graphics) { g_in_graphics = false; return true; }
     if (g_in_interface) { g_in_interface = false; return true; }
     return false;
@@ -604,11 +732,12 @@ void menu_draw(int width, int height) {
         leave_settings();
         g_screen = SCREEN_PAUSE;
     }
+    uiw_tooltip_draw_all();
 }
 
 /* -------------------------------------------------------------- title menu */
 
-typedef enum TitleScreen { TS_MAIN, TS_WORLDS, TS_CREATE, TS_EDIT, TS_DELETE, TS_OPTIONS } TitleScreen;
+typedef enum TitleScreen { TS_MAIN, TS_WORLDS, TS_CREATE, TS_EDIT, TS_DELETE, TS_OPTIONS, TS_EXPERIMENTAL } TitleScreen;
 
 typedef struct WorldInfo {
     char seed[32];
@@ -625,6 +754,7 @@ typedef struct TitleState {
     double last_click_time;
     char name[FIELD_CAP], seed[FIELD_CAP];
     int field; /* 0 name, 1 seed */
+    int exp_selected; /* row highlighted in the Experimental Features screen */
     char message[160];
     const char *splash;
 } TitleState;
@@ -776,6 +906,7 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
         go(t, TS_CREATE);
         t->field = 0;
         t->name[0] = t->seed[0] = 0;
+        experimental_selection_clear();
     }
     if (button(bx, row2, third, "Edit", has)) {
         go(t, TS_EDIT);
@@ -789,6 +920,84 @@ static bool title_worlds(TitleState *t, int width, int height, char *world_out, 
         return true;
     }
     return false;
+}
+
+/* Draws `text` wrapped to `w`, returning the y below the last line. */
+static float wrapped_text(float x, float y, float w, float size, u32 color, const char *text) {
+    char line[768] = "";
+    int n = 0;
+    const char *p = text;
+    while (*p) {
+        const char *e = p;
+        while (*e && *e != ' ') e++;
+        char word[96];
+        int wl = (int)MIN((size_t)(e - p), sizeof word - 1);
+        memcpy(word, p, (size_t)wl);
+        word[wl] = 0;
+        char trial[768];
+        snprintf(trial, sizeof trial, "%s%s%s", line, n ? " " : "", word);
+        if (n && ui_text_width(size, trial) > w) {
+            mc_text(x, y, size, color, line);
+            y += size + U(5);
+            snprintf(line, sizeof line, "%s", word);
+        } else {
+            snprintf(line, sizeof line, "%s", trial);
+        }
+        n = 1;
+        p = *e ? e + 1 : e;
+    }
+    if (n) { mc_text(x, y, size, color, line); y += size + U(5); }
+    return y;
+}
+
+/* The Experimental Features screen of world creation: one row per registry entry and a detail pane for the highlighted one. */
+static void title_experimental(TitleState *t, int width, int height) {
+    float cx = (float)width * 0.5f;
+    dirt_background(width, height, 64);
+    screen_title(cx, U(14), "Experimental Features");
+    float size = text_size();
+    float list_w = MIN((float)width - U(24), UW(WIDE_W) * 1.6f), x = cx - list_w * 0.5f;
+    float row_h = ceilf(size * 2.4f + U(18)), y = U(52), tog_w = ui_text_width(size, " Off ") + U(24);
+    int n = experimental_count();
+    t->exp_selected = CLAMP(t->exp_selected, 0, MAX(0, n - 1));
+    for (int i = 0; i < n; i++) {
+        const ExpFeatureDef *d = experimental_def(i);
+        bool sel = i == t->exp_selected, on = experimental_selection_get(d->id);
+        ui_rect(x - U(1), y - U(1), list_w + U(2), row_h + U(2), sel ? COL_WHITE : rgba(70, 70, 70, 255));
+        ui_rect(x, y, list_w, row_h, COL_BLACK);
+        char head[160], sub[256];
+        snprintf(head, sizeof head, "%s   v%s", d->name, d->version);
+        snprintf(sub, sizeof sub, "%s%s", d->status, d->requires_new_world ? "  |  Requires new world" : "");
+        mc_text(x + U(10), y + U(8), size, COL_WHITE, head);
+        mc_text(x + U(10), y + U(8) + size + U(5), size * 0.85f, COL_GREY, sub);
+        float tx = x + list_w - tog_w - U(10), ty = y + (row_h - BH()) * 0.5f;
+        bool hot = hovered(tx, ty, tog_w, BH());
+        u32 base = on ? rgba(52, 150, 62, 255) : rgba(96, 96, 96, 255);
+        ui_rect(tx, ty, tog_w, BH(), rgba(20, 20, 20, 255));
+        ui_rect(tx + U(1), ty + U(1), tog_w - U(2), BH() - U(2), hot ? rgba(MIN(255, (int)(base & 255) + 30), MIN(255, (int)((base >> 8) & 255) + 30), MIN(255, (int)((base >> 16) & 255) + 30), 255) : base);
+        mc_text_centered(tx + tog_w * 0.5f, ty + (BH() - size) * 0.5f, size, COL_WHITE, on ? "On" : "Off");
+        if (hot && g_in.mouse_pressed[GLFW_MOUSE_BUTTON_LEFT]) { experimental_selection_set(d->id, !on); t->exp_selected = i; }
+        else if (clicked(x, y, list_w, row_h, GLFW_MOUSE_BUTTON_LEFT)) t->exp_selected = i;
+        y += row_h + U(10);
+    }
+    if (n) {
+        const ExpFeatureDef *d = experimental_def(t->exp_selected);
+        float py = y + U(8), pw = list_w, pad = U(12);
+        ui_rect(x, py, pw, (float)height - py - PITCH() - U(18), rgba(0, 0, 0, 150));
+        float ty = py + pad;
+        mc_text(x + pad, ty, size * 1.1f, COL_YELLOW, d->name);
+        ty += size * 1.1f + U(6);
+        char meta[200];
+        snprintf(meta, sizeof meta, "Version %s  |  Released %s  |  %s", d->version, d->released, d->status);
+        mc_text(x + pad, ty, size * 0.85f, COL_GREY, meta);
+        ty += size * 0.85f + U(8);
+        ui_rect(x + pad, ty, pw - 2 * pad, U(1), rgba(90, 90, 90, 255));
+        ty += U(10);
+        wrapped_text(x + pad, ty, pw - 2 * pad, size * 0.95f, COL_WHITE, d->description);
+    } else {
+        mc_text_centered(cx, y + U(10), size, COL_GREY, "No experimental features are registered.");
+    }
+    if (button(cx - UW(WIDE_W) * 0.5f, (float)height - PITCH() - U(8), UW(WIDE_W), "Done", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_CREATE);
 }
 
 /* Returns true when the player asked for a new world; the choice is written to world_out and seed_out. */
@@ -806,6 +1015,13 @@ static bool title_create(TitleState *t, int width, int height, char *world_out, 
     text_field(cx, field_y, 10, "World Name", t->name, t->field == 0, true);
     field_y += BH() + U(26);
     text_field(cx, field_y, 11, "Seed (empty for random, any text works)", t->seed, t->field == 1, false);
+    int exp_on = 0;
+    for (int i = 0; i < experimental_count(); i++) exp_on += experimental_selection_get(experimental_def(i)->id);
+    char exp_label[64];
+    if (exp_on) snprintf(exp_label, sizeof exp_label, "Experimental Features (%d on) >", exp_on);
+    else snprintf(exp_label, sizeof exp_label, "Experimental Features >");
+    if (button(bx, y, UW(WIDE_W), exp_label, experimental_count() > 0)) go(t, TS_EXPERIMENTAL);
+    y += PITCH();
     bool create = button(bx, y, UW(WIDE_W), "Create New World", true) || key_pressed(GLFW_KEY_ENTER) || key_pressed(GLFW_KEY_KP_ENTER);
     y += PITCH();
     if (button(bx, y, UW(WIDE_W), "Cancel", true) || key_pressed(GLFW_KEY_ESCAPE)) go(t, TS_WORLDS);
@@ -922,6 +1138,7 @@ bool menu_title(char *world_out, size_t cap, u64 *seed_out, bool *seed_set) {
         case TS_MAIN: title_main(&t, g_win.width, g_win.height); break;
         case TS_WORLDS: chosen = title_worlds(&t, g_win.width, g_win.height, world_out, cap); break;
         case TS_CREATE: chosen = title_create(&t, g_win.width, g_win.height, world_out, cap, seed_out, seed_set); break;
+        case TS_EXPERIMENTAL: title_experimental(&t, g_win.width, g_win.height); break;
         case TS_EDIT: title_edit(&t, g_win.width, g_win.height); break;
         case TS_DELETE: title_delete(&t, g_win.width, g_win.height); break;
         case TS_OPTIONS:

@@ -10,7 +10,13 @@ static void print_usage(void) {
     puts("usage: dfe [options]\n"
          "  --benchmark          fly the fixed camera path and print frame statistics\n"
          "  --selftest           run the engine self-tests and exit\n"
+"  --forever-bench      time generation with Forever Worlds off, on, and blending; write JSON to --output FILE\n"
+"  --test-forever-worlds  run only the Forever Worlds tests (honours --seed)\n"
          "  --dump-hydrology SEED X0 Z0 X1 Z1  print water samples along a line\n"
+         "  --dump-biomes SEED [N] [STEP] [KERNEL]  biome coverage over an NxN grid of columns STEP blocks apart (kernel 0 or 1)\n"
+         "  --dump-trees SEED X0 Z0 X1 Z1      list every planned tree (species, size) in the box\n"
+         "  --dump-tree-shape ID SEED X Z      draw one tree layer by layer; ID like base:oak\n"
+         "  --tree-bench SEED [RADIUS]         time chunk generation with the original trees and the data-driven ones\n"
          "  --dump-rivers SEED   list river paths, widths and outlets near the origin\n"
          "  --dump-spawns SEED X Z RADIUS      count trees and plants by habitat; fails if any stand in water\n"
          "  --compare-worldgen SEED A B        generate twice in chunk order A and B (forward, reverse, spiral, shuffle) and diff\n"
@@ -56,9 +62,12 @@ static bool parse_args(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         bool has_val = i + 1 < argc;
-        if (!strncmp(a, "--dump-", 7) || !strcmp(a, "--compare-worldgen")) { g_diag_argc = argc - i; g_diag_argv = argv + i; return true; }
+        if (!strncmp(a, "--dump-", 7) || !strcmp(a, "--compare-worldgen") || !strcmp(a, "--tree-bench")) { g_diag_argc = argc - i; g_diag_argv = argv + i; return true; }
         if (!strcmp(a, "--benchmark")) g_opt.benchmark = true;
         else if (!strcmp(a, "--selftest")) g_opt.selftest = true;
+        else if (!strcmp(a, "--forever-bench")) { g_opt.forever_bench = true; g_opt.headless = true; }
+        else if (!strcmp(a, "--output") && has_val) snprintf(g_opt.output, sizeof g_opt.output, "%s", argv[++i]);
+        else if (!strcmp(a, "--test-forever-worlds")) { g_opt.test_forever = true; g_opt.headless = true; }
         else if (!strcmp(a, "--repair-world") && has_val) { snprintf(g_opt.world_name, sizeof g_opt.world_name, "%s", argv[++i]); g_opt.repair_world = true; }
         else if (!strcmp(a, "--no-vsync")) g_opt.no_vsync = true;
         else if (!strcmp(a, "--hidden")) g_opt.hidden_window = true;
@@ -263,6 +272,7 @@ static bool boot_content(bool with_gl) {
     registry_load_atmosphere();
     registry_load_presets();
     registry_load_entities();
+    experimental_load();
     if (data_error_count() > known_errors) {
         LOGE("%d content error(s) found; the first is: %s", data_error_count() - known_errors, data_error_text(known_errors));
         errors_screen("Game content has errors", false);
@@ -405,6 +415,14 @@ static int run_viewer(void) {
         snprintf(dir, sizeof dir, "saves/%s", g_opt.world_name);
         if (!save_open(dir, seed)) return 1;
         seed = save_seed();
+        if (save_was_created() && experimental_selection_apply(save_meta())) save_meta_flush();
+        if (experimental_enabled(save_meta(), "forever_worlds")) {
+            char ferr[400];
+            if (!forever_worlds_start(save_dir(), ferr, sizeof ferr)) {
+                LOGE("Forever Worlds cannot start: %s", ferr);
+                return 1;
+            }
+        } else forever_worlds_set_active(false);
     }
     world_init(seed);
     entity_world_init(seed);
@@ -652,6 +670,8 @@ int main(int argc, char **argv) {
     if (!setup_vfs()) return 1;
     if (g_diag_argv) return hydro_diag_run(g_diag_argc, g_diag_argv);
     if (g_opt.selftest) return selftest_run() == 0 ? 0 : 1;
+    if (g_opt.forever_bench) return forever_benchmark(g_opt.output, g_opt.seed);
+    if (g_opt.test_forever) return selftest_run_forever(g_opt.seed) == 0 ? 0 : 1;
     if (g_opt.repair_world) {
         char dir[600]; snprintf(dir, sizeof dir, "saves/%s", g_opt.world_name);
         return save_repair_world(dir) ? 0 : 1;

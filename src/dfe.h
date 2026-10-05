@@ -470,6 +470,12 @@ typedef struct BlockDef {
     int fluid_reach;      /* horizontal steps a flow travels from its source */
     bool fluid_infinite;  /* two adjacent sources over solid ground make a third, as in a pond */
     int fluid_level_prop; /* index of the "level" property, -1 for non-fluids */
+    /* Optional "pbr" object. Applies to every face texture of the block; the first block naming a texture wins. */
+    bool has_pbr;
+    char pbr_normal[64];   /* explicit normal map id, empty to use the <texture>_n companion */
+    float pbr_roughness;   /* overrides the _r map's roughness channel; negative when unset */
+    float pbr_metalness;   /* 0 to 1 */
+    float pbr_bump;        /* height bump multiplier, 0 to 2 */
 } BlockDef;
 
 extern BlockDef *g_blocks[];
@@ -513,7 +519,9 @@ typedef struct TextureSet {
     int tile_size;
     int layer_count;
     GLuint gl_array;
-    GLuint gl_anim; /* RG8 per layer: frame count, frames per 4 seconds */
+    GLuint gl_anim; /* RGBA8 per layer: frame count, frames per 4 seconds, PBR bump (0 = no PBR), metalness */
+    GLuint gl_normal; /* RGB8 array, same layers as gl_array: tangent-space normal, flat where a layer has none */
+    GLuint gl_rh;     /* RG8 array, same layers: roughness, height */
     u8 *pixels;     /* RGBA of every layer at full size, tile_size squared each */
     StrMap name_to_layer;
 } TextureSet;
@@ -659,11 +667,46 @@ typedef struct SaveMeta {
     char equip_item[4][SAVE_BLOCK_NAME_LEN];
     char equip_meta[4][SAVE_ITEM_META_LEN];
     u16 equip_durability[4];
+    /* Experimental features chosen for this world (see experimental.h). Persisted as "experimental_features". */
+    int exp_count;
+    struct { char id[48]; bool enabled; char enabled_version[24]; char enabled_at[32]; } exp[8];
+    bool cgm_present; /* a chunk generation record has been written, so turning Forever Worlds off loses tracking */
 } SaveMeta;
 /* Mod-scoped save data. Each mod gets its own JSON object under the active world save. */
 bool mod_storage_set(const char *mod_id, const char *key, const Json *value);
 const Json *mod_storage_get(const char *mod_id, const char *key);
 bool mod_storage_remove(const char *mod_id, const char *key);
+/* ------------------------------------------------------- experimental.c */
+
+#define EXP_MAX_FEATURES 8
+typedef struct ExpFeatureDef {
+    char id[48], name[64], version[24], released[16], status[32];
+    bool requires_new_world;
+    char description[1024];
+} ExpFeatureDef;
+/* Loads data/dfe/experimental_features.json through the VFS. Reloading replaces the table. Returns the feature count. */
+int experimental_load(void);
+int experimental_count(void);
+const ExpFeatureDef *experimental_def(int i);
+const ExpFeatureDef *experimental_find(const char *id);
+typedef enum { EXP_OK, EXP_UNKNOWN, EXP_NEEDS_CONFIRM, EXP_UNCHANGED } ExpResult;
+/* Flips one feature in a world's metadata. Disabling a feature that is on, or enabling
+ * it in a world that already has chunks, needs `confirmed`; without it the call changes nothing, returns EXP_NEEDS_CONFIRM
+ * and writes the warning to `warn`. `world_has_chunks` is false for a world being created. */
+ExpResult experimental_set(SaveMeta *m, const char *id, bool enable, bool world_has_chunks, bool confirmed, char *warn, size_t warn_cap);
+bool experimental_enabled(const SaveMeta *m, const char *id);
+void experimental_write_json(JsonWriter *w, const SaveMeta *m);
+void experimental_read_json(SaveMeta *m, const Json *obj);
+/* The create-world screen's choices, applied to the new world's metadata once it exists. */
+void experimental_selection_clear(void);
+bool experimental_selection_get(const char *id);
+void experimental_selection_set(const char *id, bool on);
+bool experimental_selection_apply(SaveMeta *m);
+/* Runtime gate: true only when the world has Forever Worlds on. Set by main after the world opens. */
+bool forever_worlds_active(void);
+/* Loads the epoch registry and the world's CGM records, then switches generation on.  Hard error: false and `err`. */
+bool forever_worlds_start(const char *save_dir, char *err, size_t err_cap);
+void forever_worlds_set_active(bool on);
 typedef struct SavedColumn {
     int lo, hi;
     u16 deep_state;
@@ -672,6 +715,12 @@ typedef struct SavedColumn {
 /* Opens or creates a world folder. The seed argument is used only when the world is new. */
 bool save_open(const char *dir, u64 default_seed);
 bool save_active(void);
+/* Rewrites world.json now (the player normally gets it on close). Used after changing meta outside play. */
+bool save_meta_flush(void);
+/* True when save_open created the world folder on this call. */
+bool save_was_created(void);
+bool save_has_column(int cx, int cz); /* stored or queued; reads nothing */
+const char *save_dir(void);
 u64 save_seed(void);
 SaveMeta *save_meta(void);
 /* entities.json in the world folder (see entity_save). Read returns NULL when the file does not exist. */
@@ -719,6 +768,8 @@ int gen_feature_count(void);
 int gen_structure_count(void);
 /* Fills `states` (H*1024 entries, index (ylayer<<10)|(z<<5)|x) for the column band. */
 void gen_column(GenScratch *s, int cx, int cz, u16 *states);
+/* Forever Worlds: re-reads the current epoch's parameters (after the registry loads or Forever Worlds is toggled). */
+void gen_refresh_epoch(void);
 int gen_sea_level(void);
 /* Shared terrain/water result for near chunks, decoration and distant LOD.
  *
@@ -748,7 +799,12 @@ typedef struct GenHydrologySample {
 } GenHydrologySample;
 void gen_hydrology_at(float x, float z, GenHydrologySample *out);
 /* How many times gen_hydrology_at has run since the last reset; tests use it to prove columns are sampled once. */
+int gen_sample_biome(int kernel, int wx, int wz, float *h_out); /* biome index of a column under kernel 0 or 1; diagnostics and tests */
+const char *gen_biome_id(int index);
+int gen_biome_table_size(int kernel);
 const char *gen_habitat_at(const GenHydrologySample *h); /* dry, shore, wetland, river, lake or ocean */
+int tree_diag_run(int argc, char **argv); /* --dump-trees, --dump-tree-shape, --tree-bench */
+int biome_diag_run(int argc, char **argv); /* --dump-biomes */
 int hydro_diag_run(int argc, char **argv); /* --dump-hydrology, --dump-rivers, --dump-spawns, --compare-worldgen */
 u64 gen_hydrology_calls(void);
 void gen_hydrology_calls_reset(void);
@@ -926,6 +982,29 @@ typedef struct FogLevel {
     float sun_boost;          /* how much sunlight increases the fog when the sun is up */
 } FogLevel;
 
+/* PBR surface tuning (scene.c). One float per field so the Shaders menu and settings.json treat it as a table;
+ * `enabled`, `self_shadow_steps` and `shadow_tap_cap` are whole numbers held in floats. */
+typedef struct PbrCfgNamed {
+    float enabled, bump_strength, height_depth, normal_strength, fade_start, fade_end, cavity_ao;
+    float specular_strength, sky_specular, roughness_scale, roughness_bias, metalness_scale, diffuse_response, sky_lean, shade_floor;
+    float self_shadow_strength, self_shadow_reach, self_shadow_steps, shadow_tap_cap;
+    float parallax_depth, parallax_steps, texel_bevel, texel_bevel_width, block_bevel, block_bevel_width;
+    float texel_outline, block_outline, albedo_contrast, saturation, luminance_relief;
+} PbrCfgNamed;
+#define PBR_FIELD_COUNT 30
+typedef union PbrCfg { PbrCfgNamed f; float v[PBR_FIELD_COUNT]; } PbrCfg;
+typedef struct PbrField { const char *key, *label; int group; float lo, hi, step; int decimals; } PbrField;
+extern const PbrField PBR_FIELDS[PBR_FIELD_COUNT];
+extern PbrCfg g_pbr;       /* the values the shader uses */
+int pbr_preset_count(void);
+const char *pbr_preset_id(int i);
+const char *pbr_preset_name(int i);
+const PbrCfg *pbr_preset_cfg(int i);
+int pbr_style_count(void);
+const char *pbr_style_id(int i);
+const char *pbr_style_name(int i);
+void pbr_resolve(void);    /* recomputes g_pbr from g_settings.texture_quality / g_settings.pbr */
+
 /* What the player chose, saved to settings.json. Fields at their "automatic" value follow the preset. */
 typedef struct Settings {
     char preset[PRESET_ID_MAX];
@@ -946,6 +1025,9 @@ typedef struct Settings {
     char godray_quality[PRESET_ID_MAX]; /* godray level id, empty follows the preset */
     bool fog_off;            /* near-plane fog follows the preset unless the player turns it off */
     char fog_quality[PRESET_ID_MAX]; /* fog level id, empty follows the preset */
+    char texture_quality[PRESET_ID_MAX]; /* PBR preset id, "custom" uses pbr, empty follows data/dfe/pbr.json */
+    char texture_style[PRESET_ID_MAX]; /* PBR style id (natural, clean, crisp, realistic, chunky), empty is natural */
+    PbrCfg pbr;              /* the player's own PBR values, used while texture_quality is "custom" */
     bool auto_jump_off;      /* stepping up one-block ledges without jumping; false (on) unless the player turns it off */
 } Settings;
 extern Settings g_settings;
@@ -1084,6 +1166,8 @@ void selftest_check(bool ok, const char *expr, const char *file, int line);
 #define CHECK(x) selftest_check((x), #x, __FILE__, __LINE__)
 /* Runs every registered self-test group. Returns the number of failed checks. */
 int selftest_run(void);
+int selftest_run_forever(u64 seed);
+int forever_benchmark(const char *path, u64 seed);
 
 /* ----------------------------------------------------------------- mods.c */
 
@@ -1491,7 +1575,8 @@ void hud_update(void);
 
 typedef struct Options {
     bool benchmark;
-    bool selftest;
+    bool selftest, test_forever, forever_bench;
+    char output[256];
     bool repair_world;
     bool no_vsync;
     bool hidden_window;

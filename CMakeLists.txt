@@ -90,6 +90,12 @@ add_library(dfe_engine STATIC
   src/hydro.c
   src/hydro_diag.c
   src/save.c
+  src/experimental.c
+    src/epoch.c
+  src/biome.c
+  src/biome_diag.c
+  src/trees.c
+  src/tree_diag.c
   src/mesher.c
   src/scene.c
   src/lod.c
@@ -107,11 +113,14 @@ add_library(dfe_engine STATIC
   src/modtool.c
   src/hud.c
   src/selftest.c
-  src/selftest_hydro.c)
+  src/selftest_hydro.c
+  src/selftest_trees.c
+  src/selftest_biomes.c
+  src/selftest_forever.c)
 target_include_directories(dfe_engine PUBLIC src include ${LUAJIT_BIN}/src)
 target_compile_options(dfe_engine PRIVATE ${DFE_WARN})
 if(NOT MSVC)
-  set_source_files_properties(src/gen.c src/hydro.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  set_source_files_properties(src/gen.c src/hydro.c src/trees.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
 target_link_libraries(dfe_engine PUBLIC dfe_third glfw luajit_static)
 if(UNIX)

@@ -1,6 +1,14 @@
 #include "ui_widgets.h"
 #include <GLFW/glfw3.h>
 
+typedef struct Tooltip {
+    UIWRect bounds;
+    char text[64];
+    float font_size;
+} Tooltip;
+
+static VEC(Tooltip) g_tooltips;
+
 static bool point_in_rect(double x, double y, UIWRect bounds) {
     return x >= bounds.x && x < bounds.x + bounds.w && y >= bounds.y && y < bounds.y + bounds.h;
 }
@@ -138,17 +146,27 @@ void uiw_slot(UIWRect bounds, bool selected, const char *count, UIWSlotContentFn
 
 void uiw_tooltip(UIWRect bounds, const char *text, float font_size) {
     if (!text || !text[0] || !uiw_hovered(bounds)) return;
-    float size = MAX(1.0f, font_size), scale = size / 8.0f;
-    float padding = 5.0f * scale, cursor_gap = 10.0f * scale;
-    float width = ui_text_width(size, text) + padding * 2.0f;
-    float height = size + padding * 2.0f;
-    float x = (float)g_in.mouse_x + cursor_gap, y = (float)g_in.mouse_y - 4.0f * scale;
-    if (x + width > (float)g_win.width) x = (float)g_in.mouse_x - width - cursor_gap;
-    if (y + height > (float)g_win.height) y = (float)g_win.height - height;
-    x = MAX(0.0f, x);
-    y = MAX(0.0f, y);
-    ui_rect(x, y, width, height, rgba(10, 10, 16, 230));
-    ui_text(x + padding, y + padding, size, rgba(240, 240, 250, 255), text);
+    Tooltip tt = {bounds, {0}, font_size};
+    snprintf(tt.text, sizeof tt.text, "%s", text);
+    vec_push(g_tooltips, tt);
+}
+
+void uiw_tooltip_draw_all(void) {
+    for (int i = 0; i < g_tooltips.n; i++) {
+        Tooltip *tt = &g_tooltips.d[i];
+        float size = MAX(1.0f, tt->font_size), scale = size / 8.0f;
+        float padding = 5.0f * scale, cursor_gap = 10.0f * scale;
+        float width = ui_text_width(size, tt->text) + padding * 2.0f;
+        float height = size + padding * 2.0f;
+        float x = (float)g_in.mouse_x + cursor_gap, y = (float)g_in.mouse_y - 4.0f * scale;
+        if (x + width > (float)g_win.width) x = (float)g_in.mouse_x - width - cursor_gap;
+        if (y + height > (float)g_win.height) y = (float)g_win.height - height;
+        x = MAX(0.0f, x);
+        y = MAX(0.0f, y);
+        ui_rect(x, y, width, height, rgba(10, 10, 16, 230));
+        ui_text(x + padding, y + padding, size, rgba(240, 240, 250, 255), tt->text);
+    }
+    g_tooltips.n = 0;
 }
 
 static float slider_value(float x, UIWRect bounds, float minimum, float maximum, float step) {

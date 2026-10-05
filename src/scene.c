@@ -17,6 +17,137 @@
 SceneConfig g_scene_cfg = {.render_distance = 8, .fov_deg = 75.0f, .occlusion_culling = true};
 SceneStats g_scene_stats;
 
+/* ------------------------------------------------------------- PBR tuning */
+
+/* Every PBR knob lives in PbrCfg (dfe.h, all floats so the menu and the saved file can walk it as a table). The base
+ * values come from data/dfe/pbr.json, a texture-quality preset replaces them, and "custom" uses g_settings.pbr. Each
+ * is clamped to its range. Reloaded with the shaders. */
+const PbrField PBR_FIELDS[PBR_FIELD_COUNT] = {
+    {"enabled", "PBR Surfaces", -1, 0, 1, 1, 0},
+    {"bump_strength", "Relief Strength", 0, 0, 4, 0.05f, 2},
+    {"height_depth", "Relief Depth", 0, 0, 0.5f, 0.005f, 3},
+    {"normal_strength", "Normal Strength", 0, 0, 4, 0.05f, 2},
+    {"fade_start", "Relief Fade Start", 0, 0, 256, 1, 0},
+    {"fade_end", "Relief Fade End", 0, 0, 512, 1, 0},
+    {"cavity_ao", "Cavity Darkening", 0, 0, 1, 0.05f, 2},
+    {"specular_strength", "Highlight Brightness", 1, 0, 8, 0.1f, 1},
+    {"sky_specular", "Sky Reflection", 1, 0, 4, 0.05f, 2},
+    {"roughness_scale", "Roughness Scale", 1, 0, 4, 0.05f, 2},
+    {"roughness_bias", "Roughness Bias", 1, -1, 1, 0.05f, 2},
+    {"metalness_scale", "Metalness Scale", 1, 0, 2, 0.05f, 2},
+    {"diffuse_response", "Diffuse Response", 1, 0, 3, 0.05f, 2},
+    {"sky_lean", "Sky Ambient Lean", 1, 0, 3, 0.05f, 2},
+    {"shade_floor", "Shade Floor", 1, 0, 1, 0.01f, 2},
+    {"self_shadow_strength", "Contact Shadow", 2, 0, 1, 0.05f, 2},
+    {"self_shadow_reach", "Shadow Depth", 2, 0, 8, 0.1f, 1},
+    {"self_shadow_steps", "Shadow Steps", 2, 0, 16, 1, 0},
+    {"shadow_tap_cap", "Soft Shadow Taps", 2, 1, 16, 1, 0},
+    {"parallax_depth", "Parallax Depth", 4, 0, 0.5f, 0.005f, 3},
+    {"parallax_steps", "Parallax Steps", 4, 0, 32, 1, 0},
+    {"texel_bevel", "Texel Bevel", 4, 0, 2, 0.05f, 2},
+    {"texel_bevel_width", "Texel Bevel Width", 4, 0.05f, 0.5f, 0.01f, 2},
+    {"block_bevel", "Block Edge Bevel", 4, 0, 2, 0.05f, 2},
+    {"block_bevel_width", "Block Bevel Width", 4, 0.02f, 0.5f, 0.01f, 2},
+    {"texel_outline", "Texel Outline", 4, 0, 1, 0.05f, 2},
+    {"block_outline", "Block Outline", 4, 0, 1, 0.05f, 2},
+    {"albedo_contrast", "Colour Contrast", 1, 0.5f, 2, 0.01f, 2},
+    {"saturation", "Saturation", 1, 0, 2, 0.01f, 2},
+    {"luminance_relief", "Colour Relief", 0, 0, 2, 0.05f, 2},
+};
+_Static_assert(sizeof(PbrCfg) == PBR_FIELD_COUNT * sizeof(float), "PbrCfg must be one float per PBR_FIELDS entry");
+
+static const PbrCfg PBR_HIGH = {{1, 1.0f, 0.0625f, 1.0f, 16, 32, 0.5f, 1.0f, 0.3f, 1, 0, 1, 1.0f, 1.0f, 0, 0.5f, 1.0f, 5, 4, 0.02f, 8, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.1f, 1.08f, 0.9f}};
+static const struct { const char *id, *name; PbrCfg cfg; } PBR_PRESETS[] = {
+    {"off", "Off", {{0, 1.0f, 0.0625f, 1.0f, 16, 32, 0.5f, 1.0f, 0.3f, 1, 0, 1, 1.0f, 1.0f, 0, 0.5f, 1.0f, 5, 4, 0.02f, 8, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.1f, 1.08f, 0.9f}}},
+    {"low", "Low", {{1, 0.7f, 0.0625f, 0.9f, 8, 16, 0.3f, 0.7f, 0.05f, 1, 0, 1, 0.7f, 0.6f, 0, 0.0f, 1.0f, 0, 1, 0.0f, 0, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.05f, 1.0f, 0.7f}}},
+    {"medium", "Medium", {{1, 0.85f, 0.0625f, 1.0f, 12, 24, 0.4f, 0.8f, 0.15f, 1, 0, 1, 0.8f, 0.8f, 0, 0.3f, 0.8f, 3, 2, 0.02f, 6, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.08f, 1.04f, 0.8f}}},
+    {"high", "High", {{1, 1.0f, 0.0625f, 1.0f, 16, 32, 0.5f, 1.0f, 0.3f, 1, 0, 1, 1.0f, 1.0f, 0, 0.5f, 1.0f, 5, 4, 0.02f, 8, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.1f, 1.08f, 0.9f}}},
+    {"ultra", "Ultra", {{1, 1.15f, 0.07f, 1.1f, 24, 64, 0.55f, 1.2f, 0.4f, 1, 0, 1, 1.1f, 1.1f, 0.03f, 0.7f, 1.5f, 10, 8, 0.05f, 20, 0.0f, 0.4f, 0.0f, 0.14f, 0.0f, 0.0f, 1.12f, 1.1f, 1.0f}}},
+};
+#define PBR_PRESET_N ((int)(sizeof PBR_PRESETS / sizeof PBR_PRESETS[0]))
+
+/* Texture styles scale groups of the resolved values, so a player picks a look without knowing the sliders. They apply
+ * to the named quality presets and the data file, never to "custom", whose sliders are already the final values. */
+typedef struct { const char *id, *name; float relief, parallax, bevel, outline, specular, shadow, grade; } PbrStyle;
+static const PbrStyle PBR_STYLES[] = {
+    {"natural", "Natural", 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    {"clean", "Clean", 0.8f, 0.5f, 0.0f, 0.0f, 0.8f, 1.0f, 0.6f},
+    {"crisp", "Crisp", 1.0f, 0.3f, 1.4f, 1.5f, 1.0f, 0.7f, 1.0f},
+    {"realistic", "Realistic", 1.0f, 1.6f, 0.3f, 0.0f, 1.2f, 1.3f, 0.7f},
+    {"chunky", "Chunky", 1.3f, 1.2f, 2.0f, 2.0f, 1.0f, 1.0f, 1.3f},
+};
+#define PBR_STYLE_N ((int)(sizeof PBR_STYLES / sizeof PBR_STYLES[0]))
+int pbr_style_count(void) { return PBR_STYLE_N; }
+const char *pbr_style_id(int i) { return i >= 0 && i < PBR_STYLE_N ? PBR_STYLES[i].id : ""; }
+const char *pbr_style_name(int i) { return i >= 0 && i < PBR_STYLE_N ? PBR_STYLES[i].name : ""; }
+
+static void pbr_apply_style(PbrCfg *c, const char *id) {
+    const PbrStyle *st = &PBR_STYLES[0];
+    for (int i = 0; i < PBR_STYLE_N; i++) if (!strcmp(id, PBR_STYLES[i].id)) st = &PBR_STYLES[i];
+    c->f.bump_strength *= st->relief;
+    c->f.normal_strength *= st->relief;
+    c->f.luminance_relief *= st->relief;
+    c->f.parallax_depth *= st->parallax;
+    c->f.texel_bevel *= st->bevel;
+    c->f.block_bevel *= st->bevel;
+    c->f.texel_outline *= st->outline;
+    c->f.block_outline *= st->outline;
+    c->f.specular_strength *= st->specular;
+    c->f.sky_specular *= st->specular;
+    c->f.self_shadow_strength *= st->shadow;
+    c->f.albedo_contrast = 1.0f + (c->f.albedo_contrast - 1.0f) * st->grade;
+    c->f.saturation = 1.0f + (c->f.saturation - 1.0f) * st->grade;
+}
+
+PbrCfg g_pbr;
+static PbrCfg g_pbr_data = {{1, 1.0f, 0.0625f, 1.0f, 16, 32, 0.5f, 1.0f, 0.3f, 1, 0, 1, 1.0f, 1.0f, 0, 0.5f, 1.0f, 5, 4, 0.02f, 8, 0.0f, 0.4f, 0.0f, 0.12f, 0.0f, 0.0f, 1.1f, 1.08f, 0.9f}};
+
+int pbr_preset_count(void) { return PBR_PRESET_N; }
+const char *pbr_preset_id(int i) { return i >= 0 && i < PBR_PRESET_N ? PBR_PRESETS[i].id : ""; }
+const char *pbr_preset_name(int i) { return i >= 0 && i < PBR_PRESET_N ? PBR_PRESETS[i].name : ""; }
+
+const PbrCfg *pbr_preset_cfg(int i) { return i >= 0 && i < PBR_PRESET_N ? &PBR_PRESETS[i].cfg : &PBR_HIGH; }
+
+static void pbr_clamp(PbrCfg *c) {
+    for (int i = 0; i < PBR_FIELD_COUNT; i++) c->v[i] = CLAMP(c->v[i], PBR_FIELDS[i].lo, PBR_FIELDS[i].hi);
+    if (c->f.fade_end < c->f.fade_start + 1.0f) c->f.fade_end = c->f.fade_start + 1.0f;
+}
+
+/* The active configuration: custom values, a named preset, or the data file when the setting is empty. */
+void pbr_resolve(void) {
+    PbrCfg c = g_pbr_data;
+    const char *q = g_settings.texture_quality;
+    if (!strcmp(q, "custom")) c = g_settings.pbr;
+    else {
+        for (int i = 0; i < PBR_PRESET_N; i++) if (!strcmp(q, PBR_PRESETS[i].id)) c = PBR_PRESETS[i].cfg;
+        pbr_apply_style(&c, g_settings.texture_style);
+    }
+    pbr_clamp(&c);
+    g_pbr = c;
+}
+
+static void pbr_cfg_load(void) {
+    PbrCfg c = PBR_HIGH;
+    size_t size;
+    const char *owner = "?";
+    u8 *text = vfs_read("data/dfe/pbr.json", &size, &owner);
+    if (text) {
+        char err[200];
+        int err_line = 0;
+        Json *r = json_parse((const char *)text, size, err, sizeof err, &err_line);
+        free(text);
+        if (!r || r->type != JSON_OBJECT) {
+            data_error(owner, "data/dfe/pbr.json", err_line, "%s. Fix the JSON syntax; built-in PBR values are used.", r ? "must be one JSON object" : err);
+        } else {
+            for (int i = 0; i < PBR_FIELD_COUNT; i++) c.v[i] = (float)json_num(r, PBR_FIELDS[i].key, c.v[i]);
+        }
+        json_free(r);
+    }
+    pbr_clamp(&c);
+    g_pbr_data = c;
+    pbr_resolve();
+}
+
 typedef struct Page {
     GLuint vbo, vao, origin_buf, origin_tex;
     u64 used[PAGE_GRANULES / 64];
@@ -226,11 +357,13 @@ bool scene_init(void) {
     page_init(&S.pages[S.page_count++]);
     if (!lod_init()) return false;
     if (!atmosphere_gl_init()) return false;
+    pbr_cfg_load();
     S.ready = true;
     return true;
 }
 
 bool scene_reload_shaders(void) {
+    pbr_cfg_load();
     Shader fresh[2][LAYER_COUNT], fresh_shadow[2];
     memset(fresh, 0, sizeof fresh);
     memset(fresh_shadow, 0, sizeof fresh_shadow);
@@ -442,6 +575,20 @@ static void set_pass_uniforms(Shader *sh, const Camera *cam, double time_s, int 
     glUniform1i(shader_uniform(sh, "u_origins"), 1);
     glUniform1i(shader_uniform(sh, "u_tex"), 0);
     glUniform1i(shader_uniform(sh, "u_anim"), 2);
+    /* PBR maps; a shader pack that does not declare them gets -1 locations, which GL ignores. */
+    glUniform1i(shader_uniform(sh, "u_tex_normal"), 4);
+    glUniform1i(shader_uniform(sh, "u_tex_rh"), 5);
+    glUniform1f(shader_uniform(sh, "u_bump_strength"), g_pbr.f.bump_strength);
+    glUniform4f(shader_uniform(sh, "u_pbr_a"), g_pbr.f.height_depth, g_pbr.f.normal_strength, g_pbr.f.fade_start, g_pbr.f.fade_end);
+    glUniform4f(shader_uniform(sh, "u_pbr_b"), g_pbr.f.specular_strength, g_pbr.f.roughness_scale, g_pbr.f.roughness_bias, g_pbr.f.metalness_scale);
+    glUniform4f(shader_uniform(sh, "u_pbr_c"), g_pbr.f.diffuse_response, g_pbr.f.sky_lean, g_pbr.f.cavity_ao, g_pbr.f.shade_floor);
+    glUniform4f(shader_uniform(sh, "u_pbr_d"), g_pbr.f.self_shadow_strength, g_pbr.f.self_shadow_reach, g_pbr.f.sky_specular, (float)g_pbr.f.shadow_tap_cap);
+    glUniform4f(shader_uniform(sh, "u_pbr_e"), g_pbr.f.parallax_depth, g_pbr.f.texel_bevel, g_pbr.f.texel_bevel_width, g_pbr.f.block_bevel);
+    glUniform4f(shader_uniform(sh, "u_pbr_f"), g_pbr.f.block_bevel_width, g_pbr.f.texel_outline, g_pbr.f.block_outline, g_pbr.f.luminance_relief);
+    glUniform2f(shader_uniform(sh, "u_pbr_g"), g_pbr.f.albedo_contrast, g_pbr.f.saturation);
+    glUniform1i(shader_uniform(sh, "u_pbr_pom"), (int)g_pbr.f.parallax_steps);
+    glUniform1i(shader_uniform(sh, "u_pbr_on"), g_pbr.f.enabled > 0.5f);
+    glUniform1i(shader_uniform(sh, "u_pbr_steps"), (int)g_pbr.f.self_shadow_steps);
     atmosphere_set_uniforms(sh);
     float fog_start, fog_end;
     fog_range(rd, &fog_start, &fog_end);
@@ -539,6 +686,10 @@ void scene_render(const Camera *cam, double time_s) {
     glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_array);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, g_tex.gl_anim);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_normal);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, g_tex.gl_rh);
     render_shadows(cam, time_s);
     glActiveTexture(GL_TEXTURE0);
     glPolygonMode(GL_FRONT_AND_BACK, g_scene_cfg.wireframe ? GL_LINE : GL_FILL);

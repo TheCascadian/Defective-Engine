@@ -53,7 +53,7 @@ typedef struct Pending {
 } Pending;
 
 static struct {
-    bool open;
+    bool open, created;
     char dir[512];
     u64 seed;
     SaveMeta meta;
@@ -211,6 +211,8 @@ static bool meta_read(void) {
         }
     }
     S.meta.day_time = json_num(j, "time", 0.3);
+    experimental_read_json(&S.meta, json_get(j, "experimental_features"));
+    S.meta.cgm_present = json_bool(j, "cgm_present", false);
     const Json *names = json_get(j, "blocks");
     for (int i = 0; names && i < json_len(names); i++) vec_push(S.names.names, xstrdup(json_as_str(json_at(names, i), "dfe:missing")));
     const Json *storage = json_get(j, "mod_storage");
@@ -228,6 +230,8 @@ static bool meta_write(void) {
     jw_key(&w, "seed"); jw_num(&w, (double)(S.seed & 0xFFFFFFFFull));
     jw_key(&w, "seed_high"); jw_num(&w, (double)(S.seed >> 32));
     jw_key(&w, "time"); jw_num(&w, S.meta.day_time);
+    experimental_write_json(&w, &S.meta);
+    if (S.meta.cgm_present) { jw_key(&w, "cgm_present"); jw_bool(&w, true); }
     if (S.meta.has_player) {
         jw_key(&w, "player");
         jw_begin_obj(&w);
@@ -725,12 +729,15 @@ bool save_open(const char *dir, u64 default_seed) {
     }
     build_name_table();
     S.open = true;
+    S.created = !existed;
     if (!existed) meta_write();
     LOGI("World '%s' %s, seed %llu, %d block names", dir, existed ? "loaded" : "created", (unsigned long long)S.seed, S.names.names.n);
     return true;
 }
 
 bool save_active(void) { return S.open; }
+bool save_was_created(void) { return S.created; }
+bool save_meta_flush(void) { return S.open && meta_write(); }
 u64 save_seed(void) { return S.seed; }
 SaveMeta *save_meta(void) { return &S.meta; }
 
@@ -872,6 +879,22 @@ bool save_load_column(int cx, int cz, SavedColumn *out) {
     if (!ok) LOGE("Column (%d, %d) in %s/region is corrupt and will be regenerated. Your edits to it are lost; restore the region file from a backup to recover them.", cx, cz, S.dir);
     return ok;
 }
+
+/* True when a column is stored or queued to be; nothing is read or decoded. */
+bool save_has_column(int cx, int cz) {
+    if (!S.open) return false;
+    mutex_lock(S.lock);
+    bool has = false;
+    for (int i = 0; i < S.pending.n && !has; i++) has = S.pending.d[i].cx == cx && S.pending.d[i].cz == cz;
+    if (!has) {
+        Region *r = region_get(cx >> REGION_SHIFT, cz >> REGION_SHIFT);
+        has = r->entries[column_slot(cx, cz)].comp_size != 0;
+    }
+    mutex_unlock(S.lock);
+    return has;
+}
+
+const char *save_dir(void) { return S.open ? S.dir : ""; }
 
 int save_jobs_inflight(void) { return S.jobs_inflight; }
 

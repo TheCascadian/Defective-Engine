@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Chunk generation metadata (CGM)",
+  "description": "Logical content of one cgm.dat record (stored binary, little endian, 'CGM1'). Serialized size is at most 1024 bytes; exceeding any bound is a data error.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["epoch_id", "epoch_hash", "seed_snapshot"],
+  "properties": {
+    "epoch_id": { "type": "integer", "minimum": 0, "maximum": 63 },
+    "epoch_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the epoch's data files; must equal the registry's hash." },
+    "seed_snapshot": { "type": "integer", "minimum": 0 },
+    "terrain_params": { "type": "string", "contentEncoding": "base16", "maxLength": 128, "description": "At most 64 bytes." },
+    "biome_weights": { "type": "string", "contentEncoding": "base16", "maxLength": 32, "description": "At most 16 bytes, probability 0..255 per biome at the column centre." },
+    "structure_claims": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "min", "max", "seed"],
+        "properties": {
+          "id": { "type": "string", "maxLength": 31 },
+          "min": { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 },
+          "max": { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 },
+          "seed": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

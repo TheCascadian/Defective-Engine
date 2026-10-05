@@ -3,6 +3,7 @@
  * Everything here runs on the main thread except the job bodies, which only touch
  * their own private copies. */
 #include "dfe.h"
+#include "epoch.h"
 
 /* ---------------------------------------------------------------- hash map */
 
@@ -295,6 +296,8 @@ typedef struct GenJob {
     int lo, hi;
     u16 deep_state;
     bool loaded;     /* chunks came from the save, not the generator */
+    bool has_cgm, cgm_overflow;
+    Cgm cgm;
     Chunk **chunks;
 } GenJob;
 
@@ -532,6 +535,7 @@ static void gen_job_run(void *data, int worker) {
     int layers = j->hi - j->lo + 1;
     WorkerBuffers *wb = worker_buffers(worker, layers);
     gen_column(wb->scratch, j->cx, j->cz, wb->states);
+    j->has_cgm = gen_column_cgm(wb->scratch, &j->cgm, &j->cgm_overflow);
     light_init_column(wb->states, layers, wb->light);
     j->chunks = xcalloc((size_t)layers, sizeof(Chunk *));
     for (int k = 0; k < layers; k++) {
@@ -556,6 +560,11 @@ static void gen_job_complete(void *data) {
             ptrmap_set(&W.chunks, pack3(j->cx, j->lo + k, j->cz), j->chunks[k]);
             chunk_update_random_tick_flag(j->chunks[k]);
             dirty_enqueue(j->chunks[k]);
+        }
+        if (j->has_cgm) {
+            if (j->cgm_overflow) data_error("engine", "worldgen", 0, "column (%d, %d) has more distinct structures than a chunk's generation metadata can hold (%d). Structure claims were merged where possible; reduce the structure variety per column.", j->cx, j->cz, CGM_MAX_CLAIMS);
+            cgm_store_put(j->cx, j->cz, &j->cgm);
+            if (!save_meta()->cgm_present) { save_meta()->cgm_present = true; save_meta_flush(); }
         }
         col->state = COLUMN_READY;
         if (j->loaded) { col->lo_cy = j->lo; col->hi_cy = j->hi; col->deep_state = j->deep_state; }

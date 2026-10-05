@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Generation epoch",
+  "description": "One data/dfe/epochs/<id>/ directory. Each of the six files is a separate JSON object validated by the matching entry in $defs; hash.txt holds the SHA-256 of the six files (tools/epoch_hash.py).",
+  "type": "object",
+  "properties": {
+    "noise.json": { "$ref": "#/$defs/noise" },
+    "biomes.json": { "$ref": "#/$defs/biomes" },
+    "caves.json": { "$ref": "#/$defs/caves" },
+    "surface.json": { "$ref": "#/$defs/surface" },
+    "features.json": { "$ref": "#/$defs/features" },
+    "structures.json": { "$ref": "#/$defs/structures" }
+  },
+  "$defs": {
+    "noise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kernel"],
+      "properties": {
+        "kernel": { "const": "terrain_v1" },
+        "description": { "type": "string" },
+        "sea_level": { "type": "number", "minimum": 0, "maximum": 255 },
+        "height_scale": { "type": "number", "minimum": 0.25, "maximum": 4 },
+        "height_offset": { "type": "number", "minimum": -64, "maximum": 64 },
+        "continentalness_bias": { "type": "number", "minimum": -0.5, "maximum": 0.5 },
+        "erosion_bias": { "type": "number", "minimum": -0.9, "maximum": 0.9 },
+        "weirdness_bias": { "type": "number", "minimum": -0.9, "maximum": 2 }
+      }
+    },
+    "biomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "kernel": { "type": "integer", "minimum": 0, "maximum": 1, "default": 0, "description": "0 = original biome rules; 1 = data-driven biome files under data/<namespace>/biomes. Omitted means 0." },
+        "temperature_bias": { "type": "number", "minimum": -0.5, "maximum": 0.5 },
+        "humidity_bias": { "type": "number", "minimum": -0.5, "maximum": 0.5 }
+      }
+    },
+    "caves": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "tunnel_width_scale": { "type": "number", "minimum": 0, "maximum": 4 },
+        "cheese_threshold_delta": { "type": "number", "minimum": -0.3, "maximum": 0.3 }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "snowline_offset": { "type": "number", "minimum": -64, "maximum": 64 },
+        "treeline_offset": { "type": "number", "minimum": -64, "maximum": 64 }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "tree_chance_scale": { "type": "number", "minimum": 0, "maximum": 4 },
+        "plant_chance_scale": { "type": "number", "minimum": 0, "maximum": 4 },
+        "ore_chance_scale": { "type": "number", "minimum": 0, "maximum": 4 }
+      }
+    },
+    "structures": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "chance_scale": { "type": "number", "minimum": 0, "maximum": 4 }
+      }
+    }
+  }
+}

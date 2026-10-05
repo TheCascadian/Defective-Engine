@@ -152,6 +152,7 @@ void settings_defaults(void) {
     g_settings.fov_deg = DEFAULT_FOV;
     g_settings.vsync = true;
     g_settings.fog_off = false;
+    g_settings.pbr = *pbr_preset_cfg(3);
 }
 
 void settings_load(void) {
@@ -185,6 +186,11 @@ void settings_load(void) {
     snprintf(g_settings.godray_quality, sizeof g_settings.godray_quality, "%s", json_str(root, "godray_quality", ""));
     g_settings.fog_off = !json_bool(root, "fog", true);
     snprintf(g_settings.fog_quality, sizeof g_settings.fog_quality, "%s", json_str(root, "fog_quality", ""));
+    snprintf(g_settings.texture_quality, sizeof g_settings.texture_quality, "%s", json_str(root, "texture_quality", ""));
+    snprintf(g_settings.texture_style, sizeof g_settings.texture_style, "%s", json_str(root, "texture_style", ""));
+    const Json *sh = json_get(root, "shaders");
+    if (sh && sh->type == JSON_OBJECT)
+        for (int i = 0; i < PBR_FIELD_COUNT; i++) g_settings.pbr.v[i] = (float)json_num(sh, PBR_FIELDS[i].key, g_settings.pbr.v[i]);
     g_settings.auto_jump_off = !json_bool(root, "auto_jump", true);
     g_settings.view_bob_off = !json_bool(root, "view_bobbing", true);
     g_settings.motion_fx_off = !json_bool(root, "motion_effects", true);
@@ -193,15 +199,17 @@ void settings_load(void) {
 }
 
 bool settings_save(void) {
-    char text[1792], hud[512] = "";
+    char text[3584], hud[512] = "", shaders[1536] = "";
+    int sn = 0;
+    for (int i = 0; i < PBR_FIELD_COUNT; i++) sn += snprintf(shaders + sn, sizeof shaders - (size_t)sn, "%s\"%s\": %.4g", i ? ", " : "", PBR_FIELDS[i].key, g_settings.pbr.v[i]);
     ui_overrides_write(hud, sizeof hud);
     int n = snprintf(text, sizeof text,
-                     "{\n  \"preset\": \"%s\",\n  \"ui_scale\": %d,\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"shadow_distance\": %d,\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s,\n  \"hud_scale\": %.2f,\n  \"hud_text_scale\": %.2f,\n  \"ui_text_scale\": %.2f,\n  \"hud_elements\": {%s}\n}\n",
+                     "{\n  \"preset\": \"%s\",\n  \"ui_scale\": %d,\n  \"render_distance\": %d,\n  \"dynamic_resolution\": %d,\n  \"render_scale\": %.2f,\n  \"fov\": %.0f,\n  \"vsync\": %s,\n  \"shadows\": %s,\n  \"shadow_quality\": \"%s\",\n  \"shadow_distance\": %d,\n  \"godrays\": %s,\n  \"godray_quality\": \"%s\",\n  \"fog\": %s,\n  \"fog_quality\": \"%s\",\n  \"auto_jump\": %s,\n  \"view_bobbing\": %s,\n  \"motion_effects\": %s,\n  \"texture_quality\": \"%s\",\n  \"texture_style\": \"%s\",\n  \"shaders\": {%s},\n  \"hud_scale\": %.2f,\n  \"hud_text_scale\": %.2f,\n  \"ui_text_scale\": %.2f,\n  \"hud_elements\": {%s}\n}\n",
                      g_settings.preset, g_settings.ui_scale, g_settings.render_distance, g_settings.dynamic_resolution, g_settings.render_scale, g_settings.fov_deg,
                      g_settings.vsync ? "true" : "false", g_settings.shadows_off ? "false" : "true", g_settings.shadow_quality, g_settings.shadow_distance,
                      g_settings.godrays_off ? "false" : "true", g_settings.godray_quality, g_settings.fog_off ? "false" : "true", g_settings.fog_quality,
                      g_settings.auto_jump_off ? "false" : "true", g_settings.view_bob_off ? "false" : "true", g_settings.motion_fx_off ? "false" : "true",
-                     g_settings.hud_scale, g_settings.hud_text_scale, g_settings.ui_text_scale, hud);
+                     g_settings.texture_quality, g_settings.texture_style, shaders, g_settings.hud_scale, g_settings.hud_text_scale, g_settings.ui_text_scale, hud);
     if (!file_write_atomic(SETTINGS_FILE, text, (size_t)n)) {
         LOGW("could not write %s; check that the folder is writable. Settings apply for this session only.", SETTINGS_FILE);
         return false;
@@ -220,6 +228,7 @@ void gfx_apply(void) {
         if (!p) p = preset_at(0);
     }
     if (!p) return;
+    pbr_resolve();
     GraphicsConfig *g = &g_gfx;
     g->render_distance = g_settings.render_distance > 0 ? g_settings.render_distance : p->render_distance;
     g->far_chunks = g_opt.no_render ? 0 : p->far_chunks;

@@ -30,6 +30,8 @@
 #define HY_REGION_SLOTS 12
 #define HY_SUBSTEPS 4
 #define HY_LAKE_DIST_CELLS 16
+#define HY_LAKE_MIN_CELLS 5                 /* smallest pond, in cells (16 square blocks each) */
+#define HY_GAP_PX 4                         /* rivers closer than 2 * this many raster pixels are merged */
 
 typedef struct HPix {
     float edge, level, half_width, flow;
@@ -69,8 +71,8 @@ static struct {
     ElevTile *tiles;
     HRegion regions[HY_REGION_SLOTS];
     /* Window scratch, allocated once and reused under the lock. */
-    float *E, *F, *G, *px, *pz;
-    int *down, *order, *mainup, *queue;
+    float *E, *F, *G, *px, *pz, *taper;
+    int *down, *order, *mainup, *queue, *pos;
     u32 *acc;
     u8 *flag;
     u8 *lake_d;
@@ -85,8 +87,8 @@ void hydro_params_default(HydroParams *p) {
     *p = (HydroParams){
         .river_min_area = 520.0f, .width_base = 3.0f, .width_scale = 0.35f, .width_exp = 0.4f,
         .depth_base = 1.6f, .depth_scale = 0.55f, .bank_grad_min = 0.40f, .bank_grad_max = 1.1f,
-        .valley_reach = 24.0f, .lake_min_depth = 1.6f, .lake_max_depth = 14.0f, .lake_max_cells = 1500,
-        .fall_drop = 3.2f, .rapids_drop = 1.4f,
+        .valley_reach = 24.0f, .lake_min_depth = 1.0f, .lake_max_depth = 22.0f, .lake_max_cells = 9000,
+        .fall_drop = 2.5f, .rapids_drop = 1.4f,
     };
 }
 
@@ -181,6 +183,7 @@ static void alloc_scratch(void) {
     H.px = xmalloc(n * sizeof(float)); H.pz = xmalloc(n * sizeof(float));
     H.down = xmalloc(n * sizeof(int)); H.order = xmalloc(n * sizeof(int));
     H.mainup = xmalloc(n * sizeof(int)); H.queue = xmalloc(n * sizeof(int));
+    H.pos = xmalloc(n * sizeof(int)); H.taper = xmalloc(n * sizeof(float));
     H.acc = xmalloc(n * sizeof(u32));
     H.flag = xmalloc(n); H.lake_d = xmalloc(n);
     H.heap = xmalloc(n * sizeof(HeapItem));
@@ -265,7 +268,7 @@ static void find_lakes(void) {
                 if ((H.flag[ni] & F_LAKE) && !(H.flag[ni] & F_RIVER)) { H.flag[ni] |= F_RIVER; H.queue[tail++] = ni; }
             }
         }
-        if (area > p->lake_max_cells || deepest > p->lake_max_depth || border)
+        if (area < HY_LAKE_MIN_CELLS || area > p->lake_max_cells || deepest > p->lake_max_depth || border)
             for (int k = 0; k < tail; k++) H.flag[H.queue[k]] &= (u8)~F_LAKE;
     }
     for (int i = 0; i < n; i++) H.flag[i] &= (u8)~F_RIVER;
@@ -293,26 +296,81 @@ static float river_half_width(int c) {
     float full = p->width_base + p->width_scale * powf((float)H.acc[c], p->width_exp);
     /* Estuary: the channel flares as it meets the sea. The factor grows monotonically downstream because F falls. */
     float flare = 1.0f + 0.9f * (1.0f - sm01((H.F[c] - (float)H.sea) / 5.0f));
-    return 0.5f * full * flare;
+    return 0.5f * full * flare * H.taper[c];
 }
 
 static bool is_river(int c) { return (H.flag[c] & F_RIVER) != 0; }
 
-static void select_rivers(void) {
+static float cell_hash(int gx, int gz, u32 salt) {
+    u64 h = H.seed ^ ((u64)(u32)gx * 0x9E3779B97F4A7C15ull) ^ ((u64)(u32)gz * 0xC2B2AE3D27D4EB4Full) ^ ((u64)salt * 0x165667B19E3779F9ull);
+    h ^= h >> 31; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 29; h *= 0x94D049BB133111EBull; h ^= h >> 32;
+    return (float)(h & 0xFFFFFF) / (float)0xFFFFFF;
+}
+
+static void mark_rivers(void) {
     int n = HY_WIN * HY_WIN;
     for (int i = 0; i < n; i++) {
         bool ok = !(H.flag[i] & (F_OCEAN | F_LAKE)) && (float)H.acc[i] >= H.p.river_min_area;
         if (ok) H.flag[i] |= F_RIVER; else H.flag[i] &= (u8)~F_RIVER;
+    }
+}
+
+/* Streams that run within MERGE_R cells of a larger one are redirected into it, so no two channels run in parallel.
+ * Only targets earlier in flood order are taken, which keeps the drainage tree acyclic. */
+#define MERGE_R 2
+static void merge_parallel(void) {
+    int n = HY_WIN * HY_WIN;
+    for (int k = 0; k < n; k++) H.pos[H.order[k]] = k;
+    for (int k = n - 1; k >= 0; k--) {
+        int c = H.order[k];
+        if (!is_river(c) || H.down[c] < 0) continue;
+        int cx = c % HY_WIN, cz = c / HY_WIN, best = -1, bd = 1 << 30;
+        for (int dz = -MERGE_R; dz <= MERGE_R; dz++)
+            for (int dx = -MERGE_R; dx <= MERGE_R; dx++) {
+                int nx = cx + dx, nz = cz + dz;
+                if ((!dx && !dz) || nx < 0 || nz < 0 || nx >= HY_WIN || nz >= HY_WIN) continue;
+                int m = nz * HY_WIN + nx;
+                if (!is_river(m) || m == H.down[c] || H.pos[m] >= H.pos[c] || H.F[m] > H.F[c] || H.F[m] < H.F[c] - 0.6f || H.acc[m] < H.acc[c]) continue;
+                int d = dx * dx + dz * dz;
+                if (d < bd || (d == bd && H.acc[m] > H.acc[best])) { bd = d; best = m; }
+            }
+        if (best >= 0) H.down[c] = best;
+    }
+    for (int i = 0; i < n; i++) H.acc[i] = 1;
+    for (int k = n - 1; k >= 0; k--) { int c = H.order[k]; if (H.down[c] >= 0) H.acc[H.down[c]] += H.acc[c]; }
+}
+
+static void select_rivers(int cx0, int cz0) {
+    int n = HY_WIN * HY_WIN;
+    for (int i = 0; i < n; i++) H.taper[i] = 1.0f;
+    mark_rivers();
+    merge_parallel();
+    mark_rivers();
+    for (int i = 0; i < n; i++) {
         H.mainup[i] = -1;
         int cx = i % HY_WIN, cz = i / HY_WIN;
-        H.px[i] = (float)(cx * HY_CELL + HY_CELL / 2);
-        H.pz[i] = (float)(cz * HY_CELL + HY_CELL / 2);
+        /* Jitter breaks the grid's straight and 45-degree runs; the relaxation in shape_rivers turns it into meander. */
+        H.px[i] = (float)(cx * HY_CELL + HY_CELL / 2) + (cell_hash(cx0 + cx, cz0 + cz, 1) - 0.5f) * 2.2f * HY_CELL;
+        H.pz[i] = (float)(cz * HY_CELL + HY_CELL / 2) + (cell_hash(cx0 + cx, cz0 + cz, 2) - 0.5f) * 2.2f * HY_CELL;
     }
     for (int k = 0; k < n; k++) {
         int c = H.order[k];
         if (!is_river(c)) continue;
         int t = H.down[c];
         if (t >= 0 && is_river(t) && (H.mainup[t] < 0 || H.acc[c] > H.acc[H.mainup[t]])) H.mainup[t] = c;
+    }
+    /* Headwaters taper in over TAPER_CELLS cells. A head cut by the window edge is not a real head, so it stays full. */
+    enum { TAPER_CELLS = 10 };
+    int *len = H.queue; /* free scratch once the lakes are found */
+    for (int k = 0; k < n; k++) len[k] = -1;
+    for (int k = n - 1; k >= 0; k--) {
+        int c = H.order[k];
+        if (!is_river(c)) continue;
+        int cx = c % HY_WIN, cz = c / HY_WIN;
+        if (len[c] < 0) len[c] = (cx < 3 || cz < 3 || cx >= HY_WIN - 3 || cz >= HY_WIN - 3) ? 1000 : 0;
+        H.taper[c] = 0.12f + 0.88f * sm01((float)len[c] / (float)TAPER_CELLS);
+        int t = H.down[c];
+        if (t >= 0 && is_river(t)) len[t] = MAX(len[t], len[c] + 1); /* the longest branch sets the width, so it never narrows downstream */
     }
 }
 
@@ -324,7 +382,7 @@ static void shape_rivers(void) {
     for (int i = 0; i < n; i++) H.G[i] = H.F[i] - 0.6f;
     float *tmpG = H.queue ? (float *)xmalloc((size_t)n * sizeof(float)) : NULL;
     float *tmpX = (float *)xmalloc((size_t)n * sizeof(float)), *tmpZ = (float *)xmalloc((size_t)n * sizeof(float));
-    for (int pass = 0; pass < 3; pass++) {
+    for (int pass = 0; pass < 12; pass++) {
         memcpy(tmpG, H.G, (size_t)n * sizeof(float));
         memcpy(tmpX, H.px, (size_t)n * sizeof(float));
         memcpy(tmpZ, H.pz, (size_t)n * sizeof(float));
@@ -333,10 +391,10 @@ static void shape_rivers(void) {
             int pr = H.mainup[c], nx = H.down[c];
             bool has_next = nx >= 0 && (is_river(nx) || (H.flag[nx] & F_OCEAN));
             float wp = 0.0f, wn = 0.0f;
-            if (pr >= 0 && H.G[pr] - H.G[c] < p->fall_drop) wp = 0.25f;
-            if (has_next && is_river(nx) && H.G[c] - H.G[nx] < p->fall_drop) wn = 0.25f;
+            if (pr >= 0 && H.G[pr] - H.G[c] < p->fall_drop) wp = 0.3f;
+            if (has_next && is_river(nx) && H.G[c] - H.G[nx] < p->fall_drop) wn = 0.3f;
             tmpG[c] = H.G[c] * (1.0f - wp - wn) + (wp > 0 ? H.G[pr] * wp : 0.0f) + (wn > 0 ? H.G[nx] * wn : 0.0f);
-            float pw = pr >= 0 ? 0.25f : 0.0f, nw = has_next ? 0.25f : 0.0f;
+            float pw = pr >= 0 ? 0.3f : 0.0f, nw = has_next ? 0.3f : 0.0f;
             tmpX[c] = H.px[c] * (1.0f - pw - nw) + (pr >= 0 ? H.px[pr] * pw : 0.0f) + (has_next ? H.px[nx] * nw : 0.0f);
             tmpZ[c] = H.pz[c] * (1.0f - pw - nw) + (pr >= 0 ? H.pz[pr] * pw : 0.0f) + (has_next ? H.pz[nx] * nw : 0.0f);
         }
@@ -400,6 +458,12 @@ static void stamp_segment(HPix *pix, const Stamp *s) {
         }
 }
 
+/* Water level profile along a segment: linear, except a fall holds its lip and plunges over the last quarter. */
+static float lvl_shape(float s, u8 flags) {
+    if (!(flags & HYF_FALL)) return s;
+    return sm01((s - 0.72f) / 0.2f);
+}
+
 static void stamp_rivers(HRegion *R, int cx0, int cz0, float ox, float oz) {
     const HydroParams *p = &H.p;
     int n = HY_WIN * HY_WIN;
@@ -412,7 +476,7 @@ static void stamp_rivers(HRegion *R, int cx0, int cz0, float ox, float oz) {
         float hw = river_half_width(c);
         float reach = hw + p->valley_reach + 12.0f;
         if (H.px[c] < rx0 - reach || H.px[c] > rx0 + span + reach || H.pz[c] < rz0 - reach || H.pz[c] > rz0 + span + reach) continue;
-        bool to_river = is_river(t), to_lake = (H.flag[t] & F_LAKE) != 0;
+        bool to_river = is_river(t);
         float p1[2] = {H.px[c], H.pz[c]}, p2[2] = {H.px[t], H.pz[t]}, p0[2], p3[2];
         int up = H.mainup[c];
         if (up >= 0) { p0[0] = H.px[up]; p0[1] = H.pz[up]; } else { p0[0] = 2 * p1[0] - p2[0]; p0[1] = 2 * p1[1] - p2[1]; }
@@ -424,7 +488,8 @@ static void stamp_rivers(HRegion *R, int cx0, int cz0, float ox, float oz) {
         u8 flags = 0;
         if (drop >= p->fall_drop) flags |= HYF_FALL; else if (drop >= p->rapids_drop) flags |= HYF_RAPIDS;
         if (H.F[c] < sea + 4.0f) flags |= HYF_ESTUARY;
-        float smax = to_lake ? 0.5f : 1.0f;
+        float smax = 1.0f;
+        if (up < 0 && (float)H.acc[c] < p->river_min_area * 1.5f) hw *= 0.45f; /* a source starts as a thread instead of a round blob */
         /* Local ground slope from the elevation field, as a 0..1 grade (about 1.5 blocks per block is the maximum). */
         int cx = c % HY_WIN, cz = c / HY_WIN;
         float gx = 0.0f, gz = 0.0f;
@@ -442,7 +507,7 @@ static void stamp_rivers(HRegion *R, int cx0, int cz0, float ox, float oz) {
                 .ax = prev[0] + (float)(cx0 * HY_CELL), .az = prev[1] + (float)(cz0 * HY_CELL),
                 .bx = cur[0] + (float)(cx0 * HY_CELL), .bz = cur[1] + (float)(cz0 * HY_CELL),
                 .hwa = hw + (hwt - hw) * s0, .hwb = hw + (hwt - hw) * s1,
-                .lva = H.G[c] + (lvt - H.G[c]) * s0, .lvb = H.G[c] + (lvt - H.G[c]) * s1,
+                .lva = H.G[c] + (lvt - H.G[c]) * lvl_shape(s0, flags), .lvb = H.G[c] + (lvt - H.G[c]) * lvl_shape(s1, flags),
                 .flow = (float)H.acc[c], .grade = grade, .flags = flags};
             float dx = st.bx - st.ax, dz = st.bz - st.az, l = sqrtf(dx * dx + dz * dz);
             st.dx = l > 1e-4f ? dx / l : 0.0f; st.dz = l > 1e-4f ? dz / l : 0.0f;
@@ -450,6 +515,39 @@ static void stamp_rivers(HRegion *R, int cx0, int cz0, float ox, float oz) {
             prev[0] = cur[0]; prev[1] = cur[1];
         }
     }
+}
+
+/* Closes the thin strips of land left between two channels that run side by side (or a hairpin bend): any land pixel
+ * with channel on both sides within HY_GAP_PX is taken into the channel, at the nearer side's level. */
+static void close_gaps(HRegion *R) {
+    static const int D[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
+    size_t n = (size_t)HY_RAST * HY_RAST;
+    HPix *src = xmalloc(n * sizeof(HPix));
+    memcpy(src, R->pix, n * sizeof(HPix));
+    for (int iz = 0; iz < HY_RAST; iz++)
+        for (int ix = 0; ix < HY_RAST; ix++) {
+            HPix *o = &R->pix[iz * HY_RAST + ix];
+            if (src[iz * HY_RAST + ix].edge <= 0.0f) continue;
+            for (int d = 0; d < 4; d++) {
+                const HPix *a = NULL, *b = NULL;
+                for (int k = 1; k <= HY_GAP_PX && !a; k++) {
+                    int x = ix + D[d][0] * k, z = iz + D[d][1] * k;
+                    if (x < 0 || z < 0 || x >= HY_RAST || z >= HY_RAST) break;
+                    if (src[z * HY_RAST + x].edge <= 0.0f) a = &src[z * HY_RAST + x];
+                }
+                for (int k = 1; k <= HY_GAP_PX && a && !b; k++) {
+                    int x = ix - D[d][0] * k, z = iz - D[d][1] * k;
+                    if (x < 0 || z < 0 || x >= HY_RAST || z >= HY_RAST) break;
+                    if (src[z * HY_RAST + x].edge <= 0.0f) b = &src[z * HY_RAST + x];
+                }
+                if (!a || !b || fabsf(a->level - b->level) > 0.2f) continue;
+                const HPix *w = a->level <= b->level ? a : b;
+                *o = *w;
+                o->edge = -0.5f * w->half_width;
+                break;
+            }
+        }
+    free(src);
 }
 
 static void raster_lakes(HRegion *R, int cx0, int cz0, float ox, float oz) {
@@ -509,13 +607,14 @@ static void build_region(HRegion *R, int rx, int rz) {
     fill_window(cx0, cz0);
     priority_flood();
     find_lakes();
-    select_rivers();
+    select_rivers(cx0, cz0);
     shape_rivers();
     free(R->pix); free(R->cells);
     R->pix = xmalloc((size_t)HY_RAST * HY_RAST * sizeof(HPix));
     for (int i = 0; i < HY_RAST * HY_RAST; i++) R->pix[i] = (HPix){.edge = HY_FAR};
     float ox = (float)(rx * HY_CORE - HY_MARGIN), oz = (float)(rz * HY_CORE - HY_MARGIN);
     stamp_rivers(R, cx0, cz0, ox, oz);
+    close_gaps(R);
     raster_lakes(R, cx0, cz0, ox, oz);
     collect_cells(R, rx, rz, cx0, cz0);
     H.built++;
@@ -549,9 +648,9 @@ void hydro_shutdown(void) {
     if (!H.ready && !H.lock) return;
     for (int i = 0; i < HY_REGION_SLOTS; i++) { free(H.regions[i].pix); free(H.regions[i].cells); H.regions[i] = (HRegion){0}; }
     free(H.tiles); H.tiles = NULL;
-    free(H.E); free(H.F); free(H.G); free(H.px); free(H.pz); free(H.down); free(H.order); free(H.mainup); free(H.queue);
+    free(H.E); free(H.F); free(H.G); free(H.px); free(H.pz); free(H.down); free(H.order); free(H.mainup); free(H.queue); free(H.pos); free(H.taper);
     free(H.acc); free(H.flag); free(H.lake_d); free(H.heap);
-    H.E = H.F = H.G = H.px = H.pz = NULL; H.down = H.order = H.mainup = H.queue = NULL; H.acc = NULL; H.flag = H.lake_d = NULL; H.heap = NULL;
+    H.E = H.F = H.G = H.px = H.pz = H.taper = NULL; H.pos = NULL; H.down = H.order = H.mainup = H.queue = NULL; H.acc = NULL; H.flag = H.lake_d = NULL; H.heap = NULL;
     if (H.lock) mutex_destroy(H.lock);
     H.lock = NULL; H.ready = false; H.built = 0; H.clock = 0;
 }

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Biome",
+  "description": "One data/<namespace>/biomes/<name>.json file, used by Forever Worlds epochs whose biomes.json sets \"kernel\": 1. The eight original biomes (ocean, beach, desert, tundra, swamp, forest, plains, mountain) must all be defined by the base mod and must not carry features, ores or structures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "surface"],
+  "$defs": {
+    "range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "noise": { "enum": ["a", "b", "detail"] },
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["noise", "lo", "hi"],
+      "properties": { "noise": { "$ref": "#/$defs/noise" }, "lo": { "type": "number" }, "hi": { "type": "number" } }
+    },
+    "when": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slope_min": { "type": "number" },
+        "slope_max": { "type": "number" },
+        "river_min": { "type": "number" },
+        "near_river": { "type": "boolean" },
+        "water_dist_max": { "type": "number" },
+        "height_min": { "type": "number" },
+        "height_max": { "type": "number" },
+        "above_snowline": { "type": "boolean" },
+        "above_treeline": { "type": "boolean" },
+        "patch": {
+          "oneOf": [
+            { "$ref": "#/$defs/patch" },
+            { "type": "array", "items": { "$ref": "#/$defs/patch" }, "minItems": 1, "maxItems": 3 }
+          ]
+        },
+        "stripe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["period", "lo", "hi"],
+          "properties": { "period": { "type": "integer", "minimum": 1 }, "lo": { "type": "integer" }, "hi": { "type": "integer" } }
+        }
+      }
+    }
+  },
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9_]+:[a-z0-9_]+$" },
+    "description": { "type": "string" },
+    "role": { "enum": ["land", "ocean", "shore"], "default": "land" },
+    "priority": { "type": "number", "default": 0 },
+    "climate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature": { "type": "object", "properties": { "center": { "type": "number" }, "extent": { "type": "number" } } },
+        "humidity": { "type": "object", "properties": { "center": { "type": "number" }, "extent": { "type": "number" } } },
+        "height": { "$ref": "#/$defs/range" },
+        "weirdness": { "$ref": "#/$defs/range" }
+      }
+    },
+    "surface": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Depth 0 layers are top layers: first match wins, the last must have no when. Depth n > 0 layers are subsurface tiers; equal depths are alternatives, depths never decrease.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["block"],
+        "properties": {
+          "block": { "type": "string" },
+          "depth": { "type": "integer", "minimum": 0 },
+          "when": { "$ref": "#/$defs/when" }
+        }
+      }
+    },
+    "plants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["block", "chance", "on"],
+        "properties": {
+          "block": { "type": "string" },
+          "chance": { "type": "number", "minimum": 0, "maximum": 100, "description": "percent of columns, 0.1 steps" },
+          "on": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "habitat": { "enum": ["dry", "any", "river", "lake", "shore", "wetland"], "default": "dry" },
+          "water_dist": { "$ref": "#/$defs/range" },
+          "density_noise": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["noise", "lo", "hi"],
+            "properties": { "noise": { "enum": ["a", "b"] }, "lo": { "type": "number" }, "hi": { "type": "number" } }
+          }
+        }
+      }
+    },
+    "tree_density_scale": { "type": "number", "minimum": 0, "default": 1 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "features": { "type": "array", "description": "Worldgen feature entries, restricted to this biome. Accepts chance_per_mille (0..1000).", "items": { "type": "object" } },
+    "ores": { "type": "array", "items": { "type": "object" } },
+    "structures": { "type": "array", "items": { "type": "object" } }
+  }
+}

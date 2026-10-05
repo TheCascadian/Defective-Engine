@@ -1,0 +1,11 @@
+[
+  {
+    "id": "forever_worlds",
+    "name": "Forever Worlds",
+    "version": "1.0.0",
+    "released": "2026-10-04",
+    "status": "Experimental",
+    "requires_new_world": true,
+    "description": "Enables versioned generation epochs and progressive blend fields. When worldgen changes in future updates, old and new terrain are blended in continuous density space so that no visible chunk wall appears. Old chunks retain their original generator parameters and are regenerated on demand. Structures from old epochs are preserved as hard constraints. This feature increases chunk metadata size and slows generation near epoch boundaries."
+  }
+]

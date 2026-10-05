@@ -4,6 +4,7 @@
 #define DFE_GEN_INTERNAL_H
 
 #include "dfe.h"
+#include "trees.h"
 
 /* Tunable drainage parameters, read from the "hydrology" object of data/<ns>/worldgen/default.json and clamped by
  * hydro_params_sanitize. Lengths are blocks unless the name says cells; a cell is HY_CELL blocks wide. */
@@ -61,5 +62,9 @@ void hydro_query(float x, float z, HydroRaw *out);
 typedef struct HydroCellInfo { int cx, cz; float level, flow, half_width; int down_cx, down_cz; u8 flags; bool lake_mouth; } HydroCellInfo;
 int hydro_region_cells(int rx, int rz, HydroCellInfo *out, int cap);
 int hydro_regions_built(void);
+
+/* Trees that can touch [x0,x1] x [z0,z1]; same sampler as chunk generation (no Forever Worlds blending). */
+void gen_tree_column(GenScratch *s, int wx, int wz, bool detail, TreeColumn *out);
+void gen_tree_plan(GenScratch *s, int x0, int z0, int x1, int z1, TreePlan *out);
 
 #endif

@@ -19,8 +19,14 @@ const vec2 SHADOW_DISK[16] = vec2[16](
     vec2(0.44323325, -0.97511554), vec2(0.53742981, -0.47373420), vec2(-0.26496911, -0.41893023), vec2(0.79197514, 0.19090188),
     vec2(-0.24188840, 0.99706507), vec2(-0.81409955, 0.91437590), vec2(0.19984126, 0.78641367), vec2(0.14383161, -0.14100790));
 
-// rel: camera-relative position, normal: face normal, light_dir: unit vector towards the light.
-float shadow_visibility(vec3 rel, vec3 normal, vec3 light_dir) {
+// Tells chunk.frag that shadow_visibility_capped exists. An older override of this file lacks it, and chunk.frag then
+// falls back to shadow_visibility, so either file can be replaced alone.
+#define DFE_SHADOW_TAP_CAP 1
+
+// rel: camera-relative position, normal: face normal or normal-mapped world normal, light_dir: unit vector towards
+// the light, max_taps: upper bound on the soft-edge samples (chunk.frag passes 4 for normal-mapped surfaces, whose
+// surface detail hides the coarser penumbra).
+float shadow_visibility_capped(vec3 rel, vec3 normal, vec3 light_dir, int max_taps) {
     if (u_shadow_count == 0 || u_shadow_strength <= 0.0) return 1.0;
     float ndl = dot(normal, light_dir);
     if (ndl <= 0.02) return 1.0; // faces turned away are already shaded by the face shade
@@ -34,7 +40,8 @@ float shadow_visibility(vec3 rel, vec3 normal, vec3 light_dir) {
         vec3 q = c.xyz * 0.5 + 0.5;
         float bias = (u_shadow_bias + u_shadow_info[i].x * (1.0 - ndl) * 1.5) / u_shadow_info[i].y;
         float lit;
-        if (u_shadow_taps <= 1) {
+        int taps = min(u_shadow_taps, max_taps);
+        if (taps <= 1) {
             lit = texture(u_shadow_map, vec4(q.xy, float(i), q.z - bias));
         } else {
             float a = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
@@ -42,13 +49,17 @@ float shadow_visibility(vec3 rel, vec3 normal, vec3 light_dir) {
             vec2 step_uv = u_shadow_softness / vec2(textureSize(u_shadow_map, 0).xy);
             lit = 0.0;
             for (int k = 0; k < 16; k++) {
-                if (k >= u_shadow_taps) break;
+                if (k >= taps) break;
                 lit += texture(u_shadow_map, vec4(q.xy + rot * SHADOW_DISK[k] * step_uv, float(i), q.z - bias));
             }
-            lit /= float(min(u_shadow_taps, 16));
+            lit /= float(min(taps, 16));
         }
         float fade = last ? 1.0 - smoothstep(0.8, 1.0, edge) : 1.0;
         return mix(1.0, lit, fade);
     }
     return 1.0;
+}
+
+float shadow_visibility(vec3 rel, vec3 normal, vec3 light_dir) {
+    return shadow_visibility_capped(rel, normal, light_dir, 16);
 }

@@ -356,6 +356,18 @@ static bool parse_block_file(const char *ns, const char *stem, const char *rel, 
         data_error(mod, rel, 1, "block '%s' has no \"textures\" entry; add {\"textures\": {\"all\": \"%s:block/%s\"}}", d.name, ns, stem);
         for (int i = 0; i < 6; i++) snprintf(d.tex_name[i], sizeof d.tex_name[i], "dfe:missing");
     }
+    d.pbr_roughness = -1.0f;
+    d.pbr_bump = 1.0f;
+    const Json *pbr = json_get(root, "pbr");
+    if (pbr && pbr->type != JSON_OBJECT) {
+        data_error(mod, rel, pbr->line, "\"pbr\" must be an object such as {\"roughness\": 0.85}");
+    } else if (pbr) {
+        d.has_pbr = true;
+        snprintf(d.pbr_normal, sizeof d.pbr_normal, "%s", json_str(pbr, "normal", ""));
+        if (json_get(pbr, "roughness")) d.pbr_roughness = (float)CLAMP(json_num(pbr, "roughness", 0.8), 0.0, 1.0);
+        d.pbr_metalness = (float)CLAMP(json_num(pbr, "metalness", 0.0), 0.0, 1.0);
+        d.pbr_bump = (float)CLAMP(json_num(pbr, "bump_strength", 1.0), 0.0, 2.0);
+    }
     BlockDef *b = block_register(&d);
     if (!b) return false;
     /* Default state: first value of every property unless "defaults" overrides it. */
@@ -526,6 +538,37 @@ static void downsample_tile(const u8 *src, int ssize, u8 *dst, bool cutout, floa
     for (int i = 0; i < dsize * dsize; i++) dst[i * 4 + 3] = (u8)MIN(255.0f, dst[i * 4 + 3] * scale + 0.5f);
 }
 
+/* Optional PBR companion: a missing file is normal and stays silent; a broken one is reported. Returns RGBA rows
+ * w wide and w * frames tall, or NULL. */
+static u8 *load_companion(const char *res, int *w, int *frames, bool required, const char *owner_mod, const char *owner_file) {
+    char path[200];
+    if (!texture_path(res, path, sizeof path)) {
+        if (required) data_error(owner_mod, owner_file, 0, "pbr normal '%s' must look like namespace:folder/name", res);
+        return NULL;
+    }
+    size_t size;
+    const char *mod = "?";
+    u8 *file = vfs_read(path, &size, &mod);
+    if (!file) {
+        if (required) data_error(owner_mod, owner_file, 0, "pbr normal map '%s' not found; expected the file %s inside a mod", res, path);
+        return NULL;
+    }
+    int h, comp;
+    u8 *px = stbi_load_from_memory(file, (int)size, w, &h, &comp, 4);
+    free(file);
+    if (!px) {
+        data_error(mod, path, 0, "cannot decode PNG: %s. Re-export it as a standard 8-bit PNG", stbi_failure_reason());
+        return NULL;
+    }
+    if (h % *w != 0) {
+        data_error(mod, path, 0, "PBR map is %dx%d; height must equal width or be a whole multiple of it", *w, h);
+        stbi_image_free(px);
+        return NULL;
+    }
+    *frames = h / *w;
+    return px;
+}
+
 bool textures_build(void) {
     textures_destroy();
     VEC(TexSource) sources = {0};
@@ -565,11 +608,38 @@ bool textures_build(void) {
     size_t tile_bytes = (size_t)tile * tile * 4;
     u8 *base = xcalloc((size_t)layers, tile_bytes);
     bool *cutout = xcalloc((size_t)layers, sizeof(bool));
-    u8 *anim = xcalloc((size_t)layers * 2, 1);
+    u8 *anim = xcalloc((size_t)layers * 4, 1);
     u8 *miss = make_missing_tile(tile);
     memcpy(base, miss, tile_bytes);
     free(miss);
     anim[0] = 1;
+
+    /* PBR arrays share the colour array's layer indices. Every layer starts flat (normal straight out, roughness
+     * 0.8, height 0.5) and stays that way unless it has companions or a block "pbr" key; a layer is only shaded
+     * with them when its anim B byte is non-zero, so plain layers cost the shader nothing extra. */
+    u8 *nbase = xmalloc((size_t)layers * tile_bytes);
+    u8 *rhbase = xmalloc((size_t)layers * tile_bytes);
+    for (size_t i = 0; i < (size_t)layers * tile * tile; i++) {
+        nbase[i * 4] = 128; nbase[i * 4 + 1] = 128; nbase[i * 4 + 2] = 255; nbase[i * 4 + 3] = 255;
+        rhbase[i * 4] = 204; rhbase[i * 4 + 1] = 128; rhbase[i * 4 + 2] = 0; rhbase[i * 4 + 3] = 255;
+    }
+    StrMap pbr_owner; /* texture name -> index of the first block with a "pbr" key that uses it */
+    strmap_init(&pbr_owner);
+    for (int i = 0; i < g_block_count; i++) {
+        if (!g_blocks[i]->has_pbr) continue;
+        for (int f = 0; f < 6; f++)
+            if (g_blocks[i]->tex_name[f][0] && !strmap_get(&pbr_owner, g_blocks[i]->tex_name[f], NULL)) strmap_set(&pbr_owner, g_blocks[i]->tex_name[f], (u32)i);
+    }
+
+    /* Every opaque, still, full-cube texture takes the PBR path even without maps, so the depth effects (texel and
+     * block bevels, parallax, luminance relief) apply to the whole world. Textures that any non-cube model uses stay
+     * plain: their uv range is not one tile per block face. */
+    StrMap non_cube;
+    strmap_init(&non_cube);
+    for (int i = 0; i < g_block_count; i++) {
+        if (g_blocks[i]->shape == SHAPE_CUBE || g_blocks[i]->shape == SHAPE_NONE) continue;
+        for (int f = 0; f < 6; f++) if (g_blocks[i]->tex_name[f][0]) strmap_set(&non_cube, g_blocks[i]->tex_name[f], 1);
+    }
 
     strmap_init(&g_tex.name_to_layer);
     strmap_set(&g_tex.name_to_layer, "dfe:missing", 0);
@@ -577,12 +647,41 @@ bool textures_build(void) {
     for (int i = 1; i < sources.n && layer < layers; i++) {
         TexSource *t = &sources.d[i];
         strmap_set(&g_tex.name_to_layer, t->name, (u32)layer);
+        u32 owner_i = 0;
+        const BlockDef *owner = strmap_get(&pbr_owner, t->name, &owner_i) ? g_blocks[owner_i] : NULL;
+        char cname[80];
+        int nw = 0, nframes = 0, rw = 0, rframes = 0;
+        if (owner && owner->pbr_normal[0]) snprintf(cname, sizeof cname, "%s", owner->pbr_normal);
+        else snprintf(cname, sizeof cname, "%s_n", t->name);
+        u8 *npx = load_companion(cname, &nw, &nframes, owner && owner->pbr_normal[0], owner ? owner->mod : "?", owner ? owner->file : "?");
+        snprintf(cname, sizeof cname, "%s_r", t->name);
+        u8 *rpx = load_companion(cname, &rw, &rframes, false, "?", "?");
+        bool pbr = owner || npx || rpx || (!t->has_alpha && t->frames == 1 && !strmap_get(&non_cube, t->name, NULL));
+        float bump = owner ? owner->pbr_bump : 1.0f;
+        float metal = owner ? owner->pbr_metalness : 0.0f;
+        int first_layer = layer;
+        for (int fr = 0; fr < t->frames && layer < layers; fr++, layer++) {
+            if (!pbr) continue;
+            size_t off = (size_t)layer * tile_bytes;
+            /* An animated texture with a single-frame companion reuses that frame for every frame. */
+            if (npx) blit_tile(nbase + off, tile, npx + (size_t)(fr < nframes ? fr : 0) * nw * nw * 4, nw);
+            if (rpx) blit_tile(rhbase + off, tile, rpx + (size_t)(fr < rframes ? fr : 0) * rw * rw * 4, rw);
+            /* Ruling: JSON "roughness" overrides the _r map's red channel when given and is the fallback without
+             * one; height only ever comes from the map. Metalness and bump have no map channel. */
+            if (owner && owner->pbr_roughness >= 0.0f)
+                for (int k = 0; k < tile * tile; k++) rhbase[off + (size_t)k * 4] = (u8)(owner->pbr_roughness * 255.0f + 0.5f);
+            anim[layer * 4 + 2] = (u8)(1 + (int)(bump * 0.5f * 254.0f + 0.5f));
+            anim[layer * 4 + 3] = (u8)(metal * 255.0f + 0.5f);
+        }
+        stbi_image_free(npx);
+        stbi_image_free(rpx);
+        layer = first_layer;
         for (int fr = 0; fr < t->frames && layer < layers; fr++, layer++) {
             blit_tile(base + (size_t)layer * tile_bytes, tile, t->rgba + (size_t)fr * t->w * t->w * 4, t->w);
             cutout[layer] = t->has_alpha;
             if (t->has_alpha) bleed_transparent_color(base + (size_t)layer * tile_bytes, tile);
-            anim[layer * 2] = (u8)MIN(t->frames, 255);
-            anim[layer * 2 + 1] = (u8)CLAMP((int)(t->fps * 4.0f), 1, 255);
+            anim[layer * 4] = (u8)MIN(t->frames, 255);
+            anim[layer * 4 + 1] = (u8)CLAMP((int)(t->fps * 4.0f), 1, 255);
         }
         free(t->rgba);
     }
@@ -629,9 +728,30 @@ bool textures_build(void) {
     glGenTextures(1, &g_tex.gl_anim);
     glBindTexture(GL_TEXTURE_2D, g_tex.gl_anim);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, layers, 1, 0, GL_RG, GL_UNSIGNED_BYTE, anim);
+    /* RGBA so the PBR bytes ride in the same fetch; shader packs that read only .rg see exactly what they did. */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, layers, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, anim);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* Linear magnification on the PBR arrays: the bump is a screen-space derivative of height, and nearest
+     * sampling would turn every texel edge into a bright seam. Box-filtered mips shorten distant normals, which
+     * reads as a little extra roughness, the right direction. */
+    GLuint *pbr_tex[2] = {&g_tex.gl_normal, &g_tex.gl_rh};
+    u8 *pbr_px[2] = {nbase, rhbase};
+    GLenum pbr_fmt[2] = {GL_RGB8, GL_RG8};
+    for (int k = 0; k < 2; k++) {
+        glGenTextures(1, pbr_tex[k]);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, *pbr_tex[k]);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, (GLint)pbr_fmt[k], tile, tile, layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, pbr_px[k]);
+        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        free(pbr_px[k]);
+    }
+    strmap_free(&pbr_owner);
+    strmap_free(&non_cube);
 
     g_tex.tile_size = tile;
     g_tex.layer_count = layers;
@@ -653,6 +773,8 @@ u16 texture_layer_lookup(const char *res_id) {
 void textures_destroy(void) {
     if (g_tex.gl_array) glDeleteTextures(1, &g_tex.gl_array);
     if (g_tex.gl_anim) glDeleteTextures(1, &g_tex.gl_anim);
+    if (g_tex.gl_normal) glDeleteTextures(1, &g_tex.gl_normal);
+    if (g_tex.gl_rh) glDeleteTextures(1, &g_tex.gl_rh);
     free(g_tex.pixels);
     strmap_free(&g_tex.name_to_layer);
     memset(&g_tex, 0, sizeof g_tex);

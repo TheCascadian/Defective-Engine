@@ -206,6 +206,8 @@ static int compare_worldgen(u64 seed, const char *a, const char *b) {
 
 int hydro_diag_run(int argc, char **argv) {
     const char *cmd = argv[0];
+    if (!strcmp(cmd, "--dump-trees") || !strcmp(cmd, "--dump-tree-shape") || !strcmp(cmd, "--tree-bench")) return tree_diag_run(argc, argv);
+    if (!strcmp(cmd, "--dump-biomes")) return biome_diag_run(argc, argv);
     if (!strcmp(cmd, "--dump-hydrology") && argc >= 6) return dump_hydrology(strtoull(argv[1], NULL, 10), (float)atof(argv[2]), (float)atof(argv[3]), (float)atof(argv[4]), (float)atof(argv[5]));
     if (!strcmp(cmd, "--dump-hydro-map") && argc >= 6) return dump_map(strtoull(argv[1], NULL, 10), atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]));
     if (!strcmp(cmd, "--dump-rivers") && argc >= 2) return dump_rivers(strtoull(argv[1], NULL, 10));

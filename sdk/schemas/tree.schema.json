@@ -1,0 +1,495 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tree species",
+  "description": "One data/<namespace>/trees/<name>.json file. Missing shape fields take the defaults of the shape type.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "log",
+    "leaves",
+    "shape"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+:[a-z0-9_]+$"
+    },
+    "log": {
+      "type": "string"
+    },
+    "leaves": {
+      "type": "string"
+    },
+    "sapling": {
+      "type": "string"
+    },
+    "biomes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8
+    },
+    "climate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "moisture": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        }
+      }
+    },
+    "substrate": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 12
+    },
+    "elevation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_y": {
+          "type": "integer"
+        },
+        "max_y": {
+          "type": "integer"
+        },
+        "max_slope": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4
+        }
+      }
+    },
+    "water": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_distance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "max_distance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "prefer_near": {
+          "type": "boolean"
+        },
+        "allow_shallow": {
+          "type": "boolean"
+        }
+      }
+    },
+    "spacing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_radius": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "cluster_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "clustering": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "density": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 4
+    },
+    "succession": {
+      "enum": [
+        "pioneer",
+        "mid",
+        "climax"
+      ]
+    },
+    "light": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "layer": {
+      "enum": [
+        "canopy",
+        "understory"
+      ]
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "deciduous_broadleaf",
+            "deciduous_slender",
+            "conifer_pine",
+            "conifer_fir",
+            "palm",
+            "willow",
+            "acacia",
+            "mangrove",
+            "bush",
+            "dead_snag",
+            "fallen_log",
+            "custom"
+          ]
+        },
+        "canopy_shape": {
+          "enum": [
+            "irregular_sphere",
+            "conical",
+            "umbrella",
+            "drooping",
+            "layered",
+            "clustered",
+            "frond",
+            "none"
+          ],
+          "description": "Required for custom."
+        },
+        "height": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 40
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 40
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "trunk_radius": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0.3,
+              "maximum": 3
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0.3,
+                "maximum": 3
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "trunk_lean": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.6
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 0.6
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "trunk_taper": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.9
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 0.9
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "trunk_curve": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 6
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 6
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "branch_count": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 12
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 12
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "branch_angle": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 90
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 5,
+                "maximum": 90
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "branch_length_ratio": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0.05,
+              "maximum": 1.2
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0.05,
+                "maximum": 1.2
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "canopy_radius": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 12
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 12
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "canopy_density": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "canopy_flatness": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0.3,
+              "maximum": 2.5
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0.3,
+                "maximum": 2.5
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "root_flare": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "buttress": {
+          "description": "A number or a [min, max] pair; each tree picks inside it.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 6
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 6
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "leaf_clumping": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fork_chance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "kernel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "First terrain kernel that may use this species (default 0). A species with kernel 1 does not change the output of kernel 0 worlds."
+    }
+  }
+}

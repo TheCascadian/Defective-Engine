@@ -37,6 +37,7 @@ bool uiw_text_field(int id, UIWRect bounds, const char *label, char *value, size
                     bool active, bool names_only, float font_size);
 void uiw_slot(UIWRect bounds, bool selected, const char *count, UIWSlotContentFn draw_content, void *user);
 void uiw_tooltip(UIWRect bounds, const char *text, float font_size);
+void uiw_tooltip_draw_all(void);
 bool uiw_slider(UIWState *state, int id, UIWRect bounds, float *value, float minimum, float maximum, float step);
 
 /* Begin clips content and returns its negative Y translation. End restores clipping and draws the optional bar. */

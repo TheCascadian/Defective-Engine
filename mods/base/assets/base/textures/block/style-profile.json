@@ -1,0 +1,20 @@
+{
+  "id": "block-textures",
+  "name": "block-textures",
+  "version": "1.0.0",
+  "dimensions": {
+    "width": 16,
+    "height": 16
+  },
+  "paletteId": "default",
+  "materialRamps": [],
+  "lighting": {
+    "mode": "flat"
+  },
+  "outline": {
+    "enabled": false
+  },
+  "contrast": 0,
+  "saturation": 0,
+  "brightness": 0
+}

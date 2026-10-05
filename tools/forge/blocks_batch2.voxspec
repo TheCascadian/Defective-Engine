@@ -1,0 +1,5 @@
+# Wood family, batch 2: log sides and ends for every tree species. A new species is one more word in each sweep.
+# Build and install as in blocks_batch1.voxspec.
+
+{birch,spruce,jungle,acacia,darkoak,mangrove,cherry}_log_side = ridged(oct=3,sx=10,sy=1,warp=0.2) | levels(lo=0.1,hi=0.9) | dither(bayer,amt=0.2) | ramp($1)
+{birch,spruce,jungle,acacia,darkoak,mangrove,cherry}_log_top = gradient(mode=ring,n=3) | fbm(oct=3,scale=6,mix=add,amt=0.3) | ramp($1)

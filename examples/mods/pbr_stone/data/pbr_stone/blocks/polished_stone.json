@@ -1,0 +1,14 @@
+{
+  "textures": {
+    "all": "pbr_stone:block/polished_stone"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone",
+  "pbr": {
+    "normal": "pbr_stone:block/polished_stone_n",
+    "roughness": 0.35,
+    "metalness": 0.0,
+    "bump_strength": 0.6
+  }
+}

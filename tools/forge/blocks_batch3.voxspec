@@ -1,0 +1,18 @@
+# Stone family, batch 3: ores, rock variants, sandstones, terracotta. Build and install as in blocks_batch1.voxspec.
+
+@ramp stone_gray = 505055 66666b 7c7c82 929298 a9a9af
+@ramp andesite = 5c5e5a 70726d 84867f 989a93 acaea7
+@ramp tuff = 3a3c34 55584c 70746a 8b8f85 a8aca2
+@ramp redsandstone = 6a2a12 8e3e1c b05a2a cf7a42 e6a068
+@ramp terra_red = 4a1a10 7a2e1e a04632 bf6048 d88468
+@ramp terra_orange = 6a3008 9a4a10 c66a1c e48c34 f2ae5a
+@ramp terra_white = 8a7e72 aa9e92 c8beb2 e0d8cc f2ece2
+
+_rock = fbm(oct=4,scale=5,warp=0.35) | worley(n=7,out=cell,mix=add,amt=0.25) | levels(lo=0.15,hi=0.85) | dither(bayer,amt=0.35)
+{coal,iron,gold,diamond}_ore = base(_rock) | ramp(stone_gray) | scatter(n=6,r=1.9,mask=blob) | ramp($1)
+{deep_stone:deepslate,granite,limestone,andesite,tuff} = base(_rock) | ramp($1)
+sandstone_side = fbm(oct=3,sx=2,sy=7,warp=0.1) | levels(lo=0.2,hi=0.8) | quant(k=5) | ramp(sandstone)
+sandstone_top = fbm(oct=3,scale=8,gain=0.7) | levels(lo=-0.4,hi=1.4) | quant(k=4) | ramp(sandstone)
+red_sandstone = fbm(oct=3,sx=2,sy=7,warp=0.1) | levels(lo=0.2,hi=0.8) | quant(k=5) | ramp(redsandstone)
+red_sand = fbm(oct=3,scale=8,gain=0.7) | levels(lo=-0.4,hi=1.4) | quant(k=4) | ramp(redsand)
+{terracotta_red:terra_red,terracotta_orange:terra_orange,terracotta_white:terra_white} = fbm(oct=2,scale=3) | levels(lo=-0.5,hi=1.5) | quant(k=4) | ramp($1)

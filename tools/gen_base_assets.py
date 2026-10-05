@@ -16,6 +16,15 @@ BLK = os.path.join(ROOT, "data", "base", "blocks")
 SIZE = 16
 
 
+
+def water_level(x, y, f, size, frames):
+    """Water brightness in 0..1. Integer wave counts per tile and per loop make it periodic in x, y and f."""
+    tau = 2 * math.pi
+    p = f / frames
+    a = math.sin(tau * (2 * x / size + p)) * math.cos(tau * (3 * y / size + p))
+    b = math.sin(tau * (3 * x / size - p)) * math.cos(tau * (x / size + 2 * y / size + 2 * p))
+    return 0.5 + 0.2 * a + 0.07 * b
+
 def clamp(v):
     return max(0, min(255, int(v)))
 
@@ -168,7 +177,7 @@ def make_textures():
         img = Image.new("RGBA", (SIZE, SIZE))
         for y in range(SIZE):
             for x in range(SIZE):
-                v = 0.5 + 0.25 * math.sin((x + f * 4) * 0.8) * math.cos((y - f * 2) * 0.6)
+                v = water_level(x, y, f, SIZE, 4)
                 img.putpixel((x, y), (clamp(210 * v + 40), clamp(225 * v + 30), clamp(255 * v), 230))
         water.append(img)
     strip(water, "water", 3)
@@ -319,8 +328,121 @@ def make_worldgen():
         fh.write("\n")
 
 
+# PBR companion maps. Both are pure functions of the host PNG: no randomness at all, so regenerating them from the
+# same colour texture always gives byte-identical files. The engine loads <name>_n.png and <name>_r.png beside
+# <name>.png; see "PBR maps" in docs/MODDING.md for the conventions.
+PBR_BLOCKS = {
+    # name: (roughness, normal strength, height gain). Roughness follows the real surface: 0 mirror, 1 matte.
+    # Normal strength scales the luminance gradient (rougher, chunkier material = stronger); height gain scales how
+    # far the relief swings around the neutral 0.5 and so how deep the contact shadow and parallax read.
+    # rock
+    "stone": (0.85, 2.0, 1.5), "deep_stone": (0.9, 2.2, 1.6), "cobblestone": (0.92, 3.0, 2.4), "limestone": (0.8, 1.6, 1.2),
+    "andesite": (0.82, 1.6, 1.2), "granite": (0.62, 1.4, 1.0), "tuff": (0.9, 2.2, 1.6),
+    "mossy_cobble_cold": (0.93, 3.0, 2.4), "mossy_cobble_warm": (0.93, 3.0, 2.4),
+    # ores: rock matrix, metallic flecks are a touch glossier
+    "coal_ore": (0.85, 2.0, 1.5), "iron_ore": (0.75, 2.0, 1.5), "gold_ore": (0.6, 2.0, 1.5), "diamond_ore": (0.5, 2.0, 1.5),
+    # gems
+    "crystal_amber": (0.2, 1.0, 0.8), "crystal_blue": (0.18, 1.0, 0.8), "crystal_green": (0.2, 1.0, 0.8), "crystal_red": (0.2, 1.0, 0.8),
+    # soil and loose ground
+    "dirt": (0.95, 1.8, 1.4), "coarse_dirt": (0.97, 2.8, 2.2), "gravel": (0.95, 3.2, 2.6), "mud": (0.45, 1.2, 1.0),
+    "peat": (0.95, 1.6, 1.2), "podzol_top": (0.95, 1.8, 1.4), "podzol_side": (0.95, 1.8, 1.4), "permafrost": (0.8, 1.6, 1.2),
+    "clay": (0.7, 1.0, 0.8), "moss_block": (0.98, 2.4, 1.8),
+    # sand and sandstone
+    "sand": (0.9, 1.6, 1.2), "red_sand": (0.9, 1.6, 1.2), "sandstone_side": (0.88, 1.8, 1.4), "sandstone_top": (0.88, 1.4, 1.1),
+    "red_sandstone": (0.88, 1.8, 1.4),
+    # fired clay
+    "terracotta_orange": (0.65, 1.2, 0.9), "terracotta_red": (0.65, 1.2, 0.9), "terracotta_white": (0.6, 1.2, 0.9),
+    # wood: bark is rough and grooved, cut ends and planks are smoother
+    "log_side": (0.9, 3.0, 2.4), "birch_log_side": (0.85, 2.4, 1.8), "spruce_log_side": (0.92, 3.0, 2.4), "jungle_log_side": (0.92, 3.0, 2.4),
+    "acacia_log_side": (0.9, 2.6, 2.0), "darkoak_log_side": (0.92, 3.0, 2.4), "cherry_log_side": (0.85, 2.4, 1.8), "mangrove_log_side": (0.92, 3.0, 2.4),
+    "log_top": (0.75, 2.0, 1.4), "birch_log_top": (0.75, 2.0, 1.4), "spruce_log_top": (0.75, 2.0, 1.4), "jungle_log_top": (0.75, 2.0, 1.4),
+    "acacia_log_top": (0.75, 2.0, 1.4), "darkoak_log_top": (0.75, 2.0, 1.4), "cherry_log_top": (0.75, 2.0, 1.4), "mangrove_log_top": (0.75, 2.0, 1.4),
+    "planks": (0.65, 1.6, 1.0),
+    # turf and snow
+    "grass_top": (0.92, 1.8, 1.4), "grass_side": (0.92, 1.8, 1.4), "dry_grass_top": (0.92, 1.8, 1.4), "dry_grass_side": (0.92, 1.8, 1.4),
+    "snow": (0.7, 1.0, 0.8),
+}
+
+
+def _luminance_blurred(img):
+    """Luminance of every texel, blurred with a 3x3 tent filter. Edges wrap so tiles stay seamless."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    px = img.load()
+    lum = [[(0.299 * px[x, y][0] + 0.587 * px[x, y][1] + 0.114 * px[x, y][2]) / 255.0 for x in range(w)] for y in range(h)]
+    k = ((1, 2, 1), (2, 4, 2), (1, 2, 1))
+    out = [[0.0] * w for _ in range(h)]
+    for y in range(h):
+        for x in range(w):
+            acc = 0.0
+            for j in range(3):
+                for i in range(3):
+                    acc += k[j][i] * lum[(y + j - 1) % h][(x + i - 1) % w]
+            out[y][x] = acc / 16.0
+    return out
+
+
+def make_normal(host_png, strength=2.0):
+    """Tangent-space normal map from a colour texture: Sobel gradient of blurred luminance, OpenGL convention
+    (red = +u to the right, green = up in the image, blue = out of the surface)."""
+    lum = _luminance_blurred(Image.open(host_png))
+    h, w = len(lum), len(lum[0])
+    out = Image.new("RGB", (w, h))
+    o = out.load()
+    for y in range(h):
+        for x in range(w):
+            def L(dx, dy):
+                return lum[(y + dy) % h][(x + dx) % w]
+            gx = (L(1, -1) + 2 * L(1, 0) + L(1, 1)) - (L(-1, -1) + 2 * L(-1, 0) + L(-1, 1))
+            gy = (L(-1, 1) + 2 * L(0, 1) + L(1, 1)) - (L(-1, -1) + 2 * L(0, -1) + L(1, -1))  # downwards in the image
+            nx, ny, nz = -gx * strength, gy * strength, 1.0
+            inv = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz)
+            o[x, y] = tuple(int(round((c * inv * 0.5 + 0.5) * 255)) for c in (nx, ny, nz))
+    return out
+
+
+def make_roughness_height(host_png, roughness, height, gain=1.0):
+    """Red: roughness, a little rougher in the crevices. Green: height, blurred luminance re-centred on the
+    given bias so a block's mean depth stays where the caller put it."""
+    lum = _luminance_blurred(Image.open(host_png))
+    h, w = len(lum), len(lum[0])
+    mean = sum(sum(r) for r in lum) / (w * h)
+    out = Image.new("RGB", (w, h))
+    o = out.load()
+    for y in range(h):
+        for x in range(w):
+            d = lum[y][x] - mean
+            o[x, y] = (clamp(int(round((roughness - d * 0.3) * 255))), clamp(int(round((height + d * 1.5 * gain) * 255))), 0)
+    return out
+
+
+def make_pbr_maps():
+    for name, (rough, nstrength, gain) in PBR_BLOCKS.items():
+        host = os.path.join(TEX, name + ".png")
+        if not os.path.exists(host):
+            continue
+        make_normal(host, nstrength).save(os.path.join(TEX, name + "_n.png"))
+        make_roughness_height(host, rough, 0.5, gain).save(os.path.join(TEX, name + "_r.png"))
+
+
+def stylize_blocks():
+    """Paints the PBR_BLOCKS tiles (tools/stylize_textures.py). Run once on freshly generated textures."""
+    import stylize_textures
+    for name in PBR_BLOCKS:
+        host = os.path.join(TEX, name + ".png")
+        if os.path.exists(host):
+            stylize_textures.stylize_file(host, host, stylize_textures.guess_class(name))
+
+
 if __name__ == "__main__":
+    import sys
+    if "--pbr-only" in sys.argv:
+        # Rebuilds only the PBR companions from the colour PNGs already on disk.
+        make_pbr_maps()
+        print("pbr maps written")
+        sys.exit(0)
     make_textures()
+    make_pbr_maps()
     make_blocks()
     make_worldgen()
     print("base assets written")

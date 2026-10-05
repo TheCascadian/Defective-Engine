@@ -1,0 +1,30 @@
+# Ground cover, batch 4: grass, soils, snow, moss, mossy cobble. No bevel anywhere: tiles must repeat seamlessly.
+# Grass tops are neutral grey because the engine tints them by biome; fringes on the sides are fixed colour.
+# Build and install as in blocks_batch1.voxspec.
+
+@ramp turf_grey = 8c8c8c a6a6a6 c0c0c0 d8d8d8 ececec
+@ramp dryturf = 6a5a24 8e7c38 b4a050 d0be6c e6d696
+@ramp podzol = 1e1610 33261a 4a3a28 665440 826e56
+@ramp moss_warm = 3a3a14 585a20 7a7c2c 9c9e40 bcc060
+@ramp tuff = 3a3c34 55584c 70746a 8b8f85 a8aca2
+@ramp permafrost = 3c4048 5a626e 7c8896 a2b2c2 c8d8e6
+@ramp peat = 1a120c 2c1e14 3e2c1e 54402c 6c563c
+@ramp cobble_gray = 63636b 71717a 7f7f89 8d8d97 9b9ba5
+@ramp cobble_gap = 3c3c44 484850 54545c 60606a 6c6c76
+
+_dirt = fbm(oct=4,scale=6) | worley(n=6,out=f1,mix=add,amt=0.35) | dither(bayer,amt=0.5) | ramp(dirt)
+_cobble = warp(amt=0.2,scale=4) | brick(cols=3,rows=4,gap=1,shift=0.4,tone=0.2) | fbm(oct=3,scale=8,mix=add,amt=0.15) | quant(k=5) | ramp(cobble_gray) | sel(gap) | ramp(cobble_gap)
+
+grass_top = fbm(oct=3,sx=9,sy=12,gain=0.6) | levels(lo=-0.2,hi=1.2) | dither(bayer,amt=0.4) | ramp(turf_grey)
+dry_grass_top = fbm(oct=3,sx=9,sy=12,gain=0.6) | levels(lo=-0.2,hi=1.2) | dither(bayer,amt=0.4) | ramp(dryturf)
+podzol_top = fbm(oct=3,sx=9,sy=12,gain=0.6) | worley(n=5,out=f1,mix=add,amt=0.25) | dither(bayer,amt=0.4) | ramp(podzol)
+{grass_side:grass,dry_grass_side:dryturf} = base(_dirt) | gradient(nx=0,ny=1,mode=lin) | fbm(oct=2,scale=8,mix=add,amt=0.28) | sel(hi=0.3) | fbm(oct=3,sx=9,sy=12) | ramp($1)
+podzol_side = base(_dirt) | gradient(nx=0,ny=1,mode=lin) | fbm(oct=2,scale=8,mix=add,amt=0.28) | sel(hi=0.3) | fbm(oct=3,sx=9,sy=12) | ramp(podzol)
+coarse_dirt = crack(n=9,w=0.14,fill=cell,tone=0.3) | fbm(oct=2,scale=6,mix=add,amt=0.15) | quant(k=5) | ramp(dirt) | sel(gap) | ramp(mud)
+mud = fbm(oct=3,scale=4,gain=0.5) | levels(lo=-0.4,hi=1.4) | quant(k=4) | ramp(mud)
+clay = fbm(oct=2,scale=3) | levels(lo=-0.6,hi=1.6) | quant(k=4) | ramp(clay)
+peat = fbm(oct=4,scale=6) | worley(n=8,out=f1,mix=add,amt=0.3) | levels(lo=-0.2,hi=1.2) | dither(bayer,amt=0.5) | ramp(peat)
+permafrost = fbm(oct=4,scale=5) | worley(n=6,out=f1,mix=add,amt=0.3) | levels(lo=-0.2,hi=1.2) | dither(bayer,amt=0.4) | ramp(permafrost)
+snow = fbm(oct=3,scale=6,gain=0.5) | levels(lo=-0.3,hi=1.3) | quant(k=4) | ramp(snow)
+moss_block = worley(n=12,out=f1,jit=0.9) | fbm(oct=3,scale=8,mix=add,amt=0.3) | levels(lo=-0.1,hi=1.1) | dither(bayer,amt=0.4) | ramp(moss)
+{mossy_cobble_cold:moss,mossy_cobble_warm:moss_warm} = base(_cobble) | fbm(oct=3,scale=3) | sel(lo=0.55) | fbm(oct=2,scale=8) | ramp($1)

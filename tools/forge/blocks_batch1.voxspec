@@ -1,0 +1,19 @@
+# Core block textures, batch 1. Family names are the engine texture names.
+# No bevel anywhere: tiles must repeat seamlessly.
+# Build: python3 ~/.claude/skills/voxel-asset-forge/scripts/forge.py build --spec tools/forge/blocks_batch1.voxspec --out <dir> --size 16 --variants 1 --seed 1337 --qa
+# Install: python3 tools/forge_replace.py <dir>   (overwrites the textures and rebuilds their _n/_r maps)
+
+@ramp stone_gray = 505055 66666b 7c7c82 929298 a9a9af
+@ramp cobble_gray = 63636b 71717a 7f7f89 8d8d97 9b9ba5
+@ramp cobble_gap = 3c3c44 484850 54545c 60606a 6c6c76
+@ramp oak_end = 8f6836 a67f45 bd9858 d1b270 e2c78d
+@ramp gravel_mix = 4a4744 6a6663 8a8581 a8a29d c8c2bc
+
+stone = fbm(oct=4,scale=5,warp=0.35) | worley(n=7,out=cell,mix=add,amt=0.25) | levels(lo=0.15,hi=0.85) | dither(bayer,amt=0.35) | ramp(stone_gray)
+cobblestone = warp(amt=0.2,scale=4) | brick(cols=3,rows=4,gap=1,shift=0.4,tone=0.2) | fbm(oct=3,scale=8,mix=add,amt=0.15) | quant(k=5) | ramp(cobble_gray) | sel(gap) | ramp(cobble_gap)
+planks = plank(rows=4,w=16,gap=0.4,tone=0.14,grain=fbm(oct=3,sx=12,sy=1)) | ramp(oak)
+log_side = ridged(oct=3,sx=10,sy=1,warp=0.2) | levels(lo=0.1,hi=0.9) | dither(bayer,amt=0.2) | ramp(bark)
+log_top = gradient(mode=ring,n=3) | fbm(oct=3,scale=6,mix=add,amt=0.3) | ramp(oak_end)
+dirt = fbm(oct=4,scale=6) | worley(n=6,out=f1,mix=add,amt=0.35) | dither(bayer,amt=0.5) | ramp(dirt)
+sand = fbm(oct=3,scale=8,gain=0.7) | levels(lo=0.3,hi=0.7) | quant(k=4) | ramp(sand)
+gravel = crack(n=7,w=0.12,fill=cell,tone=0.4) | fbm(oct=2,scale=6,mix=add,amt=0.1) | ramp(gravel_mix)

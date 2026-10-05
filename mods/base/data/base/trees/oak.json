@@ -1,0 +1,29 @@
+{
+  "id": "base:oak",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:forest",
+    "base:plains"
+  ],
+  "climate": {
+    "temperature": [
+      0.35,
+      0.85
+    ],
+    "moisture": [
+      0.35,
+      1
+    ]
+  },
+  "spacing": {
+    "min_radius": 4,
+    "cluster_size": 3,
+    "clustering": 0.5
+  },
+  "density": 1.4,
+  "succession": "climax",
+  "shape": {
+    "type": "deciduous_broadleaf"
+  }
+}

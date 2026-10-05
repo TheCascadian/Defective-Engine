@@ -1,0 +1,32 @@
+{
+  "id": "base:mangrove",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:swamp",
+    "base:beach"
+  ],
+  "climate": {
+    "temperature": [
+      0.5,
+      1
+    ]
+  },
+  "elevation": {
+    "max_slope": 0.5
+  },
+  "water": {
+    "min_distance": 1.5,
+    "max_distance": 6,
+    "prefer_near": true
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.6
+  },
+  "density": 1.4,
+  "shape": {
+    "type": "mangrove"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "base:autumn_oak_orange",
+  "kernel": 1,
+  "log": "base:log",
+  "leaves": "base:autumn_orange_leaves",
+  "biomes": [
+    "base:birch_forest",
+    "base:dark_forest",
+    "base:meadow"
+  ],
+  "spacing": {
+    "min_radius": 5,
+    "cluster_size": 3,
+    "clustering": 0.5
+  },
+  "density": 0.5,
+  "shape": {
+    "type": "deciduous_broadleaf"
+  }
+}

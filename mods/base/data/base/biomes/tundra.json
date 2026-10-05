@@ -1,0 +1,116 @@
+{
+  "id": "base:tundra",
+  "description": "Frozen flats.",
+  "climate": {
+    "temperature": {
+      "center": -0.65,
+      "extent": 0.35
+    },
+    "humidity": {
+      "center": 0.1,
+      "extent": 0.9
+    },
+    "height": [
+      0,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.5,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "patch": [
+          {
+            "noise": "a",
+            "lo": 0.28,
+            "hi": 2
+          },
+          {
+            "noise": "b",
+            "lo": 0.25,
+            "hi": 2
+          }
+        ]
+      }
+    },
+    {
+      "block": "base:snow"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:snow_shrub",
+      "chance": 1.5,
+      "on": [
+        "base:snow",
+        "base:gravel"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.5
+}

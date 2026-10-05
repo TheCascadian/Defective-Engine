@@ -1,0 +1,23 @@
+{
+  "id": "base:taiga_spruce",
+  "kernel": 1,
+  "log": "base:spruce_log",
+  "leaves": "base:spruce_leaves",
+  "biomes": [
+    "base:taiga",
+    "base:snowy_taiga",
+    "base:alpine"
+  ],
+  "elevation": {
+    "max_slope": 1.0
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.6
+  },
+  "density": 1.4,
+  "shape": {
+    "type": "conifer_fir"
+  }
+}

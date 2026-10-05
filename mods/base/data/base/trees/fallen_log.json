@@ -1,0 +1,14 @@
+{
+  "id": "base:fallen_log",
+  "log": "base:log",
+  "biomes": [
+    "base:forest",
+    "base:swamp"
+  ],
+  "layer": "understory",
+  "density": 0.25,
+  "succession": "climax",
+  "shape": {
+    "type": "fallen_log"
+  }
+}

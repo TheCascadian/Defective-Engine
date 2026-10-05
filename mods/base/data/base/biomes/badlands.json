@@ -1,0 +1,143 @@
+{
+  "id": "base:badlands",
+  "description": "Hot dry mesa country with banded terracotta.",
+  "priority": 8,
+  "climate": {
+    "temperature": {
+      "center": 0.75,
+      "extent": 0.7
+    },
+    "humidity": {
+      "center": -0.5,
+      "extent": 0.75
+    },
+    "height": [
+      66,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:terracotta_white",
+      "when": {
+        "slope_min": 3,
+        "stripe": {
+          "period": 8,
+          "lo": 0,
+          "hi": 1
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_orange",
+      "when": {
+        "slope_min": 3,
+        "stripe": {
+          "period": 8,
+          "lo": 1,
+          "hi": 4
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_red",
+      "when": {
+        "slope_min": 3,
+        "stripe": {
+          "period": 8,
+          "lo": 4,
+          "hi": 6
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_orange",
+      "when": {
+        "slope_min": 3
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:red_sand",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:red_sand"
+    },
+    {
+      "block": "base:terracotta_white",
+      "depth": 8,
+      "when": {
+        "stripe": {
+          "period": 8,
+          "lo": 0,
+          "hi": 1
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_orange",
+      "depth": 8,
+      "when": {
+        "stripe": {
+          "period": 8,
+          "lo": 1,
+          "hi": 4
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_red",
+      "depth": 8,
+      "when": {
+        "stripe": {
+          "period": 8,
+          "lo": 4,
+          "hi": 6
+        }
+      }
+    },
+    {
+      "block": "base:terracotta_red",
+      "depth": 8
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:dead_bush",
+      "chance": 3,
+      "on": [
+        "base:red_sand",
+        "base:terracotta_orange",
+        "base:terracotta_red"
+      ]
+    },
+    {
+      "block": "base:dry_grass",
+      "chance": 2,
+      "on": [
+        "base:red_sand"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.15,
+  "features": [
+    {
+      "id": "base:badlands_spire",
+      "block": "base:red_sandstone",
+      "chance_per_mille": 3,
+      "radius": 1
+    }
+  ]
+}

@@ -1,0 +1,176 @@
+{
+  "id": "base:alpine",
+  "description": "Snow, rock and gravel above the tree line.",
+  "priority": 8,
+  "climate": {
+    "temperature": {
+      "center": -0.45,
+      "extent": 0.45
+    },
+    "humidity": {
+      "center": 0.0,
+      "extent": 0.9
+    },
+    "height": [
+      128,
+      4096
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:snow",
+      "when": {
+        "above_snowline": true,
+        "patch": {
+          "noise": "detail",
+          "lo": 0.0,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        },
+        "above_snowline": true
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        },
+        "above_snowline": true
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "above_snowline": true
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "detail",
+          "lo": 0.2,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        },
+        "slope_min": 4
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        },
+        "slope_min": 4
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 4
+      }
+    },
+    {
+      "block": "base:snow",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.1,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel"
+    },
+    {
+      "block": "base:stone",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:snow_shrub",
+      "chance": 2,
+      "on": [
+        "base:snow",
+        "base:gravel"
+      ]
+    },
+    {
+      "block": "base:heather",
+      "chance": 2,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block",
+        "base:gravel"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.4,
+  "tags": [
+    "treeline"
+  ],
+  "features": [
+    {
+      "id": "base:alpine_boulder",
+      "block": "base:granite",
+      "chance_per_mille": 4,
+      "radius": 1
+    },
+    {
+      "id": "base:alpine_ice",
+      "block": "base:ice",
+      "chance_per_mille": 2,
+      "radius": 1
+    }
+  ]
+}

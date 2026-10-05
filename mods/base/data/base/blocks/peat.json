@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/peat"
+  },
+  "hardness": 0.6,
+  "tool": "shovel",
+  "sound": "mud"
+}

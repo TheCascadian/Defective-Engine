@@ -1,0 +1,16 @@
+{
+  "id": "base:dead_snag",
+  "log": "base:log",
+  "biomes": [
+    "base:forest",
+    "base:tundra",
+    "base:swamp",
+    "base:mountain"
+  ],
+  "layer": "understory",
+  "density": 0.18,
+  "succession": "pioneer",
+  "shape": {
+    "type": "dead_snag"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/red_sandstone"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone"
+}

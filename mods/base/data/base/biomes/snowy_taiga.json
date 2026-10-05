@@ -1,0 +1,114 @@
+{
+  "id": "base:snowy_taiga",
+  "description": "Snow-covered spruce forest.",
+  "climate": {
+    "temperature": {
+      "center": -0.5,
+      "extent": 0.3
+    },
+    "humidity": {
+      "center": 0.35,
+      "extent": 0.4
+    },
+    "height": [
+      0,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:podzol",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.3,
+          "hi": 2
+        },
+        "height_max": 140
+      }
+    },
+    {
+      "block": "base:snow"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:snow_shrub",
+      "chance": 4,
+      "on": [
+        "base:snow",
+        "base:podzol"
+      ]
+    },
+    {
+      "block": "base:fern",
+      "chance": 3,
+      "on": [
+        "base:podzol"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "base:taiga_boulder_snowy",
+      "block": "base:mossy_cobble_cold",
+      "chance_per_mille": 3,
+      "radius": 1
+    }
+  ]
+}

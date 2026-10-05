@@ -1,0 +1,114 @@
+{
+  "id": "base:mangrove_swamp",
+  "description": "Hot tidal swamp with mud and stilt trees.",
+  "priority": 8,
+  "climate": {
+    "temperature": {
+      "center": 0.7,
+      "extent": 0.5
+    },
+    "humidity": {
+      "center": 0.75,
+      "extent": 0.45
+    },
+    "height": [
+      0,
+      78
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "height_max": 66
+      }
+    },
+    {
+      "block": "base:moss_block",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.4,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:mud",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:cattail",
+      "chance": 8,
+      "on": [
+        "base:mud",
+        "base:grass_block"
+      ],
+      "habitat": "wetland"
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 20,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:mushroom",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "base:mangrove_mud",
+      "block": "base:mud",
+      "chance_per_mille": 10,
+      "radius": 1
+    }
+  ]
+}

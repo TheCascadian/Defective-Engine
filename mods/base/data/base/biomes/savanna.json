@@ -1,0 +1,131 @@
+{
+  "id": "base:savanna",
+  "description": "Warm grassland with flat-topped acacias.",
+  "priority": 3,
+  "climate": {
+    "temperature": {
+      "center": 0.65,
+      "extent": 0.5
+    },
+    "humidity": {
+      "center": -0.1,
+      "extent": 0.5
+    },
+    "height": [
+      0,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:dry_grass_block",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": 0.45
+        }
+      }
+    },
+    {
+      "block": "base:coarse_dirt",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.7,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:dry_grass",
+      "chance": 24,
+      "on": [
+        "base:dry_grass_block",
+        "base:grass_block",
+        "base:coarse_dirt"
+      ]
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 6,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:flower_yellow",
+      "chance": 1,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.35,
+  "features": [
+    {
+      "id": "base:savanna_boulder",
+      "block": "base:andesite",
+      "chance_per_mille": 2,
+      "radius": 1
+    }
+  ]
+}

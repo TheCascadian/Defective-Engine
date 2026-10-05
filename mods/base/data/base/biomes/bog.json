@@ -1,0 +1,137 @@
+{
+  "id": "base:bog",
+  "description": "Cool, wet peatland.",
+  "priority": 2,
+  "climate": {
+    "temperature": {
+      "center": -0.15,
+      "extent": 0.4
+    },
+    "humidity": {
+      "center": 0.6,
+      "extent": 0.4
+    },
+    "height": [
+      0,
+      80
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:peat",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": 0.35
+        }
+      }
+    },
+    {
+      "block": "base:moss_block",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:podzol",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.35,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:peat"
+    },
+    {
+      "block": "base:peat",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:fern",
+      "chance": 8,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block",
+        "base:peat"
+      ]
+    },
+    {
+      "block": "base:cattail",
+      "chance": 6,
+      "on": [
+        "base:peat",
+        "base:mud",
+        "base:dirt"
+      ],
+      "habitat": "wetland"
+    },
+    {
+      "block": "base:mushroom",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block",
+        "base:peat"
+      ]
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 10,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.7,
+  "features": [
+    {
+      "id": "base:bog_hummock",
+      "block": "base:peat",
+      "chance_per_mille": 8,
+      "radius": 2
+    },
+    {
+      "id": "base:bog_stone",
+      "block": "base:mossy_cobble_cold",
+      "chance_per_mille": 2,
+      "radius": 1
+    }
+  ]
+}

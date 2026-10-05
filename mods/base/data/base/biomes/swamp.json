@@ -1,0 +1,118 @@
+{
+  "id": "base:swamp",
+  "description": "Low wet ground with mud and standing water.",
+  "priority": 3,
+  "climate": {
+    "temperature": {
+      "center": 0.05,
+      "extent": 0.4
+    },
+    "humidity": {
+      "center": 0.7,
+      "extent": 0.4
+    },
+    "height": [
+      0,
+      75
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:clay",
+      "when": {
+        "height_max": 63,
+        "patch": {
+          "noise": "b",
+          "lo": 0.1,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "height_max": 65
+      }
+    },
+    {
+      "block": "base:moss_block",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.2,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.55,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:mud",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:mushroom",
+      "chance": 6,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 34,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:cattail",
+      "chance": 6,
+      "on": [
+        "base:mud",
+        "base:grass_block",
+        "base:dirt"
+      ],
+      "habitat": "wetland"
+    }
+  ]
+}

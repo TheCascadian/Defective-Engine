@@ -1,0 +1,157 @@
+{
+  "id": "base:flower_forest",
+  "description": "Forest clearings full of flowers.",
+  "priority": 8,
+  "climate": {
+    "temperature": {
+      "center": 0.15,
+      "extent": 0.3
+    },
+    "humidity": {
+      "center": 0.3,
+      "extent": 0.3
+    },
+    "height": [
+      0,
+      110
+    ],
+    "weirdness": [
+      0.1,
+      1
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:cornflower",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:flower_red",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:pink_tulip",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:orange_poppy",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:bluebell",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:daisy",
+      "chance": 3,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 12,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.8,
+  "features": [
+    {
+      "id": "base:flower_mound",
+      "block": "base:moss_block",
+      "chance_per_mille": 4,
+      "radius": 1
+    }
+  ]
+}

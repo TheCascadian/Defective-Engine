@@ -1,0 +1,28 @@
+{
+  "id": "base:pine",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:mountain",
+    "base:tundra",
+    "base:forest"
+  ],
+  "climate": {
+    "temperature": [
+      0,
+      0.6
+    ]
+  },
+  "elevation": {
+    "max_slope": 0.9
+  },
+  "spacing": {
+    "min_radius": 4,
+    "cluster_size": 3,
+    "clustering": 0.4
+  },
+  "density": 1.1,
+  "shape": {
+    "type": "conifer_pine"
+  }
+}

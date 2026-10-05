@@ -1,0 +1,20 @@
+{
+  "id": "base:shrub",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:forest",
+    "base:plains",
+    "base:swamp"
+  ],
+  "layer": "understory",
+  "density": 1.2,
+  "spacing": {
+    "min_radius": 2,
+    "cluster_size": 3,
+    "clustering": 0.5
+  },
+  "shape": {
+    "type": "bush"
+  }
+}

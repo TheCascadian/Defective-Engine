@@ -1,0 +1,19 @@
+{
+  "id": "base:jungle_giant",
+  "kernel": 1,
+  "log": "base:jungle_log",
+  "leaves": "base:jungle_leaves",
+  "biomes": [
+    "base:jungle"
+  ],
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 5,
+    "clustering": 0.7
+  },
+  "succession": "climax",
+  "density": 2.2,
+  "shape": {
+    "type": "deciduous_broadleaf"
+  }
+}

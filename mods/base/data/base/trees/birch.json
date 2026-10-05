@@ -1,0 +1,25 @@
+{
+  "id": "base:birch",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:forest",
+    "base:plains"
+  ],
+  "climate": {
+    "temperature": [
+      0.3,
+      0.8
+    ]
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.7
+  },
+  "density": 0.8,
+  "succession": "pioneer",
+  "shape": {
+    "type": "deciduous_slender"
+  }
+}

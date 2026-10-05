@@ -1,0 +1,99 @@
+{
+  "id": "base:desert",
+  "description": "Hot and dry.",
+  "priority": 4,
+  "climate": {
+    "temperature": {
+      "center": 0.6,
+      "extent": 0.7
+    },
+    "humidity": {
+      "center": -0.5,
+      "extent": 0.75
+    },
+    "height": [
+      0,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:sandstone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:red_sand",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:sandstone",
+      "when": {
+        "patch": [
+          {
+            "noise": "a",
+            "lo": -2,
+            "hi": -0.45
+          },
+          {
+            "noise": "b",
+            "lo": -0.1,
+            "hi": 2
+          }
+        ]
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.62,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:sand"
+    },
+    {
+      "block": "base:sandstone",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:dead_bush",
+      "chance": 2,
+      "on": [
+        "base:sand",
+        "base:red_sand"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.3
+}

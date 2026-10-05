@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/mossy_cobble_warm"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone"
+}

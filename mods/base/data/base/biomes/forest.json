@@ -1,0 +1,159 @@
+{
+  "id": "base:forest",
+  "description": "Temperate woodland.",
+  "climate": {
+    "temperature": {
+      "center": 0.15,
+      "extent": 0.35
+    },
+    "humidity": {
+      "center": 0.3,
+      "extent": 0.3
+    },
+    "height": [
+      0,
+      110
+    ],
+    "weirdness": [
+      -1,
+      0.4
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:mud",
+      "when": {
+        "river_min": 0.4
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:podzol",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.1,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:moss_block",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.55
+        }
+      }
+    },
+    {
+      "block": "base:coarse_dirt",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.62,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:flower_red",
+      "chance": 1,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:flower_yellow",
+      "chance": 1,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:mushroom",
+      "chance": 2,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:fern",
+      "chance": 4,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    },
+    {
+      "block": "base:tall_grass",
+      "chance": 14,
+      "on": [
+        "base:grass_block",
+        "base:podzol",
+        "base:moss_block"
+      ]
+    }
+  ]
+}

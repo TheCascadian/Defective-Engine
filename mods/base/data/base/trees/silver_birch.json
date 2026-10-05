@@ -1,0 +1,27 @@
+{
+  "id": "base:silver_birch",
+  "kernel": 1,
+  "log": "base:birch_log",
+  "leaves": "base:birch_leaves",
+  "biomes": [
+    "base:birch_forest",
+    "base:meadow",
+    "base:flower_forest"
+  ],
+  "climate": {
+    "temperature": [
+      0.3,
+      0.75
+    ]
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.7
+  },
+  "succession": "pioneer",
+  "density": 1.2,
+  "shape": {
+    "type": "deciduous_slender"
+  }
+}

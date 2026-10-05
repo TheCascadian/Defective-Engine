@@ -1,0 +1,41 @@
+{
+  "id": "base:beach",
+  "description": "Sand strip along the waterline.",
+  "role": "shore",
+  "surface": [
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.5,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:sandstone",
+      "when": {
+        "patch": [
+          {
+            "noise": "a",
+            "lo": -2,
+            "hi": -0.5
+          },
+          {
+            "noise": "b",
+            "lo": 0.0,
+            "hi": 2
+          }
+        ]
+      }
+    },
+    {
+      "block": "base:sand"
+    },
+    {
+      "block": "base:sand",
+      "depth": 3
+    }
+  ]
+}

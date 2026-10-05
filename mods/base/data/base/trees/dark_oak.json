@@ -1,0 +1,19 @@
+{
+  "id": "base:dark_oak",
+  "kernel": 1,
+  "log": "base:darkoak_log",
+  "leaves": "base:jungle_leaves",
+  "biomes": [
+    "base:dark_forest"
+  ],
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.6
+  },
+  "succession": "climax",
+  "density": 1.8,
+  "shape": {
+    "type": "deciduous_broadleaf"
+  }
+}

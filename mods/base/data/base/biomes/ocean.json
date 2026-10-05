@@ -1,0 +1,44 @@
+{
+  "id": "base:ocean",
+  "description": "Open sea; chosen wherever the ground is below sea level.",
+  "role": "ocean",
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.45,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "detail",
+          "lo": 0.15,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.5,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:sand"
+    },
+    {
+      "block": "base:sand",
+      "depth": 3
+    }
+  ]
+}

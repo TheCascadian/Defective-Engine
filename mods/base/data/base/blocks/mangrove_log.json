@@ -1,0 +1,10 @@
+{
+  "textures": {
+    "up": "base:block/mangrove_log_top",
+    "down": "base:block/mangrove_log_top",
+    "side": "base:block/mangrove_log_side"
+  },
+  "hardness": 2.0,
+  "tool": "axe",
+  "sound": "wood"
+}

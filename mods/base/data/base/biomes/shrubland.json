@@ -1,0 +1,146 @@
+{
+  "id": "base:shrubland",
+  "description": "Dry mediterranean scrub.",
+  "priority": 1,
+  "climate": {
+    "temperature": {
+      "center": 0.45,
+      "extent": 0.4
+    },
+    "humidity": {
+      "center": -0.3,
+      "extent": 0.4
+    },
+    "height": [
+      0,
+      110
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": 0.25,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:granite",
+      "when": {
+        "slope_min": 5,
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": -0.25
+        }
+      }
+    },
+    {
+      "block": "base:stone",
+      "when": {
+        "slope_min": 5
+      }
+    },
+    {
+      "block": "base:coarse_dirt",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": 0.2,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:dry_grass_block",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.0,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:grass_block"
+    },
+    {
+      "block": "base:dirt",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:lavender",
+      "chance": 4,
+      "on": [
+        "base:dry_grass_block",
+        "base:grass_block",
+        "base:coarse_dirt"
+      ]
+    },
+    {
+      "block": "base:heather",
+      "chance": 4,
+      "on": [
+        "base:dry_grass_block",
+        "base:grass_block",
+        "base:coarse_dirt"
+      ]
+    },
+    {
+      "block": "base:dry_grass",
+      "chance": 12,
+      "on": [
+        "base:dry_grass_block",
+        "base:grass_block",
+        "base:coarse_dirt"
+      ]
+    },
+    {
+      "block": "base:berry_bush",
+      "chance": 1,
+      "on": [
+        "base:dry_grass_block",
+        "base:grass_block"
+      ]
+    },
+    {
+      "block": "base:dead_bush",
+      "chance": 1,
+      "on": [
+        "base:coarse_dirt"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.4,
+  "features": [
+    {
+      "id": "base:shrub_outcrop",
+      "block": "base:limestone",
+      "chance_per_mille": 3,
+      "radius": 1
+    }
+  ]
+}

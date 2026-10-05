@@ -1,0 +1,22 @@
+{
+  "id": "base:weeping_willow",
+  "kernel": 1,
+  "log": "base:log",
+  "leaves": "base:willow_leaves",
+  "biomes": [
+    "base:bog",
+    "base:mangrove_swamp",
+    "base:meadow"
+  ],
+  "water": {
+    "max_distance": 14,
+    "prefer_near": true
+  },
+  "spacing": {
+    "min_radius": 5
+  },
+  "density": 1.0,
+  "shape": {
+    "type": "willow"
+  }
+}

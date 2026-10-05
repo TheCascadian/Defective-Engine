@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/limestone"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone"
+}

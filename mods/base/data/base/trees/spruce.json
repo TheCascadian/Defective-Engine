@@ -1,0 +1,27 @@
+{
+  "id": "base:spruce",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:mountain",
+    "base:tundra"
+  ],
+  "climate": {
+    "temperature": [
+      0,
+      0.5
+    ]
+  },
+  "elevation": {
+    "max_slope": 1.0
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.6
+  },
+  "density": 1.3,
+  "shape": {
+    "type": "conifer_fir"
+  }
+}

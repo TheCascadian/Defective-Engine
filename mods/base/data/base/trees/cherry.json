@@ -1,0 +1,19 @@
+{
+  "id": "base:cherry",
+  "kernel": 1,
+  "log": "base:cherry_log",
+  "leaves": "base:cherry_leaves",
+  "biomes": [
+    "base:cherry_grove",
+    "base:flower_forest"
+  ],
+  "spacing": {
+    "min_radius": 5,
+    "cluster_size": 3,
+    "clustering": 0.5
+  },
+  "density": 0.9,
+  "shape": {
+    "type": "deciduous_broadleaf"
+  }
+}

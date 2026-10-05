@@ -1,0 +1,21 @@
+{
+  "id": "base:willow",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:swamp",
+    "base:forest",
+    "base:plains"
+  ],
+  "water": {
+    "max_distance": 14,
+    "prefer_near": true
+  },
+  "spacing": {
+    "min_radius": 5
+  },
+  "density": 1.0,
+  "shape": {
+    "type": "willow"
+  }
+}

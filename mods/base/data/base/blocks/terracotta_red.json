@@ -1,0 +1,8 @@
+{
+  "textures": {
+    "all": "base:block/terracotta_red"
+  },
+  "hardness": 1.5,
+  "tool": "pick",
+  "sound": "stone"
+}

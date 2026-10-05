@@ -1,0 +1,27 @@
+{
+  "id": "base:palm",
+  "log": "base:log",
+  "leaves": "base:leaves",
+  "biomes": [
+    "base:beach",
+    "base:desert",
+    "base:swamp"
+  ],
+  "climate": {
+    "temperature": [
+      0.6,
+      1
+    ]
+  },
+  "water": {
+    "max_distance": 24,
+    "prefer_near": true
+  },
+  "spacing": {
+    "min_radius": 5
+  },
+  "density": 0.7,
+  "shape": {
+    "type": "palm"
+  }
+}

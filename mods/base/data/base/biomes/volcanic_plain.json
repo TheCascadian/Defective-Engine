@@ -1,0 +1,111 @@
+{
+  "id": "base:volcanic_plain",
+  "description": "Dark ash and tuff flats around old vents.",
+  "priority": 9,
+  "climate": {
+    "temperature": {
+      "center": 0.7,
+      "extent": 0.4
+    },
+    "humidity": {
+      "center": -0.1,
+      "extent": 0.5
+    },
+    "height": [
+      62,
+      120
+    ],
+    "weirdness": [
+      0.1,
+      1
+    ]
+  },
+  "surface": [
+    {
+      "block": "base:clay",
+      "when": {
+        "river_min": 0.55,
+        "patch": {
+          "noise": "b",
+          "lo": 0.3,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "river_min": 0.55
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "slope_min": 3
+      }
+    },
+    {
+      "block": "base:tuff",
+      "when": {
+        "patch": {
+          "noise": "a",
+          "lo": -2,
+          "hi": 0.1
+        }
+      }
+    },
+    {
+      "block": "base:andesite",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": 0.4,
+          "hi": 2
+        }
+      }
+    },
+    {
+      "block": "base:gravel",
+      "when": {
+        "patch": {
+          "noise": "b",
+          "lo": -2,
+          "hi": -0.55
+        }
+      }
+    },
+    {
+      "block": "base:tuff"
+    },
+    {
+      "block": "base:andesite",
+      "depth": 3
+    }
+  ],
+  "plants": [
+    {
+      "block": "base:dead_bush",
+      "chance": 1.5,
+      "on": [
+        "base:tuff",
+        "base:andesite",
+        "base:gravel"
+      ]
+    }
+  ],
+  "tree_density_scale": 0.1,
+  "features": [
+    {
+      "id": "base:volcanic_boulder",
+      "block": "base:andesite",
+      "chance_per_mille": 6,
+      "radius": 1
+    },
+    {
+      "id": "base:volcanic_cinder",
+      "block": "base:cobblestone",
+      "chance_per_mille": 3,
+      "radius": 1
+    }
+  ]
+}

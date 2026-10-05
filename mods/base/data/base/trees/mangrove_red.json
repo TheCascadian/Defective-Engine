@@ -1,0 +1,26 @@
+{
+  "id": "base:mangrove_red",
+  "kernel": 1,
+  "log": "base:mangrove_log",
+  "leaves": "base:jungle_leaves",
+  "biomes": [
+    "base:mangrove_swamp"
+  ],
+  "water": {
+    "min_distance": 1.5,
+    "max_distance": 6,
+    "prefer_near": true
+  },
+  "elevation": {
+    "max_slope": 0.5
+  },
+  "spacing": {
+    "min_radius": 3,
+    "cluster_size": 4,
+    "clustering": 0.6
+  },
+  "density": 1.4,
+  "shape": {
+    "type": "mangrove"
+  }
+}
